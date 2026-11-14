@@ -27,6 +27,7 @@ pub(crate) fn kept_keys() -> Vec<String> {
         "groove",
         "genre",
         "pattern",
+        "library_set",
         "chain",
         "bpm",
         "follow",
@@ -34,6 +35,9 @@ pub(crate) fn kept_keys() -> Vec<String> {
         "kick_key",
         "vary",
         "auto_fill",
+        "auto_fill_style",
+        "follow_breaks",
+        "break_sensitivity",
         "swing",
         "duck_deck",
         "duck_amount",
@@ -229,6 +233,26 @@ mod tests {
         for key in kept_keys() {
             assert!(reg.get("[Groove1]", &key).is_some(), "{key}");
         }
+    }
+
+    #[test]
+    fn settings_and_presets_keep_break_preferences_but_not_actions() {
+        let keys = kept_keys();
+        for key in [
+            "library_set",
+            "auto_fill_style",
+            "follow_breaks",
+            "break_sensitivity",
+        ] {
+            assert!(keys.iter().any(|k| k == key), "{key}");
+        }
+        for key in ["load_set", "set_pending", "break_active"] {
+            assert!(!keys.iter().any(|k| k == key), "{key}");
+        }
+        let mut values = json!({"layout": 3.0, "follow_breaks": 1.0, "break_sensitivity": 0.7});
+        let before = values.clone();
+        upgrade(values.as_object_mut().unwrap());
+        assert_eq!(values, before);
     }
 
     #[test]

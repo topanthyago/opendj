@@ -46,6 +46,9 @@ libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { version = "0.18", features = ["realtime"] }
+# Use whisper.cpp's Vulkan backend on Linux. This is the Intel Arc path;
+# the release binary was built without a Linux GPU feature and logs use_gpu=0.
+whisper-rs = { version = "0.16", features = ["vulkan"] }
 
 # Whisper on the Mac's GPU.
 [target.'cfg(target_os = "macos")'.dependencies]

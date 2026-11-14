@@ -1,7 +1,10 @@
 //! The Groove Box's built-in kits.
 //!
-//! Every sound is synthesised here when the engine starts, so the kits need
-//! no sample files. The Analog and Synthetic kits play the drum models of
+//! The first six kits are synthesised when the engine starts. BrasilFunk
+//! and BrasilPercussao combine those drums with bundled CC0 recordings
+//! from the Versilian Community Sample Library. All sounds are prepared
+//! before audio starts, so playing them needs no file access. The Analog
+//! and Synthetic kits play the drum models of
 //! Mutable Instruments' Plaits (Emilie Gillet's, MIT, through the
 //! `mi-plaits-dsp` port): a kick that is a resonant filter struck by a
 //! pulse, a snare of tuned modes and noise, hats of square-wave metal or
@@ -19,6 +22,8 @@
 //! sounds of their own after them, for a row to switch to.
 
 use std::f32::consts::TAU;
+use std::io::Cursor;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use mi_plaits_dsp::drums::{
@@ -62,47 +67,126 @@ pub struct KitInfo {
     pub about: &'static str,
     /// Sounds after the nine [`ROLES`].
     pub extras: &'static [&'static str],
+    /// Recorded instruments can keep their own names while the role indices stay fixed.
+    pub roles: Option<&'static [&'static str; 9]>,
 }
 
 impl KitInfo {
     /// The kit's sounds' names, in order.
     pub fn sounds(&self) -> impl Iterator<Item = &'static str> + '_ {
-        ROLES.iter().copied().chain(self.extras.iter().copied())
+        self.roles
+            .unwrap_or(&ROLES)
+            .iter()
+            .copied()
+            .chain(self.extras.iter().copied())
     }
 }
 
-pub const KITS: [KitInfo; 6] = [
+pub const KITS: [KitInfo; 8] = [
     KitInfo {
         name: "Analog",
         about: "Round, warm analogue drums (Plaits drum models)",
         extras: &["Low tom", "High tom"],
+        roles: None,
     },
     KitInfo {
         name: "Synthetic",
         about: "Tight digital kick and snare, crisp hats (Plaits drum models)",
         extras: &["Low tom", "High tom"],
+        roles: None,
     },
     KitInfo {
         name: "Boom",
         about: "Deep, long kick and soft analogue drums, 808-style",
         extras: &["Tom"],
+        roles: None,
     },
     KitInfo {
         name: "Punch",
         about: "Short, punchy kick and bright hats for house and techno, 909-style",
         extras: &["Tom"],
+        roles: None,
     },
     KitInfo {
         name: "Tin",
         about: "Small, ticking rhythm-box drums, 606-style",
         extras: &["Shaker", "Tom"],
+        roles: None,
     },
     KitInfo {
         name: "Dub",
         about: "Soft kick, rimshot and a chord stab for dub techno",
         extras: &["Chord", "Shaker", "Tom"],
+        roles: None,
+    },
+    KitInfo {
+        name: "BrasilFunk",
+        about: "Electronic drums with recorded CC0 claves, agogo, cabasa and conga",
+        extras: &["Cabasa", "Conga aberta", "Agogo grave"],
+        roles: Some(&[
+            "Kick",
+            "Snare",
+            "Closed hat",
+            "Open hat",
+            "Clap",
+            "Claves",
+            "Agogo agudo",
+            "Crash",
+            "Ride",
+        ]),
+    },
+    KitInfo {
+        name: "BrasilPercussao",
+        about: "Recorded CC0 hand percussion with electronic low drum and snare",
+        extras: &["Agogo grave", "Conga aberta", "Conga abafada"],
+        roles: Some(&[
+            "Bumbo sintetico",
+            "Caixa sintetica",
+            "Shaker",
+            "Tambourine",
+            "Palmas",
+            "Claves",
+            "Agogo agudo",
+            "Crash",
+            "Ride",
+        ]),
     },
 ];
+
+/// Small, licensed one-shots are decoded and resampled at startup, alongside
+/// the synthesized kits. The audio callback only reads the prepared samples.
+fn recorded_sound(kit: usize, sound: usize, rate: f64) -> Option<Sample> {
+    let data: &'static [u8] = match (kit, sound) {
+        (6 | 7, 5) => include_bytes!("../data/kits/brasil/claves.wav"),
+        (6 | 7, 6) => include_bytes!("../data/kits/brasil/agogo-high.wav"),
+        (6, 9) => include_bytes!("../data/kits/brasil/cabasa.wav"),
+        (6, 10) | (7, 10) => include_bytes!("../data/kits/brasil/conga-open.wav"),
+        (6, 11) | (7, 9) => include_bytes!("../data/kits/brasil/agogo-low.wav"),
+        (7, 2) => include_bytes!("../data/kits/brasil/shaker.wav"),
+        (7, 3) => include_bytes!("../data/kits/brasil/tambourine.wav"),
+        (7, 11) => include_bytes!("../data/kits/brasil/conga-muted.wav"),
+        _ => return None,
+    };
+    let decoder = crate::decode::Decoder::open_source(
+        Path::new("embedded-kit.wav"),
+        Box::new(Cursor::new(data)),
+    )
+    .expect("bundled CC0 percussion WAV must have valid headers");
+    let audio = decoder
+        .run(|_| true)
+        .expect("bundled CC0 percussion WAV must decode");
+    Some(Sample::from_audio(&audio, rate))
+}
+
+fn native_source(kit: usize, sound: usize) -> usize {
+    match (kit, sound) {
+        (6, 0 | 1) => 1,
+        (6, _) => 3,
+        (7, 1) => 0,
+        (7, _) => 4,
+        _ => kit,
+    }
+}
 
 /// Turns a row of steps written as text into a 16-bit pattern: `x`, `X`
 /// or `o` is a hit, anything else a rest.
@@ -115,7 +199,48 @@ pub fn parse_steps(steps: &str) -> u32 {
         .fold(0, |bits, (i, _)| bits | 1 << i)
 }
 
+/// User-rendered drums replace individual kit sounds at startup. A kit's
+/// existing indices remain stable for saved patterns and presets.
+pub fn custom_root() -> Option<PathBuf> {
+    std::env::var_os("OPENDJ_KITS")
+        .filter(|root| !root.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            crate::paths::config_base()
+                .map(|base| base.join(crate::paths::app_folder_name()).join("kits"))
+        })
+}
+
+fn custom_sound(root: &Path, kit: &str, sound: usize, rate: f64) -> Option<Sample> {
+    let path = root.join(kit).join(format!("{sound:02}.wav"));
+    if !path.is_file() {
+        return None;
+    }
+    match Sample::load(&path, rate) {
+        Ok(sample) if !sample.is_empty() => {
+            eprintln!("kit sample loaded: {}", path.display());
+            Some(sample)
+        }
+        Ok(_) => {
+            eprintln!("empty kit sample: {}; using built-in sound", path.display());
+            None
+        }
+        Err(error) => {
+            eprintln!(
+                "couldn't load kit sample {}: {error}; using built-in sound",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
 pub fn build(rate: f64) -> Vec<Kit> {
+    let root = custom_root();
+    build_from(rate, root.as_deref())
+}
+
+fn build_from(rate: f64, custom_root: Option<&Path>) -> Vec<Kit> {
     let sr = rate as f32;
     KITS.iter()
         .enumerate()
@@ -125,14 +250,43 @@ pub fn build(rate: f64) -> Vec<Kit> {
                 .sounds()
                 .enumerate()
                 .map(|(n, name)| {
-                    let mono = sound(k, n, name, sr);
-                    KitSound {
-                        name,
-                        pitch: if name == "Kick" {
+                    if let Some(sample) =
+                        custom_root.and_then(|root| custom_sound(root, info.name, n, rate))
+                    {
+                        let pitch = if n == 0 {
+                            let mono: Vec<f32> = (0..sample.len())
+                                .map(|i| {
+                                    let [left, right] = sample.frame(i);
+                                    (left + right) * 0.5
+                                })
+                                .collect();
                             pitch_of(&mono, sr)
                         } else {
                             0.0
-                        },
+                        };
+                        return KitSound {
+                            name,
+                            sample: Arc::new(sample),
+                            pitch,
+                        };
+                    }
+                    if let Some(sample) = recorded_sound(k, n, rate) {
+                        return KitSound {
+                            name,
+                            sample: Arc::new(sample),
+                            pitch: 0.0,
+                        };
+                    }
+                    let source = native_source(k, n);
+                    let role = if k >= 6 {
+                        ROLES.get(n).copied().unwrap_or(name)
+                    } else {
+                        name
+                    };
+                    let mono = sound(source, n, role, sr);
+                    KitSound {
+                        name,
+                        pitch: if n == 0 { pitch_of(&mono, sr) } else { 0.0 },
                         sample: Arc::new(Sample::from_mono(&mono, rate)),
                     }
                 })
@@ -602,12 +756,16 @@ mod tests {
 
     #[test]
     fn every_kit_has_its_sounds_short_and_in_range() {
-        let kits = build(48_000.0);
+        let kits = build_from(48_000.0, None);
         assert_eq!(kits.len(), KITS.len());
-        for kit in &kits {
+        for (index, kit) in kits.iter().enumerate() {
             assert!(kit.sounds.len() <= MAX_SOUNDS, "{}", kit.name);
-            for (role, s) in ROLES.iter().zip(&kit.sounds) {
-                assert_eq!(*role, s.name, "{} plays the roles in order", kit.name);
+            for (name, s) in KITS[index].sounds().zip(&kit.sounds) {
+                assert_eq!(
+                    name, s.name,
+                    "{} plays the configured sounds in order",
+                    kit.name
+                );
             }
             for s in &kit.sounds {
                 assert!(!s.sample.is_empty(), "{} {}", kit.name, s.name);
@@ -626,8 +784,21 @@ mod tests {
     }
 
     #[test]
+    fn recorded_percussion_keeps_duration_at_each_output_rate() {
+        for rate in [44_100.0, 48_000.0] {
+            let high = recorded_sound(6, 6, rate).expect("agogo is recorded");
+            let expected = 23_646.0 / 44_100.0;
+            assert!((high.seconds() - expected).abs() <= 1.0 / rate);
+            assert!(recorded_sound(7, 2, rate).is_some());
+            assert!(recorded_sound(7, 3, rate).is_some());
+            assert!(recorded_sound(7, 11, rate).is_some());
+            assert!(recorded_sound(6, 0, rate).is_none());
+        }
+    }
+
+    #[test]
     fn every_kick_rings_at_a_low_note() {
-        for kit in build(48_000.0) {
+        for kit in build_from(48_000.0, None) {
             let hz = kit.sounds[0].pitch;
             assert!((30.0..120.0).contains(&hz), "{} kick at {hz} Hz", kit.name);
         }
@@ -637,5 +808,39 @@ mod tests {
     fn steps_parse_to_sixteen_bits() {
         assert_eq!(parse_steps("x...x...x...x..."), 0b0001_0001_0001_0001);
         assert_eq!(parse_steps("o.X."), 0b0101);
+    }
+
+    #[test]
+    fn custom_wav_replaces_one_sound_and_invalid_files_keep_the_builtin() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("opendj-kit-test-{}-{stamp}", std::process::id()));
+        let directory = root.join("Boom");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("00.wav");
+        std::fs::write(&path, include_bytes!("../data/kits/brasil/claves.wav")).unwrap();
+        std::fs::write(directory.join("01.wav"), b"invalid WAV").unwrap();
+        let builtin = build_from(48_000.0, None);
+        let custom = build_from(48_000.0, Some(&root));
+        let expected = Sample::load(&path, 48_000.0).unwrap();
+        assert_eq!(custom[2].sounds[0].sample.len(), expected.len());
+        for frame in 0..expected.len() {
+            assert_eq!(
+                custom[2].sounds[0].sample.frame(frame),
+                expected.frame(frame)
+            );
+        }
+        assert_eq!(
+            custom[2].sounds[1].sample.len(),
+            builtin[2].sounds[1].sample.len()
+        );
+        assert_eq!(
+            custom[3].sounds[0].sample.len(),
+            builtin[3].sounds[0].sample.len()
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

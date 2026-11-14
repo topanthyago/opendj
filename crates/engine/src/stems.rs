@@ -26,6 +26,8 @@ use symphonia::core::formats::{FormatOptions, FormatReader};
 use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
 use symphonia::core::meta::MetadataOptions;
 
+use crate::track::Audio;
+
 /// Stems per track, as in NI's format and Mixxx.
 pub const MAX_STEMS: usize = 5;
 
@@ -188,6 +190,66 @@ impl Stems {
 
     pub fn is_complete(&self) -> bool {
         self.complete.load(Ordering::Acquire)
+    }
+
+    /// Whether a finished separated cache contains signal consistent with the
+    /// source track. A silent result is valid for a genuinely silent source;
+    /// only reject it when a non-silent source would be replaced by silence.
+    pub(crate) fn matches_audio(audio: &Audio, stems: &Stems) -> bool {
+        if !audio.is_complete() || !stems.is_complete() || audio.sample_rate != stems.sample_rate {
+            return true;
+        }
+        let (input_sum, input_count) = audio.decoded_chunks().flatten().fold(
+            (0.0f64, 0usize),
+            |(sum, count), [left, right]| {
+                (
+                    sum + f64::from(*left) * f64::from(*left)
+                        + f64::from(*right) * f64::from(*right),
+                    count + 2,
+                )
+            },
+        );
+        let input_rms = (input_sum / input_count.max(1) as f64).sqrt();
+        if input_rms <= 1.0e-7 {
+            return true;
+        }
+        let (output_sum, output_count) = stems
+            .chunks
+            .iter()
+            .filter_map(|chunk| chunk.get())
+            .flatten()
+            .fold((0.0f64, 0usize), |(sum, count), frame| {
+                let (sum, count) = frame.iter().take(stems.info.len()).fold(
+                    (sum, count),
+                    |(sum, count), [left, right]| {
+                        let left = f64::from(*left) / 32_768.0;
+                        let right = f64::from(*right) / 32_768.0;
+                        (sum + left * left + right * right, count + 2)
+                    },
+                );
+                (sum, count)
+            });
+        let output_rms = (output_sum / output_count.max(1) as f64).sqrt();
+        if output_rms < input_rms * 1.0e-3 {
+            eprintln!(
+                "ignoring silent stem cache: input RMS {input_rms:.3e}, output RMS {output_rms:.3e}"
+            );
+            false
+        } else {
+            true
+        }
+    }
+
+    /// Validates a cache source without mutating or deleting it. This is used
+    /// by explicit high-quality separation requests before deciding whether a
+    /// pre-existing cache can be reused.
+    pub(crate) fn cache_matches_audio(audio: &Audio, source: &StemSource) -> bool {
+        match source {
+            StemSource::NiStem(_) => true,
+            StemSource::Files(_) => Decode::open(source)
+                .and_then(|decode| decode.run(|| true))
+                .is_ok_and(|stems| Stems::matches_audio(audio, &stems)),
+        }
     }
 
     /// The mix of frame `i` with each stem scaled by its gain. Separated
@@ -454,6 +516,18 @@ pub fn find(path: &Path) -> Option<StemSource> {
         .iter()
         .all(|f| f.is_file())
         .then_some(StemSource::Files(files))
+}
+
+/// Finds a cache source only when it is usable for the current input. This is
+/// intentionally separate from [`find`], which remains a cheap existence
+/// check for callers that only need to inspect cache state.
+pub(crate) fn find_valid(path: &Path) -> Option<StemSource> {
+    let source = find(path)?;
+    let StemSource::Files(_) = &source else {
+        return Some(source);
+    };
+    let audio = crate::decode::decode(path).ok()?;
+    Stems::cache_matches_audio(&audio, &source).then_some(source)
 }
 
 /// Whether `path` is named like an NI STEM file.
@@ -879,7 +953,10 @@ pub fn separate(path: &Path, done: impl FnOnce(Result<StemSource, String>) + Sen
                 // One at a time: each takes the GPU (or every core).
                 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
                 let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-                let result = crate::separation::separate_hq(&path);
+                let result = match find_valid(&path) {
+                    Some(source) => Ok(source),
+                    None => crate::separation::separate_hq(&path),
+                };
                 set_job(
                     &path,
                     match &result {
@@ -927,7 +1004,7 @@ pub(crate) fn run_demucs(path: &Path) -> Result<StemSource, String> {
         let _ = std::fs::remove_dir_all(&work);
         return Err("Demucs finished but left no stems".into());
     }
-    let _ = std::fs::remove_dir_all(&dir);
+    crate::separation::preserve_old_stems(&dir)?;
     std::fs::rename(&made, &dir).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_dir_all(&work);
     Ok(StemSource::Files(separated_files(&dir)))
@@ -1030,5 +1107,15 @@ mod tests {
         assert!(is_ni_stem(Path::new("/m/Track.stem.mp4")));
         assert!(is_ni_stem(Path::new("/m/Track.STEM.M4A")));
         assert!(!is_ni_stem(Path::new("/m/Track.mp4")));
+    }
+
+    #[test]
+    fn silent_cache_is_rejected_only_for_audible_input() {
+        let audible = Audio::from_frames(1000, vec![[0.5, -0.5]; 1000]);
+        let silent = Audio::from_frames(1000, vec![[0.0, 0.0]; 1000]);
+        let empty = vec![[[0.0, 0.0]; MAX_STEMS]; 1000];
+        let stems = Stems::from_frames(default_info(), 1000, &empty);
+        assert!(!Stems::matches_audio(&audible, &stems));
+        assert!(Stems::matches_audio(&silent, &stems));
     }
 }

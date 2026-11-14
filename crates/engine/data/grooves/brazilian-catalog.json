@@ -1,0 +1,3859 @@
+{
+  "schemaVersion": 1,
+  "id": "brasil-performance-01",
+  "version": "1.0.0",
+  "title": "Brasil · Ritmos para performance",
+  "patternLicense": "CC0-1.0",
+  "engine": {
+    "stepsPerBar": 16,
+    "beatsPerBar": 4,
+    "slots": [
+      "A",
+      "B",
+      "C",
+      "D"
+    ],
+    "roles": [
+      "kick",
+      "snare",
+      "closed-hat",
+      "open-hat",
+      "clap",
+      "rim",
+      "cowbell",
+      "crash",
+      "ride"
+    ],
+    "simultaneousRows": 8,
+    "genreIndexBase": 21,
+    "indexBaseNote": "genreIndex é 0-based no snapshot openDJ 0.6.0. nativeIndex é 1-based dentro do gênero. Resolver gênero por genreName ao integrar outras versões."
+  },
+  "authorship": {
+    "method": "Padrões originais com variações escritas e fixas. Referências de cenas e repertório consultadas por metadados.",
+    "referenceAudioAnalysis": false,
+    "measuredReferenceBpm": false,
+    "scope": "Nomes regionais organizam a biblioteca por cenas solicitadas. Cada set é um arranjo de performance com seus próprios parâmetros."
+  },
+  "performance": {
+    "defaultSlot": "A",
+    "defaultFillStyle": 1,
+    "defaultAutoFillMode": 1,
+    "defaultManualFillEveryBars": 8,
+    "defaultVary": 0.0,
+    "rowLevelHeadroomDb": 2.5,
+    "notes": [
+      "B reduz a densidade e mantém pontos de apoio de A.",
+      "C é uma resposta rítmica fixa. D faz virada ou pausa e deve voltar para A na passagem seguinte.",
+      "O chain A/B estende a frase a dois compassos 4/4. O uso manual de D permite escolher a virada.",
+      "As síncopes e acentos do samba são uma adaptação eletrônica de duas unidades 2/4 em uma grade 4/4."
+    ]
+  },
+  "families": [
+    {
+      "id": "funk-pr",
+      "name": "Funk PR",
+      "region": "PR",
+      "genreName": "Funk PR",
+      "genreIndex": 21,
+      "referenceIds": [
+        "yt-funk-pr-curitiba-lro8pr"
+      ],
+      "sets": [
+        {
+          "id": "pr-tum-dum",
+          "name": "Tum dum",
+          "bpm": 128,
+          "swing": 0.04,
+          "description": "Bumbo em quatro, rebote curto e aro respondendo ao grave.",
+          "fillStyle": 1,
+          "fillDescription": "Aro e caixa fazem uma chamada no último tempo.",
+          "librarySetIndex": 0,
+          "index": 0,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "pr-tum-dum-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Tum dum A",
+              "rows": {
+                "kick": "X...x...X...x.x.",
+                "snare": "....x.......x...",
+                "closed-hat": "..x...x...x...xo",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "...x..x....x..x.",
+                "cowbell": "x......x..x.....",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 1,
+              "nativeTextId": "Funk PR/Tum dum A",
+              "eventCount": 19
+            },
+            {
+              "id": "pr-tum-dum-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Tum dum B",
+              "rows": {
+                "kick": "X...x...X...x...",
+                "snare": "....x.......x...",
+                "closed-hat": "..o...x...o...x.",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "...x.......x....",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 2,
+              "nativeTextId": "Funk PR/Tum dum B",
+              "eventCount": 12
+            },
+            {
+              "id": "pr-tum-dum-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Tum dum C",
+              "rows": {
+                "kick": "X...x.x.X.....x.",
+                "snare": "....x..o....X...",
+                "closed-hat": "..x...x...x...xo",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "...x..x..x....xo",
+                "cowbell": "x......x......x.",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 3,
+              "nativeTextId": "Funk PR/Tum dum C",
+              "eventCount": 21
+            },
+            {
+              "id": "pr-tum-dum-d",
+              "slot": "D",
+              "role": "fill",
+              "name": "Virada",
+              "nativeName": "Tum dum D",
+              "rows": {
+                "kick": "X...x...X.......",
+                "snare": "....x.......x.ox",
+                "closed-hat": "..x...x...x.....",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "...x..x....x.ox.",
+                "cowbell": "x......x........",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 4,
+              "nativeTextId": "Funk PR/Tum dum D",
+              "eventCount": 17
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 6,
+          "kitName": "BrasilFunk",
+          "nativeFallbackKitIndex": 1,
+          "bpmBasis": "Escolha de performance para este arranjo original",
+          "rowLevels": [
+            0.451,
+            0.275,
+            0.149,
+            0.138,
+            0.215,
+            0.215,
+            0.149,
+            0.099
+          ],
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Closed hat",
+            "Open hat",
+            "Clap",
+            "Claves",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/pr-tum-dum.json"
+        },
+        {
+          "id": "pr-recorte",
+          "name": "Recorte",
+          "bpm": 130,
+          "swing": 0.02,
+          "description": "Grave recortado com resposta seca e espaço entre frases.",
+          "fillStyle": 1,
+          "fillDescription": "O último tempo fica em silêncio para a entrada seguinte.",
+          "librarySetIndex": 1,
+          "index": 1,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "pr-recorte-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Recorte A",
+              "rows": {
+                "kick": "X..x......X...x.",
+                "snare": "..x...X.....x...",
+                "closed-hat": "x.o.x.o.x.o.x.o.",
+                "open-hat": "................",
+                "clap": "..............o.",
+                "rim": "...x...x.x.....x",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 5,
+              "nativeTextId": "Funk PR/Recorte A",
+              "eventCount": 20
+            },
+            {
+              "id": "pr-recorte-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Recorte B",
+              "rows": {
+                "kick": "X.........X.....",
+                "snare": "..x...X.....x...",
+                "closed-hat": "x...x...x...x...",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "...x.....x......",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 6,
+              "nativeTextId": "Funk PR/Recorte B",
+              "eventCount": 11
+            },
+            {
+              "id": "pr-recorte-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Recorte C",
+              "rows": {
+                "kick": "X..x......X..ox.",
+                "snare": "..x...X...o.x...",
+                "closed-hat": "x.o.x.o.x.o.x.o.",
+                "open-hat": "................",
+                "clap": "..............o.",
+                "rim": "...x.o.x.x....x.",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 7,
+              "nativeTextId": "Funk PR/Recorte C",
+              "eventCount": 23
+            },
+            {
+              "id": "pr-recorte-d",
+              "slot": "D",
+              "role": "break",
+              "name": "Pausa",
+              "nativeName": "Recorte D",
+              "rows": {
+                "kick": "X..x......X.....",
+                "snare": "..x...X.........",
+                "closed-hat": "x.o.x.o.x.o.....",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "...x...x.x......",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 8,
+              "nativeTextId": "Funk PR/Recorte D",
+              "eventCount": 14
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 6,
+          "kitName": "BrasilFunk",
+          "nativeFallbackKitIndex": 1,
+          "bpmBasis": "Escolha de performance para este arranjo original",
+          "rowLevels": [
+            0.451,
+            0.275,
+            0.149,
+            0.138,
+            0.215,
+            0.215,
+            0.149,
+            0.099
+          ],
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Closed hat",
+            "Open hat",
+            "Clap",
+            "Claves",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/pr-recorte.json"
+        },
+        {
+          "id": "pr-rodagem",
+          "name": "Rodagem",
+          "bpm": 132,
+          "swing": 0.03,
+          "description": "Frase quebrada de grave com pequenos impulsos de chimbal.",
+          "fillStyle": 1,
+          "fillDescription": "Uma resposta de caixa ocupa os dois últimos tempos com acento final.",
+          "librarySetIndex": 2,
+          "index": 2,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "pr-rodagem-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Rodagem A",
+              "rows": {
+                "kick": "X.....x.X..x..x.",
+                "snare": "....X.......x..o",
+                "closed-hat": "..x..ox...x..ox.",
+                "open-hat": "..............x.",
+                "clap": "................",
+                "rim": "...x..x....x...x",
+                "cowbell": "....x.......x...",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 9,
+              "nativeTextId": "Funk PR/Rodagem A",
+              "eventCount": 21
+            },
+            {
+              "id": "pr-rodagem-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Rodagem B",
+              "rows": {
+                "kick": "X.....x.X.......",
+                "snare": "....X.......x..o",
+                "closed-hat": "..x...x...x...x.",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "...x.......x....",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 10,
+              "nativeTextId": "Funk PR/Rodagem B",
+              "eventCount": 12
+            },
+            {
+              "id": "pr-rodagem-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Rodagem C",
+              "rows": {
+                "kick": "X..o..x.X....ox.",
+                "snare": "....X......ox...",
+                "closed-hat": "..x..ox...x..ox.",
+                "open-hat": "..............x.",
+                "clap": "................",
+                "rim": "...x.ox..x.....x",
+                "cowbell": "....x.....o.x...",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 11,
+              "nativeTextId": "Funk PR/Rodagem C",
+              "eventCount": 24
+            },
+            {
+              "id": "pr-rodagem-d",
+              "slot": "D",
+              "role": "fill",
+              "name": "Virada",
+              "nativeName": "Rodagem D",
+              "rows": {
+                "kick": "X.....x.X.......",
+                "snare": "....X.....ox.ox.",
+                "closed-hat": "..x..ox...x.....",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "...x..x........X",
+                "cowbell": "....x...........",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 12,
+              "nativeTextId": "Funk PR/Rodagem D",
+              "eventCount": 16
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 6,
+          "kitName": "BrasilFunk",
+          "nativeFallbackKitIndex": 1,
+          "bpmBasis": "Escolha de performance para este arranjo original",
+          "rowLevels": [
+            0.451,
+            0.275,
+            0.149,
+            0.138,
+            0.215,
+            0.215,
+            0.149,
+            0.099
+          ],
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            10,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Closed hat",
+            "Open hat",
+            "Clap",
+            "Conga aberta",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/pr-rodagem.json"
+        }
+      ]
+    },
+    {
+      "id": "funk-sp",
+      "name": "Funk SP",
+      "region": "SP",
+      "genreName": "Funk SP",
+      "genreIndex": 22,
+      "referenceIds": [
+        "yt-funk-sp-mandelao-viral-musc"
+      ],
+      "sets": [
+        {
+          "id": "sp-mandelao",
+          "name": "Mandelão",
+          "bpm": 130,
+          "swing": 0.0,
+          "description": "Grave espaçado com aro em células de três e caixa deslocada.",
+          "fillStyle": 1,
+          "fillDescription": "Resposta curta de aro e caixa no último tempo.",
+          "librarySetIndex": 0,
+          "index": 0,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "sp-mandelao-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Mandelão A",
+              "rows": {
+                "kick": "X.......X.....x.",
+                "snare": "...x..X....x..X.",
+                "closed-hat": "..o...x...o...x.",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "x..x..x.x..x..x.",
+                "cowbell": ".......o.......x",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 1,
+              "nativeTextId": "Funk SP/Mandelão A",
+              "eventCount": 19
+            },
+            {
+              "id": "sp-mandelao-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Mandelão B",
+              "rows": {
+                "kick": "X.......X.......",
+                "snare": "......X.......X.",
+                "closed-hat": "......x.......x.",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "x.....x.x.......",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 2,
+              "nativeTextId": "Funk SP/Mandelão B",
+              "eventCount": 9
+            },
+            {
+              "id": "sp-mandelao-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Mandelão C",
+              "rows": {
+                "kick": "X......xX.......",
+                "snare": "...x..Xo...x..X.",
+                "closed-hat": "..o...x...o...x.",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "x..x.ox.x....ox.",
+                "cowbell": ".......x......o.",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 3,
+              "nativeTextId": "Funk SP/Mandelão C",
+              "eventCount": 21
+            },
+            {
+              "id": "sp-mandelao-d",
+              "slot": "D",
+              "role": "fill",
+              "name": "Virada",
+              "nativeName": "Mandelão D",
+              "rows": {
+                "kick": "X.......X.......",
+                "snare": "...x..X....x..ox",
+                "closed-hat": "..o...x...o.....",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "x..x..x.x...x.oX",
+                "cowbell": ".......o........",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 4,
+              "nativeTextId": "Funk SP/Mandelão D",
+              "eventCount": 18
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 6,
+          "kitName": "BrasilFunk",
+          "nativeFallbackKitIndex": 1,
+          "bpmBasis": "Escolha de performance para este arranjo original. Títulos da referência também indicam 130 ou 132 BPM",
+          "rowLevels": [
+            0.451,
+            0.275,
+            0.149,
+            0.138,
+            0.215,
+            0.215,
+            0.149,
+            0.099
+          ],
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Closed hat",
+            "Open hat",
+            "Clap",
+            "Claves",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/sp-mandelao.json"
+        },
+        {
+          "id": "sp-fluxo",
+          "name": "Fluxo",
+          "bpm": 132,
+          "swing": 0.015,
+          "description": "Duas chamadas de grave alternam com caixa seca e aro entre elas.",
+          "fillStyle": 1,
+          "fillDescription": "Quatro caixas em dinâmica crescente fecham a frase, com o grave livre.",
+          "librarySetIndex": 1,
+          "index": 1,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "sp-fluxo-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Fluxo A",
+              "rows": {
+                "kick": "X..x....X.x.....",
+                "snare": "..x...X...x...X.",
+                "closed-hat": "..x....o..x....o",
+                "open-hat": "................",
+                "clap": "..............o.",
+                "rim": "...x.x.....x.x..",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 5,
+              "nativeTextId": "Funk SP/Fluxo A",
+              "eventCount": 17
+            },
+            {
+              "id": "sp-fluxo-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Fluxo B",
+              "rows": {
+                "kick": "X.......X.......",
+                "snare": "......X.......X.",
+                "closed-hat": "..o.......o.....",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "...x.......x....",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 6,
+              "nativeTextId": "Funk SP/Fluxo B",
+              "eventCount": 8
+            },
+            {
+              "id": "sp-fluxo-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Fluxo C",
+              "rows": {
+                "kick": "X..x..o.X......x",
+                "snare": "..x...X..ox...X.",
+                "closed-hat": "..x....o..x....o",
+                "open-hat": "................",
+                "clap": "..............o.",
+                "rim": "...x.x.o..x..x..",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 7,
+              "nativeTextId": "Funk SP/Fluxo C",
+              "eventCount": 20
+            },
+            {
+              "id": "sp-fluxo-d",
+              "slot": "D",
+              "role": "fill",
+              "name": "Virada",
+              "nativeName": "Fluxo D",
+              "rows": {
+                "kick": "X..x....X.......",
+                "snare": "..x...X...o.xoxX",
+                "closed-hat": "..x....o..x.....",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "...x.x.....x....",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 8,
+              "nativeTextId": "Funk SP/Fluxo D",
+              "eventCount": 16
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 6,
+          "kitName": "BrasilFunk",
+          "nativeFallbackKitIndex": 1,
+          "bpmBasis": "Escolha de performance para este arranjo original. Títulos da referência também indicam 130 ou 132 BPM",
+          "rowLevels": [
+            0.451,
+            0.275,
+            0.149,
+            0.138,
+            0.215,
+            0.215,
+            0.149,
+            0.099
+          ],
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Closed hat",
+            "Open hat",
+            "Clap",
+            "Claves",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/sp-fluxo.json"
+        },
+        {
+          "id": "sp-sombra",
+          "name": "Sombra",
+          "bpm": 130,
+          "swing": 0.0,
+          "description": "Arranjo econômico com o segundo grave atrasado e alternância de metais.",
+          "fillStyle": 1,
+          "fillDescription": "Um tempo de silêncio pontua a passagem para A.",
+          "librarySetIndex": 2,
+          "index": 2,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "sp-sombra-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Sombra A",
+              "rows": {
+                "kick": "X.........X.....",
+                "snare": "......x.......X.",
+                "closed-hat": "...o..x....o..x.",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "x..x...x..x....x",
+                "cowbell": "....x.......x...",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 9,
+              "nativeTextId": "Funk SP/Sombra A",
+              "eventCount": 15
+            },
+            {
+              "id": "sp-sombra-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Sombra B",
+              "rows": {
+                "kick": "X.........X.....",
+                "snare": "......x.......X.",
+                "closed-hat": "......o.......o.",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "x......x.......x",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 10,
+              "nativeTextId": "Funk SP/Sombra B",
+              "eventCount": 9
+            },
+            {
+              "id": "sp-sombra-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Sombra C",
+              "rows": {
+                "kick": "X......o..X.....",
+                "snare": "......x....o..X.",
+                "closed-hat": "...o..x....o..x.",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "x..x.o.x..x..o.x",
+                "cowbell": "..o.x.......x...",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 11,
+              "nativeTextId": "Funk SP/Sombra C",
+              "eventCount": 20
+            },
+            {
+              "id": "sp-sombra-d",
+              "slot": "D",
+              "role": "break",
+              "name": "Pausa",
+              "nativeName": "Sombra D",
+              "rows": {
+                "kick": "X.........X.....",
+                "snare": "......x.........",
+                "closed-hat": "...o..x....o....",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "x..x...x..x.....",
+                "cowbell": "....x...........",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 12,
+              "nativeTextId": "Funk SP/Sombra D",
+              "eventCount": 11
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 6,
+          "kitName": "BrasilFunk",
+          "nativeFallbackKitIndex": 1,
+          "bpmBasis": "Escolha de performance para este arranjo original. Títulos da referência também indicam 130 ou 132 BPM",
+          "rowLevels": [
+            0.451,
+            0.275,
+            0.149,
+            0.138,
+            0.215,
+            0.215,
+            0.149,
+            0.099
+          ],
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Closed hat",
+            "Open hat",
+            "Clap",
+            "Claves",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/sp-sombra.json"
+        }
+      ]
+    },
+    {
+      "id": "funk-sc",
+      "name": "Funk SC",
+      "region": "SC",
+      "genreName": "Funk SC",
+      "genreIndex": 23,
+      "referenceIds": [
+        "yt-funk-sc-ritmo-de-sc"
+      ],
+      "sets": [
+        {
+          "id": "sc-mega",
+          "name": "Mega",
+          "bpm": 128,
+          "swing": 0.035,
+          "description": "Bumbo contínuo, chimbal em contratempo e resposta seca de aro.",
+          "fillStyle": 1,
+          "fillDescription": "Caixa e aro abrem espaço para o primeiro bumbo de A.",
+          "librarySetIndex": 0,
+          "index": 0,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "sc-mega-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Mega A",
+              "rows": {
+                "kick": "X...x...X...x...",
+                "snare": "....x.......X...",
+                "closed-hat": "xo.oxo.oxo.oxo.o",
+                "open-hat": "..x...x...x...x.",
+                "clap": "....x.......x...",
+                "rim": "...x..x....x....",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 1,
+              "nativeTextId": "Funk SC/Mega A",
+              "eventCount": 27
+            },
+            {
+              "id": "sc-mega-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Mega B",
+              "rows": {
+                "kick": "X...x...X...x...",
+                "snare": "....o.......x...",
+                "closed-hat": "x...x...x...x...",
+                "open-hat": "..x.......x.....",
+                "clap": "............x...",
+                "rim": "...x.......x....",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 2,
+              "nativeTextId": "Funk SC/Mega B",
+              "eventCount": 15
+            },
+            {
+              "id": "sc-mega-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Mega C",
+              "rows": {
+                "kick": "X...x...X..x..x.",
+                "snare": "....x.......X...",
+                "closed-hat": "xo.oxoooxo.oxooo",
+                "open-hat": "..x...x...x...x.",
+                "clap": "....x.......x...",
+                "rim": "...x..x..ox...x.",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 3,
+              "nativeTextId": "Funk SC/Mega C",
+              "eventCount": 32
+            },
+            {
+              "id": "sc-mega-d",
+              "slot": "D",
+              "role": "fill",
+              "name": "Virada",
+              "nativeName": "Mega D",
+              "rows": {
+                "kick": "X...x...X.......",
+                "snare": "....x.......xox.",
+                "closed-hat": "xo.oxo.oxo.ox...",
+                "open-hat": "..x...x...x.....",
+                "clap": "....x...........",
+                "rim": "...x..x....x...X",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 4,
+              "nativeTextId": "Funk SC/Mega D",
+              "eventCount": 25
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 6,
+          "kitName": "BrasilFunk",
+          "nativeFallbackKitIndex": 1,
+          "bpmBasis": "Escolha de performance para este arranjo original",
+          "rowLevels": [
+            0.451,
+            0.275,
+            0.149,
+            0.138,
+            0.215,
+            0.215,
+            0.149,
+            0.099
+          ],
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Closed hat",
+            "Open hat",
+            "Clap",
+            "Claves",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/sc-mega.json"
+        },
+        {
+          "id": "sc-contratempo",
+          "name": "Contratempo",
+          "bpm": 130,
+          "swing": 0.075,
+          "description": "Contratempos com balanço moderado e variação de bumbo no fim.",
+          "fillStyle": 1,
+          "fillDescription": "A percussão recua e a caixa chama a próxima volta.",
+          "librarySetIndex": 1,
+          "index": 1,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "sc-contratempo-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Contratempo A",
+              "rows": {
+                "kick": "X...x..oX.....x.",
+                "snare": "....X.......x...",
+                "closed-hat": "x.oxx.oxx.oxx.ox",
+                "open-hat": "..x.......x.....",
+                "clap": "............X...",
+                "rim": "................",
+                "cowbell": "...x..x....x..x.",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 5,
+              "nativeTextId": "Funk SC/Contratempo A",
+              "eventCount": 26
+            },
+            {
+              "id": "sc-contratempo-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Contratempo B",
+              "rows": {
+                "kick": "X...x...X.......",
+                "snare": "....X.......x...",
+                "closed-hat": "x.o.x.o.x.o.x.o.",
+                "open-hat": "................",
+                "clap": "............o...",
+                "rim": "................",
+                "cowbell": "...x.......x....",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 6,
+              "nativeTextId": "Funk SC/Contratempo B",
+              "eventCount": 16
+            },
+            {
+              "id": "sc-contratempo-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Contratempo C",
+              "rows": {
+                "kick": "X.....x.X...x..o",
+                "snare": "....X.....o.x...",
+                "closed-hat": "x.oxx.oxx.oxx.ox",
+                "open-hat": "..x.......x.....",
+                "clap": "............X...",
+                "rim": "................",
+                "cowbell": "...x.ox....x.ox.",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 7,
+              "nativeTextId": "Funk SC/Contratempo C",
+              "eventCount": 29
+            },
+            {
+              "id": "sc-contratempo-d",
+              "slot": "D",
+              "role": "fill",
+              "name": "Virada",
+              "nativeName": "Contratempo D",
+              "rows": {
+                "kick": "X...x..oX.......",
+                "snare": "....X.......X.ox",
+                "closed-hat": "x.oxx.oxx.o.....",
+                "open-hat": "..x.......x.....",
+                "clap": "................",
+                "rim": "................",
+                "cowbell": "...x..x....x....",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 8,
+              "nativeTextId": "Funk SC/Contratempo D",
+              "eventCount": 21
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 6,
+          "kitName": "BrasilFunk",
+          "nativeFallbackKitIndex": 1,
+          "bpmBasis": "Escolha de performance para este arranjo original",
+          "rowLevels": [
+            0.451,
+            0.275,
+            0.149,
+            0.138,
+            0.215,
+            0.215,
+            0.149,
+            0.099
+          ],
+          "rowSounds": [
+            0,
+            1,
+            9,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Cabasa",
+            "Open hat",
+            "Clap",
+            "Claves",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/sc-contratempo.json"
+        },
+        {
+          "id": "sc-pista",
+          "name": "Pista",
+          "bpm": 132,
+          "swing": 0.02,
+          "description": "Pulso cheio com antecipações de grave e textura de semicolcheias baixas.",
+          "fillStyle": 1,
+          "fillDescription": "Uma única subida de caixa no último tempo finaliza a frase.",
+          "librarySetIndex": 2,
+          "index": 2,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "sc-pista-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Pista A",
+              "rows": {
+                "kick": "X...x...X.x.x...",
+                "snare": "....X.......X...",
+                "closed-hat": "xoxoxoxoxoxoxoxo",
+                "open-hat": "..x...x...x...x.",
+                "clap": "................",
+                "rim": "...x...x.x....x.",
+                "cowbell": "........x.......",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 9,
+              "nativeTextId": "Funk SC/Pista A",
+              "eventCount": 32
+            },
+            {
+              "id": "sc-pista-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Pista B",
+              "rows": {
+                "kick": "X...x...X...x...",
+                "snare": "....X.......X...",
+                "closed-hat": "x.o.x.o.x.o.x.o.",
+                "open-hat": "..x.......x.....",
+                "clap": "................",
+                "rim": ".......x......x.",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 10,
+              "nativeTextId": "Funk SC/Pista B",
+              "eventCount": 18
+            },
+            {
+              "id": "sc-pista-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Pista C",
+              "rows": {
+                "kick": "X...x..xX...x.o.",
+                "snare": "....X..o....X...",
+                "closed-hat": "xoxoxoxoxoxoxoxo",
+                "open-hat": "..x...x...x...x.",
+                "clap": "................",
+                "rim": "...x.o.x.x....xo",
+                "cowbell": "........x.......",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 11,
+              "nativeTextId": "Funk SC/Pista C",
+              "eventCount": 36
+            },
+            {
+              "id": "sc-pista-d",
+              "slot": "D",
+              "role": "fill",
+              "name": "Virada",
+              "nativeName": "Pista D",
+              "rows": {
+                "kick": "X...x...X.......",
+                "snare": "....X......oxoxX",
+                "closed-hat": "xoxoxoxox.o.....",
+                "open-hat": "..x...x...x.....",
+                "clap": "................",
+                "rim": "...x...x........",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 12,
+              "nativeTextId": "Funk SC/Pista D",
+              "eventCount": 24
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 6,
+          "kitName": "BrasilFunk",
+          "nativeFallbackKitIndex": 1,
+          "bpmBasis": "Escolha de performance para este arranjo original",
+          "rowLevels": [
+            0.451,
+            0.275,
+            0.149,
+            0.138,
+            0.215,
+            0.215,
+            0.149,
+            0.099
+          ],
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Closed hat",
+            "Open hat",
+            "Clap",
+            "Claves",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/sc-pista.json"
+        }
+      ]
+    },
+    {
+      "id": "funk-mg",
+      "name": "Funk MG",
+      "region": "MG",
+      "genreName": "Funk MG",
+      "genreIndex": 24,
+      "referenceIds": [
+        "yt-funk-mg-mtg-coyotenobeat"
+      ],
+      "sets": [
+        {
+          "id": "mg-montagem",
+          "name": "Montagem",
+          "bpm": 130,
+          "swing": 0.02,
+          "description": "Três pontos de grave sustentam caixa e aro com espaço para montagem.",
+          "fillStyle": 1,
+          "fillDescription": "Aro em resposta no último tempo mantém a caixa principal livre.",
+          "librarySetIndex": 0,
+          "index": 0,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "mg-montagem-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Montagem A",
+              "rows": {
+                "kick": "X.....x.....X...",
+                "snare": "..x.......X....x",
+                "closed-hat": "..x...o...x...o.",
+                "open-hat": "................",
+                "clap": "......o.........",
+                "rim": "...x.x.....x.x..",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 1,
+              "nativeTextId": "Funk MG/Montagem A",
+              "eventCount": 15
+            },
+            {
+              "id": "mg-montagem-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Montagem B",
+              "rows": {
+                "kick": "X...........X...",
+                "snare": "..x.......X.....",
+                "closed-hat": "..o.......o.....",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "...x.......x....",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 2,
+              "nativeTextId": "Funk MG/Montagem B",
+              "eventCount": 8
+            },
+            {
+              "id": "mg-montagem-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Montagem C",
+              "rows": {
+                "kick": "X.....x....oX...",
+                "snare": "..x....o..X...ox",
+                "closed-hat": "..x...o...x...o.",
+                "open-hat": "................",
+                "clap": "......o.........",
+                "rim": "...x.x.o..x..x..",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 3,
+              "nativeTextId": "Funk MG/Montagem C",
+              "eventCount": 19
+            },
+            {
+              "id": "mg-montagem-d",
+              "slot": "D",
+              "role": "fill",
+              "name": "Virada",
+              "nativeName": "Montagem D",
+              "rows": {
+                "kick": "X.....x.....X...",
+                "snare": "..x.......X.....",
+                "closed-hat": "..x...o...x.....",
+                "open-hat": "................",
+                "clap": "......o.........",
+                "rim": "...x.x.....xx.oX",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 4,
+              "nativeTextId": "Funk MG/Montagem D",
+              "eventCount": 15
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 6,
+          "kitName": "BrasilFunk",
+          "nativeFallbackKitIndex": 1,
+          "bpmBasis": "Escolha de performance para este arranjo original",
+          "rowLevels": [
+            0.451,
+            0.275,
+            0.149,
+            0.138,
+            0.215,
+            0.215,
+            0.149,
+            0.099
+          ],
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Closed hat",
+            "Open hat",
+            "Clap",
+            "Claves",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/mg-montagem.json"
+        },
+        {
+          "id": "mg-bh-seco",
+          "name": "BH seco",
+          "bpm": 128,
+          "swing": 0.01,
+          "description": "Grave com rebote inicial e caixa seca perto do fim de cada metade.",
+          "fillStyle": 1,
+          "fillDescription": "A última caixa sai e o último tempo fica aberto.",
+          "librarySetIndex": 1,
+          "index": 1,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "mg-bh-seco-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "BH seco A",
+              "rows": {
+                "kick": "X..x....X.....x.",
+                "snare": "......X.......X.",
+                "closed-hat": "x..ox..ox..ox..o",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "..x....x..x....x",
+                "cowbell": "....x...........",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 5,
+              "nativeTextId": "Funk MG/BH seco A",
+              "eventCount": 19
+            },
+            {
+              "id": "mg-bh-seco-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "BH seco B",
+              "rows": {
+                "kick": "X.......X.......",
+                "snare": "......X.......X.",
+                "closed-hat": "x.......x.......",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "..x.......x.....",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 6,
+              "nativeTextId": "Funk MG/BH seco B",
+              "eventCount": 8
+            },
+            {
+              "id": "mg-bh-seco-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "BH seco C",
+              "rows": {
+                "kick": "X..x...oX....ox.",
+                "snare": "......X....o..X.",
+                "closed-hat": "x..ox..ox..ox..o",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "..x..o.x..x...x.",
+                "cowbell": "....x...........",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 7,
+              "nativeTextId": "Funk MG/BH seco C",
+              "eventCount": 23
+            },
+            {
+              "id": "mg-bh-seco-d",
+              "slot": "D",
+              "role": "break",
+              "name": "Pausa",
+              "nativeName": "BH seco D",
+              "rows": {
+                "kick": "X..x....X.......",
+                "snare": "......X.........",
+                "closed-hat": "x..ox..ox.......",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "..x....x..x.....",
+                "cowbell": "....x...........",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 8,
+              "nativeTextId": "Funk MG/BH seco D",
+              "eventCount": 13
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 6,
+          "kitName": "BrasilFunk",
+          "nativeFallbackKitIndex": 1,
+          "bpmBasis": "Escolha de performance para este arranjo original",
+          "rowLevels": [
+            0.451,
+            0.275,
+            0.149,
+            0.138,
+            0.215,
+            0.215,
+            0.149,
+            0.099
+          ],
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Closed hat",
+            "Open hat",
+            "Clap",
+            "Claves",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/mg-bh-seco.json"
+        },
+        {
+          "id": "mg-dobrado",
+          "name": "Dobrado",
+          "bpm": 132,
+          "swing": 0.025,
+          "description": "Dois grupos de graves alternam com a resposta aguda.",
+          "fillStyle": 1,
+          "fillDescription": "Caixa e aro alternados nos quatro últimos passos.",
+          "librarySetIndex": 2,
+          "index": 2,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "mg-dobrado-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Dobrado A",
+              "rows": {
+                "kick": "X...x.x.....X.x.",
+                "snare": "..x.......x....x",
+                "closed-hat": "..x...x...x...ox",
+                "open-hat": "..............o.",
+                "clap": "................",
+                "rim": "...x..x....x..x.",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 9,
+              "nativeTextId": "Funk MG/Dobrado A",
+              "eventCount": 18
+            },
+            {
+              "id": "mg-dobrado-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Dobrado B",
+              "rows": {
+                "kick": "X...x.......X...",
+                "snare": "..x.......x....x",
+                "closed-hat": "..x.......x.....",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "...x.......x....",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 10,
+              "nativeTextId": "Funk MG/Dobrado B",
+              "eventCount": 10
+            },
+            {
+              "id": "mg-dobrado-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Dobrado C",
+              "rows": {
+                "kick": "X...x.x...o.X...",
+                "snare": "..x...o...x....X",
+                "closed-hat": "..x...x...x...ox",
+                "open-hat": "..............o.",
+                "clap": "................",
+                "rim": "...x.ox..x....x.",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 11,
+              "nativeTextId": "Funk MG/Dobrado C",
+              "eventCount": 20
+            },
+            {
+              "id": "mg-dobrado-d",
+              "slot": "D",
+              "role": "fill",
+              "name": "Virada",
+              "nativeName": "Dobrado D",
+              "rows": {
+                "kick": "X...x.x.....X...",
+                "snare": "..x.......x...ox",
+                "closed-hat": "..x...x...x.....",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "...x..x.....x.x.",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 12,
+              "nativeTextId": "Funk MG/Dobrado D",
+              "eventCount": 15
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 6,
+          "kitName": "BrasilFunk",
+          "nativeFallbackKitIndex": 1,
+          "bpmBasis": "Escolha de performance para este arranjo original",
+          "rowLevels": [
+            0.451,
+            0.275,
+            0.149,
+            0.138,
+            0.215,
+            0.215,
+            0.149,
+            0.099
+          ],
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Closed hat",
+            "Open hat",
+            "Clap",
+            "Claves",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/mg-dobrado.json"
+        }
+      ]
+    },
+    {
+      "id": "funk-go",
+      "name": "Funk GO",
+      "region": "GO",
+      "genreName": "Funk GO",
+      "genreIndex": 25,
+      "referenceIds": [
+        "yt-funk-go-eletrofunk-062-rocha"
+      ],
+      "sets": [
+        {
+          "id": "go-eletro",
+          "name": "Eletro",
+          "bpm": 128,
+          "swing": 0.025,
+          "description": "Bumbo reto e chimbal aberto sustentam respostas de metais.",
+          "fillStyle": 1,
+          "fillDescription": "Resposta curta e espaçada de caixa com aro final.",
+          "librarySetIndex": 0,
+          "index": 0,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "go-eletro-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Eletro A",
+              "rows": {
+                "kick": "X...x...X...x..o",
+                "snare": "....X.......x...",
+                "closed-hat": "x.o.x.o.x.o.x.ox",
+                "open-hat": "..x...x...x...x.",
+                "clap": "................",
+                "rim": "...x......x....x",
+                "cowbell": ".......x.......x",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 1,
+              "nativeTextId": "Funk GO/Eletro A",
+              "eventCount": 25
+            },
+            {
+              "id": "go-eletro-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Eletro B",
+              "rows": {
+                "kick": "X...x...X...x...",
+                "snare": "....X.......x...",
+                "closed-hat": "x...x...x...x...",
+                "open-hat": "..x.......x.....",
+                "clap": "................",
+                "rim": "...x...........x",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 2,
+              "nativeTextId": "Funk GO/Eletro B",
+              "eventCount": 14
+            },
+            {
+              "id": "go-eletro-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Eletro C",
+              "rows": {
+                "kick": "X...x..xX.....x.",
+                "snare": "....X......ox...",
+                "closed-hat": "x.o.x.o.x.o.x.ox",
+                "open-hat": "..x...x...x...x.",
+                "clap": "................",
+                "rim": "...x.o....x..ox.",
+                "cowbell": ".......x..o....x",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 3,
+              "nativeTextId": "Funk GO/Eletro C",
+              "eventCount": 29
+            },
+            {
+              "id": "go-eletro-d",
+              "slot": "D",
+              "role": "fill",
+              "name": "Virada",
+              "nativeName": "Eletro D",
+              "rows": {
+                "kick": "X...x...X.......",
+                "snare": "....X.......x.ox",
+                "closed-hat": "x.o.x.o.x.o.....",
+                "open-hat": "..x...x...x.....",
+                "clap": "................",
+                "rim": "...x......x....X",
+                "cowbell": ".......x........",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 4,
+              "nativeTextId": "Funk GO/Eletro D",
+              "eventCount": 20
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 6,
+          "kitName": "BrasilFunk",
+          "nativeFallbackKitIndex": 1,
+          "bpmBasis": "Escolha de performance para este arranjo original",
+          "rowLevels": [
+            0.451,
+            0.275,
+            0.149,
+            0.138,
+            0.215,
+            0.215,
+            0.149,
+            0.099
+          ],
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Closed hat",
+            "Open hat",
+            "Clap",
+            "Claves",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/go-eletro.json"
+        },
+        {
+          "id": "go-deboxe",
+          "name": "Deboxe",
+          "bpm": 130,
+          "swing": 0.035,
+          "description": "A terceira batida de grave deixa uma lacuna para a resposta sincopada.",
+          "fillStyle": 1,
+          "fillDescription": "Um tempo de pausa prepara a volta do grave.",
+          "librarySetIndex": 1,
+          "index": 1,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "go-deboxe-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Deboxe A",
+              "rows": {
+                "kick": "X...x..x......X.",
+                "snare": "....X.......x...",
+                "closed-hat": "..x.x.o...x.x.o.",
+                "open-hat": "................",
+                "clap": "....o.......X...",
+                "rim": "...x..x....x..x.",
+                "cowbell": "x.........x.....",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 5,
+              "nativeTextId": "Funk GO/Deboxe A",
+              "eventCount": 20
+            },
+            {
+              "id": "go-deboxe-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Deboxe B",
+              "rows": {
+                "kick": "X...x.........X.",
+                "snare": "....X.......x...",
+                "closed-hat": "..x.......x.....",
+                "open-hat": "................",
+                "clap": "............o...",
+                "rim": "...x.......x....",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 6,
+              "nativeTextId": "Funk GO/Deboxe B",
+              "eventCount": 10
+            },
+            {
+              "id": "go-deboxe-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Deboxe C",
+              "rows": {
+                "kick": "X..ox..x...o..X.",
+                "snare": "....X..o....x...",
+                "closed-hat": "..x.x.o...x.x.o.",
+                "open-hat": "................",
+                "clap": "....o.......X...",
+                "rim": "...x.ox...x....x",
+                "cowbell": "x......o..x.....",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 7,
+              "nativeTextId": "Funk GO/Deboxe C",
+              "eventCount": 25
+            },
+            {
+              "id": "go-deboxe-d",
+              "slot": "D",
+              "role": "break",
+              "name": "Pausa",
+              "nativeName": "Deboxe D",
+              "rows": {
+                "kick": "X...x..x........",
+                "snare": "....X...........",
+                "closed-hat": "..x.x.o...x.....",
+                "open-hat": "................",
+                "clap": "....o...........",
+                "rim": "...x..x....x....",
+                "cowbell": "x.........x.....",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 8,
+              "nativeTextId": "Funk GO/Deboxe D",
+              "eventCount": 14
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 6,
+          "kitName": "BrasilFunk",
+          "nativeFallbackKitIndex": 1,
+          "bpmBasis": "Escolha de performance para este arranjo original",
+          "rowLevels": [
+            0.451,
+            0.275,
+            0.149,
+            0.138,
+            0.215,
+            0.215,
+            0.149,
+            0.099
+          ],
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            11,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Closed hat",
+            "Open hat",
+            "Clap",
+            "Claves",
+            "Agogô grave",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/go-deboxe.json"
+        },
+        {
+          "id": "go-062",
+          "name": "062",
+          "bpm": 132,
+          "swing": 0.02,
+          "description": "Bumbo quebrado com caixa nos tempos pares e metais de resposta.",
+          "fillStyle": 1,
+          "fillDescription": "A caixa cresce no último tempo mantendo o grave desimpedido.",
+          "librarySetIndex": 2,
+          "index": 2,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "go-062-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "062 A",
+              "rows": {
+                "kick": "X.....x.X...x.x.",
+                "snare": "....X.......X...",
+                "closed-hat": "xo.oxo.oxo.oxoxo",
+                "open-hat": "..x.......x.....",
+                "clap": "................",
+                "rim": "...x...x..x....x",
+                "cowbell": "......x.......x.",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 9,
+              "nativeTextId": "Funk GO/062 A",
+              "eventCount": 28
+            },
+            {
+              "id": "go-062-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "062 B",
+              "rows": {
+                "kick": "X.....x.X...x...",
+                "snare": "....X.......X...",
+                "closed-hat": "x.o.x.o.x.o.x.o.",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "...x......x.....",
+                "cowbell": "......o.......o.",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 10,
+              "nativeTextId": "Funk GO/062 B",
+              "eventCount": 18
+            },
+            {
+              "id": "go-062-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "062 C",
+              "rows": {
+                "kick": "X..x..x.X....ox.",
+                "snare": "....X.....o.X...",
+                "closed-hat": "xo.oxo.oxo.oxoxo",
+                "open-hat": "..x.......x.....",
+                "clap": "................",
+                "rim": "...x.o.x..x...x.",
+                "cowbell": "......x.......x.",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 11,
+              "nativeTextId": "Funk GO/062 C",
+              "eventCount": 31
+            },
+            {
+              "id": "go-062-d",
+              "slot": "D",
+              "role": "fill",
+              "name": "Virada",
+              "nativeName": "062 D",
+              "rows": {
+                "kick": "X.....x.X.......",
+                "snare": "....X.....o.xoxX",
+                "closed-hat": "xo.oxo.oxo.o....",
+                "open-hat": "..x.......x.....",
+                "clap": "................",
+                "rim": "...x...x..x.....",
+                "cowbell": "......x.........",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 12,
+              "nativeTextId": "Funk GO/062 D",
+              "eventCount": 24
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 6,
+          "kitName": "BrasilFunk",
+          "nativeFallbackKitIndex": 1,
+          "bpmBasis": "Escolha de performance para este arranjo original",
+          "rowLevels": [
+            0.451,
+            0.275,
+            0.149,
+            0.138,
+            0.215,
+            0.215,
+            0.149,
+            0.099
+          ],
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Closed hat",
+            "Open hat",
+            "Clap",
+            "Claves",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/go-062.json"
+        }
+      ]
+    },
+    {
+      "id": "rock-doido",
+      "name": "Rock Doido",
+      "region": "PA",
+      "genreName": "Rock Doido",
+      "genreIndex": 26,
+      "referenceIds": [
+        "yt-rock-doido-castro-aguiar",
+        "yt-rock-doido-gaby-amarantos-film",
+        "yt-rock-doido-hud-set"
+      ],
+      "sets": [
+        {
+          "id": "pa-aparelhagem",
+          "name": "Aparelhagem",
+          "bpm": 150,
+          "swing": 0.0,
+          "description": "Pulso eletrônico rápido com contratempo contínuo e percussão móvel.",
+          "fillStyle": 1,
+          "fillDescription": "Caixa em subida fecha o último tempo e deixa a volta limpa.",
+          "librarySetIndex": 0,
+          "index": 0,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "pa-aparelhagem-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Aparelhagem A",
+              "rows": {
+                "kick": "X...x...X...x...",
+                "snare": "....X.......X...",
+                "closed-hat": "xoxoxoxoxoxoxoxo",
+                "open-hat": "..x...x...x...x.",
+                "clap": "....o.......x...",
+                "rim": "...x..x..x....x.",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 1,
+              "nativeTextId": "Rock Doido/Aparelhagem A",
+              "eventCount": 32
+            },
+            {
+              "id": "pa-aparelhagem-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Aparelhagem B",
+              "rows": {
+                "kick": "X...x...X...x...",
+                "snare": "....X.......X...",
+                "closed-hat": "x.o.x.o.x.o.x.o.",
+                "open-hat": "..x.......x.....",
+                "clap": "............x...",
+                "rim": "...x.....x......",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 2,
+              "nativeTextId": "Rock Doido/Aparelhagem B",
+              "eventCount": 19
+            },
+            {
+              "id": "pa-aparelhagem-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Aparelhagem C",
+              "rows": {
+                "kick": "X...x...X..x..x.",
+                "snare": "....X..o....X...",
+                "closed-hat": "xoxoxoxoxoxoxoxo",
+                "open-hat": "..x...x...x...x.",
+                "clap": "....o.......x...",
+                "rim": "...x.ox..x...ox.",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 3,
+              "nativeTextId": "Rock Doido/Aparelhagem C",
+              "eventCount": 36
+            },
+            {
+              "id": "pa-aparelhagem-d",
+              "slot": "D",
+              "role": "fill",
+              "name": "Virada",
+              "nativeName": "Aparelhagem D",
+              "rows": {
+                "kick": "X...x...X.......",
+                "snare": "....X.......xoxX",
+                "closed-hat": "xoxoxoxox.o.....",
+                "open-hat": "..x...x...x.....",
+                "clap": "....o...........",
+                "rim": "...x..x..x......",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 4,
+              "nativeTextId": "Rock Doido/Aparelhagem D",
+              "eventCount": 25
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 6,
+          "kitName": "BrasilFunk",
+          "nativeFallbackKitIndex": 1,
+          "bpmBasis": "Escolha de performance para este arranjo original",
+          "rowLevels": [
+            0.451,
+            0.275,
+            0.149,
+            0.138,
+            0.215,
+            0.215,
+            0.149,
+            0.099
+          ],
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Closed hat",
+            "Open hat",
+            "Clap",
+            "Claves",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/pa-aparelhagem.json"
+        },
+        {
+          "id": "pa-balanco",
+          "name": "Balanço",
+          "bpm": 156,
+          "swing": 0.025,
+          "description": "Grave dançante quebrado com aro em grupos curtos.",
+          "fillStyle": 1,
+          "fillDescription": "O quarto tempo fica aberto para a chamada ao vivo.",
+          "librarySetIndex": 1,
+          "index": 1,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "pa-balanco-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Balanço A",
+              "rows": {
+                "kick": "X...x..x..X.x...",
+                "snare": "....x.......X...",
+                "closed-hat": "x.oxx.oxx.oxx.ox",
+                "open-hat": "..x.......x.....",
+                "clap": "................",
+                "rim": "x..x..x.x..x..x.",
+                "cowbell": "......x.......x.",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 5,
+              "nativeTextId": "Rock Doido/Balanço A",
+              "eventCount": 29
+            },
+            {
+              "id": "pa-balanco-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Balanço B",
+              "rows": {
+                "kick": "X...x.....X.....",
+                "snare": "....x.......X...",
+                "closed-hat": "x.o.x.o.x.o.x.o.",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "x.....x.x.......",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 6,
+              "nativeTextId": "Rock Doido/Balanço B",
+              "eventCount": 16
+            },
+            {
+              "id": "pa-balanco-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Balanço C",
+              "rows": {
+                "kick": "X..ox..x..X...x.",
+                "snare": "....x.....o.X...",
+                "closed-hat": "x.oxx.oxx.oxx.ox",
+                "open-hat": "..x.......x.....",
+                "clap": "................",
+                "rim": "x..x.ox.x....ox.",
+                "cowbell": "......x...o...x.",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 7,
+              "nativeTextId": "Rock Doido/Balanço C",
+              "eventCount": 33
+            },
+            {
+              "id": "pa-balanco-d",
+              "slot": "D",
+              "role": "break",
+              "name": "Pausa",
+              "nativeName": "Balanço D",
+              "rows": {
+                "kick": "X...x..x..X.....",
+                "snare": "....x...........",
+                "closed-hat": "x.oxx.oxx.ox....",
+                "open-hat": "..x.......x.....",
+                "clap": "................",
+                "rim": "x..x..x.x..x....",
+                "cowbell": "......x.........",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 8,
+              "nativeTextId": "Rock Doido/Balanço D",
+              "eventCount": 22
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 6,
+          "kitName": "BrasilFunk",
+          "nativeFallbackKitIndex": 1,
+          "bpmBasis": "Escolha de performance para este arranjo original",
+          "rowLevels": [
+            0.451,
+            0.275,
+            0.149,
+            0.138,
+            0.215,
+            0.215,
+            0.149,
+            0.099
+          ],
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            10,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Closed hat",
+            "Open hat",
+            "Clap",
+            "Conga aberta",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/pa-balanco.json"
+        },
+        {
+          "id": "pa-pressao",
+          "name": "Pressão",
+          "bpm": 164,
+          "swing": 0.0,
+          "description": "Textura eletrônica veloz com grave reto e pequenos deslocamentos.",
+          "fillStyle": 1,
+          "fillDescription": "Uma resposta de dois tempos chega ao acento final sem rolo de pratos.",
+          "librarySetIndex": 2,
+          "index": 2,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "pa-pressao-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Pressão A",
+              "rows": {
+                "kick": "X...x...X.x.x...",
+                "snare": "....X.......X..o",
+                "closed-hat": "xoxoxoxoxoxoxoxo",
+                "open-hat": "..x...x...x...x.",
+                "clap": "................",
+                "rim": "...x.x.....x.x..",
+                "cowbell": "x......x..x....x",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 9,
+              "nativeTextId": "Rock Doido/Pressão A",
+              "eventCount": 36
+            },
+            {
+              "id": "pa-pressao-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Pressão B",
+              "rows": {
+                "kick": "X...x...X...x...",
+                "snare": "....X.......X..o",
+                "closed-hat": "x.o.x.o.x.o.x.o.",
+                "open-hat": "..x.......x.....",
+                "clap": "................",
+                "rim": "...x.......x....",
+                "cowbell": "x.........x.....",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 10,
+              "nativeTextId": "Rock Doido/Pressão B",
+              "eventCount": 21
+            },
+            {
+              "id": "pa-pressao-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Pressão C",
+              "rows": {
+                "kick": "X...x..oX...x.x.",
+                "snare": "....X..o....X...",
+                "closed-hat": "xoxoxoxoxoxoxoxo",
+                "open-hat": "..x...x...x...x.",
+                "clap": "................",
+                "rim": "...x.x.o..x..x..",
+                "cowbell": "x......x.ox.....",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 11,
+              "nativeTextId": "Rock Doido/Pressão C",
+              "eventCount": 38
+            },
+            {
+              "id": "pa-pressao-d",
+              "slot": "D",
+              "role": "fill",
+              "name": "Virada",
+              "nativeName": "Pressão D",
+              "rows": {
+                "kick": "X...x...X.......",
+                "snare": "....X.....ox.oxX",
+                "closed-hat": "xoxoxoxox.o.....",
+                "open-hat": "..x...x...x.....",
+                "clap": "................",
+                "rim": "...x.x..........",
+                "cowbell": "x......x........",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 12,
+              "nativeTextId": "Rock Doido/Pressão D",
+              "eventCount": 26
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 6,
+          "kitName": "BrasilFunk",
+          "nativeFallbackKitIndex": 1,
+          "bpmBasis": "Escolha de performance para este arranjo original",
+          "rowLevels": [
+            0.451,
+            0.275,
+            0.149,
+            0.138,
+            0.215,
+            0.215,
+            0.149,
+            0.099
+          ],
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Closed hat",
+            "Open hat",
+            "Clap",
+            "Claves",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/pa-pressao.json"
+        }
+      ]
+    },
+    {
+      "id": "samba",
+      "name": "Samba",
+      "region": "BR",
+      "genreName": "Samba",
+      "genreIndex": 27,
+      "referenceIds": [
+        "yt-samba-batucada-gravadora-cid"
+      ],
+      "sets": [
+        {
+          "id": "samba-roda",
+          "name": "Roda",
+          "bpm": 104,
+          "swing": 0.045,
+          "description": "Marcação grave fraco-forte sob chocalho e frase sincopada de claves.",
+          "fillStyle": 1,
+          "fillDescription": "Aro e agogô respondem no fim mantendo a marcação grave.",
+          "librarySetIndex": 0,
+          "index": 0,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "samba-roda-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Roda A",
+              "rows": {
+                "kick": "o...X...o...X...",
+                "snare": ".o.o.x.o.o.o.x.o",
+                "closed-hat": "xoxoxoxoxoxoxoxo",
+                "open-hat": "......o.......o.",
+                "clap": "................",
+                "rim": "x..x..x.x.x..x..",
+                "cowbell": "..x........x..x.",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 1,
+              "nativeTextId": "Samba/Roda A",
+              "eventCount": 39
+            },
+            {
+              "id": "samba-roda-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Roda B",
+              "rows": {
+                "kick": "o...X...o...X...",
+                "snare": ".....o.......o..",
+                "closed-hat": "x.o.x.o.x.o.x.o.",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "x..x..x......x..",
+                "cowbell": "..x.............",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 2,
+              "nativeTextId": "Samba/Roda B",
+              "eventCount": 19
+            },
+            {
+              "id": "samba-roda-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Roda C",
+              "rows": {
+                "kick": "o...X...o...X...",
+                "snare": ".o.o.x.o.oo..x.o",
+                "closed-hat": "xoxoxoxoxoxoxoxo",
+                "open-hat": "......o.......o.",
+                "clap": "................",
+                "rim": "x..x.ox.x....xx.",
+                "cowbell": "..x....o...x..x.",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 3,
+              "nativeTextId": "Samba/Roda C",
+              "eventCount": 41
+            },
+            {
+              "id": "samba-roda-d",
+              "slot": "D",
+              "role": "fill",
+              "name": "Virada",
+              "nativeName": "Roda D",
+              "rows": {
+                "kick": "o...X...o...X...",
+                "snare": ".o.o.x.o.o.o.ox.",
+                "closed-hat": "xoxoxoxoxoxox.o.",
+                "open-hat": "......o.........",
+                "clap": "................",
+                "rim": "x..x..x.x...x.oX",
+                "cowbell": "..x........x....",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 4,
+              "nativeTextId": "Samba/Roda D",
+              "eventCount": 36
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 7,
+          "kitName": "BrasilPercussao",
+          "nativeFallbackKitIndex": 4,
+          "bpmBasis": "Escolha de performance para este arranjo original",
+          "rowLevels": [
+            0.413,
+            0.187,
+            0.22,
+            0.149,
+            0.127,
+            0.286,
+            0.204,
+            0.077
+          ],
+          "notation": "Uma grade 4/4 equivale a dois compassos de samba em 2/4. As síncopes foram arranjadas para 16 passos.",
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Chocalho",
+            "Tambourine",
+            "Clap",
+            "Claves",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/samba-roda.json"
+        },
+        {
+          "id": "samba-partido",
+          "name": "Partido",
+          "bpm": 96,
+          "swing": 0.065,
+          "description": "Frase curta de claves com espaço para canto e chocalho de dinâmica alternada.",
+          "fillStyle": 1,
+          "fillDescription": "A marcação e a percussão suspendem o último tempo para a retomada.",
+          "librarySetIndex": 1,
+          "index": 1,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "samba-partido-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Partido A",
+              "rows": {
+                "kick": "o...X...o...X...",
+                "snare": ".....o.......o..",
+                "closed-hat": "xooxxooxxooxxoox",
+                "open-hat": "......o.......o.",
+                "clap": "................",
+                "rim": "x..x..x...x..x..",
+                "cowbell": "....x......x....",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 5,
+              "nativeTextId": "Samba/Partido A",
+              "eventCount": 31
+            },
+            {
+              "id": "samba-partido-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Partido B",
+              "rows": {
+                "kick": "o...X...o...X...",
+                "snare": ".....o.......o..",
+                "closed-hat": "x.o.x.o.x.o.x.o.",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "x.....x...x.....",
+                "cowbell": "................",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 6,
+              "nativeTextId": "Samba/Partido B",
+              "eventCount": 17
+            },
+            {
+              "id": "samba-partido-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Partido C",
+              "rows": {
+                "kick": "o...X...o...X...",
+                "snare": "...o.o.....o.o..",
+                "closed-hat": "xooxxooxxooxxoox",
+                "open-hat": "......o.......o.",
+                "clap": "................",
+                "rim": "x..x.ox...x..xx.",
+                "cowbell": "....x......x..o.",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 7,
+              "nativeTextId": "Samba/Partido C",
+              "eventCount": 36
+            },
+            {
+              "id": "samba-partido-d",
+              "slot": "D",
+              "role": "break",
+              "name": "Pausa",
+              "nativeName": "Partido D",
+              "rows": {
+                "kick": "o...X...o.......",
+                "snare": ".....o..........",
+                "closed-hat": "xooxxooxxoox....",
+                "open-hat": "......o.........",
+                "clap": "................",
+                "rim": "x..x..x...x.....",
+                "cowbell": "....x......x....",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 8,
+              "nativeTextId": "Samba/Partido D",
+              "eventCount": 23
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 7,
+          "kitName": "BrasilPercussao",
+          "nativeFallbackKitIndex": 4,
+          "bpmBasis": "Escolha de performance para este arranjo original",
+          "rowLevels": [
+            0.413,
+            0.187,
+            0.22,
+            0.149,
+            0.127,
+            0.286,
+            0.204,
+            0.077
+          ],
+          "notation": "Uma grade 4/4 equivale a dois compassos de samba em 2/4. As síncopes foram arranjadas para 16 passos.",
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            10,
+            6,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Chocalho",
+            "Tambourine",
+            "Clap",
+            "Conga aberta",
+            "Agogô agudo",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/samba-partido.json"
+        },
+        {
+          "id": "samba-bateria",
+          "name": "Bateria",
+          "bpm": 136,
+          "swing": 0.025,
+          "description": "Alternância grave fraco-forte, caixa contínua em dinâmica baixa e agogô pontuado.",
+          "fillStyle": 1,
+          "fillDescription": "Resposta de caixa em dois tempos preserva os pulsos graves.",
+          "librarySetIndex": 2,
+          "index": 2,
+          "autoFillMode": 1,
+          "autoFillCadenceBars": [
+            4,
+            8,
+            16
+          ],
+          "suggestedManualFillEveryBars": 8,
+          "suggestedFillBeats": 1,
+          "patterns": [
+            {
+              "id": "samba-bateria-a",
+              "slot": "A",
+              "role": "base",
+              "name": "Base",
+              "nativeName": "Bateria A",
+              "rows": {
+                "kick": "o...X...o...X...",
+                "snare": "ooXoooXoooXoooXo",
+                "closed-hat": "xoxoxoxoxoxoxoxo",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "x.xx.xx.x.x..xx.",
+                "cowbell": "x.....x....x..x.",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 9,
+              "nativeTextId": "Samba/Bateria A",
+              "eventCount": 49
+            },
+            {
+              "id": "samba-bateria-b",
+              "slot": "B",
+              "role": "breath",
+              "name": "Respirada",
+              "nativeName": "Bateria B",
+              "rows": {
+                "kick": "o...X...o...X...",
+                "snare": ".oX..oX..oX..oX.",
+                "closed-hat": "x.o.x.o.x.o.x.o.",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "x..x..x.x....x..",
+                "cowbell": "x..........x....",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 10,
+              "nativeTextId": "Samba/Bateria B",
+              "eventCount": 27
+            },
+            {
+              "id": "samba-bateria-c",
+              "slot": "C",
+              "role": "variation",
+              "name": "Resposta",
+              "nativeName": "Bateria C",
+              "rows": {
+                "kick": "o...X...o...X...",
+                "snare": "ooXooXooooXooXoo",
+                "closed-hat": "xoxoxoxoxoxoxoxo",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "x.xx.xx.x..x.xx.",
+                "cowbell": "x.....x..o.x..x.",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 11,
+              "nativeTextId": "Samba/Bateria C",
+              "eventCount": 50
+            },
+            {
+              "id": "samba-bateria-d",
+              "slot": "D",
+              "role": "fill",
+              "name": "Virada",
+              "nativeName": "Bateria D",
+              "rows": {
+                "kick": "o...X...o...X...",
+                "snare": "ooXoooXo.oXoxoxX",
+                "closed-hat": "xoxoxoxox.o.....",
+                "open-hat": "................",
+                "clap": "................",
+                "rim": "x.xx.xx.x....ox.",
+                "cowbell": "x.....x....x....",
+                "crash": "................",
+                "ride": "................"
+              },
+              "nativeIndex": 12,
+              "nativeTextId": "Samba/Bateria D",
+              "eventCount": 40
+            }
+          ],
+          "liveSequence": [
+            "A",
+            "A",
+            "B",
+            "A",
+            "C",
+            "A",
+            "A",
+            "D"
+          ],
+          "chainSuggestion": {
+            "slots": [
+              "A",
+              "B"
+            ],
+            "barsPerSlot": 1
+          },
+          "kitIndex": 7,
+          "kitName": "BrasilPercussao",
+          "nativeFallbackKitIndex": 4,
+          "bpmBasis": "Escolha de performance para este arranjo original",
+          "rowLevels": [
+            0.413,
+            0.187,
+            0.22,
+            0.149,
+            0.127,
+            0.286,
+            0.204,
+            0.077
+          ],
+          "notation": "Uma grade 4/4 equivale a dois compassos de samba em 2/4. As síncopes foram arranjadas para 16 passos.",
+          "rowSounds": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            11,
+            9,
+            7
+          ],
+          "rowSoundNames": [
+            "Kick",
+            "Snare",
+            "Chocalho",
+            "Tambourine",
+            "Clap",
+            "Conga abafada",
+            "Agogô grave",
+            "Crash"
+          ],
+          "rowPitches": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rowDecay": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "presetPath": "presets/groove/samba-bateria.json"
+        }
+      ]
+    }
+  ]
+}

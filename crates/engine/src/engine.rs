@@ -1606,6 +1606,9 @@ pub struct Engine {
     /// its sound for this buffer, and the gain each deck is ducked by.
     grooves: Vec<GrooveBox>,
     groove_buf: Vec<Vec<[f32; 2]>>,
+    /// Previous buffer's track RMS, before the Groove Box and channel EQ.
+    /// The audio identity prevents a newly loaded track using a stale level.
+    groove_leader_rms: [Option<(usize, f32)>; NUM_DECKS],
     duck_buf: Vec<Vec<f32>>,
     duck_env: [f32; NUM_DECKS],
     /// Each deck's `live_input` and Groove Box switch as last seen, to tell
@@ -1918,6 +1921,7 @@ impl Engine {
                 samplers,
                 grooves,
                 groove_buf: vec![vec![[0.0; 2]; BLOCK]; NUM_DECKS],
+                groove_leader_rms: [None; NUM_DECKS],
                 duck_buf: vec![vec![1.0; BLOCK]; NUM_DECKS],
                 duck_env: [0.0; NUM_DECKS],
                 live_seen: [0; NUM_DECKS],
@@ -3455,6 +3459,8 @@ impl Engine {
         // Link's, else their own tempo.
         let mut groove_buf = std::mem::take(&mut self.groove_buf);
         let mut duck_buf = std::mem::take(&mut self.duck_buf);
+        let mut track_energy = [0.0f64; NUM_DECKS];
+        let mut break_leader = None;
         let groove_on: [bool; NUM_DECKS] =
             std::array::from_fn(|i| self.grooves[i].enabled() && self.decks[i].track.is_none());
         for g in duck_buf.iter_mut() {
@@ -3462,6 +3468,17 @@ impl Engine {
         }
         if groove_on.iter().any(|&on| on) {
             let (leader, leading) = self.leading_beat();
+            if groove_on
+                .iter()
+                .enumerate()
+                .any(|(i, &on)| on && self.grooves[i].c.follow_breaks.get_bool())
+            {
+                break_leader = leading;
+            }
+            let leader_rms = leading.and_then(|k| {
+                let identity = Arc::as_ptr(self.decks[k].audio.as_ref()?) as usize;
+                self.groove_leader_rms[k].filter(|(seen, _)| *seen == identity)
+            });
             let leader_key = leading
                 .and_then(|k| Key::from_mixxx_number(self.decks[k].c.key.get()))
                 .map(|k| k.tonic);
@@ -3480,6 +3497,11 @@ impl Engine {
                         .map(|(bpm, beat)| (bpm * scale, beat * scale))
                 };
                 let source = pick_source(scaled(leader), scaled(link_beat), g.c.bpm.get());
+                g.listen_for_break(
+                    leader_rms,
+                    frames,
+                    leader.map_or(source.bpm, |(bpm, _)| bpm),
+                );
                 if source.beat.is_some() {
                     // Shown, and kept for when the leader stops.
                     g.c.bpm.set(source.bpm);
@@ -3628,6 +3650,9 @@ impl Engine {
                     let wet = d.stem_fx.process(send, p.stem_send.is_some() && p.moving);
                     s[0] += wet[0];
                     s[1] += wet[1];
+                }
+                if break_leader == Some(i) && p.moving {
+                    track_energy[i] += (s[0] as f64).powi(2) + (s[1] as f64).powi(2);
                 }
                 if groove_on[i] {
                     s = groove_buf[i][f];
@@ -3878,6 +3903,16 @@ impl Engine {
             self.write_taps(&tap_buf, out, channels, frames, !external);
         }
         self.deck_buf = deck_buf;
+        self.groove_leader_rms = std::array::from_fn(|i| {
+            if break_leader != Some(i) {
+                return None;
+            }
+            let audio = self.decks[i].audio.as_ref().filter(|_| plans[i].moving)?;
+            Some((
+                Arc::as_ptr(audio) as usize,
+                (track_energy[i] / (frames * 2) as f64).sqrt() as f32,
+            ))
+        });
         self.click_buf = click_buf;
         self.groove_buf = groove_buf;
         self.looper_buf = looper_buf;
@@ -7508,5 +7543,51 @@ mod tests {
         run(&mut engine, 0.5);
         assert!(!g("following").get_bool());
         assert_eq!(g("bpm").get(), 100.0);
+    }
+
+    #[test]
+    fn groove_breaks_follow_the_leader_audio_and_resume_on_a_bar() {
+        let (reg, mut engine, mut input) = setup();
+        let mut t = (*short_track(120.0, 6.0)).clone();
+        let frames = (0..(SR * 6.0) as usize)
+            .map(|i| {
+                let sec = i as f64 / SR;
+                let v = if (1.5..3.0).contains(&sec) {
+                    0.0
+                } else {
+                    (std::f64::consts::TAU * 440.0 * sec).sin() as f32 * 0.2
+                };
+                [v, v]
+            })
+            .collect();
+        t.audio = Some(Arc::new(Audio::from_frames(SR as u32, frames)));
+        load(&mut input, 0, Arc::new(t));
+        run(&mut engine, 0.05);
+        let g = |k: &str| reg.get("[Groove2]", k).unwrap();
+        g("enabled").set_bool(true);
+        g("follow_breaks").set_bool(true);
+        reg.get("[Channel1]", "volume").unwrap().set(0.0);
+        reg.get("[Channel1]", "play").unwrap().set_bool(true);
+        reg.get("[Channel2]", "play").unwrap().set_bool(true);
+        run(&mut engine, 1.2);
+        assert!(!g("break_active").get_bool());
+        run(&mut engine, 1.0);
+        assert!(g("break_active").get_bool());
+        run(&mut engine, 1.2);
+        assert!(g("break_active").get_bool(), "returned audio waits for bar");
+        run(&mut engine, 1.0);
+        assert!(!g("break_active").get_bool());
+        // A loop over continuous audio must not be mistaken for a break.
+        let loop_toggle = reg.get("[Channel1]", "beatloop_1_toggle").unwrap();
+        loop_toggle.set_bool(true);
+        run(&mut engine, 0.03);
+        loop_toggle.set_bool(false);
+        assert!(reg.get("[Channel1]", "loop_enabled").unwrap().get_bool());
+        run(&mut engine, 1.2);
+        assert!(!g("break_active").get_bool());
+        // Stopping the leader falls back to solo play, even with the feature on.
+        reg.get("[Channel1]", "play").unwrap().set_bool(false);
+        run(&mut engine, 0.1);
+        assert!(!g("break_active").get_bool());
     }
 }

@@ -207,7 +207,11 @@ fn stems_entries(root: &Path) -> Vec<StemsEntry> {
     };
     dirs.flatten()
         .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-        .filter(|e| !e.file_name().to_string_lossy().contains(".work"))
+        .filter(|e| {
+            let file_name = e.file_name();
+            let name = file_name.to_string_lossy();
+            !name.contains(".work") && !name.contains(".invalid.")
+        })
         .map(|e| {
             let path = e.path();
             let (mut bytes, mut used) = (0, std::time::SystemTime::UNIX_EPOCH);

@@ -28,6 +28,7 @@ const MOVED: f32 = 0.005;
 const LILAC: [f32; 4] = [0.714, 0.612, 1.0, 1.0];
 
 /// The instrument's knobs, `[Instrument1],parameterN`, all of them.
+#[derive(Clone)]
 pub struct KnobHandles {
     instrument: Vec<ControlHandle>,
 }

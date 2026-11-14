@@ -74,7 +74,7 @@ pub fn hear(path: &Path, report: Report) -> Result<Vec<Heard>, String> {
 /// The track's vocals at 16 kHz, mono.
 fn vocals(path: &Path, report: &Report) -> Result<Vec<f32>, String> {
     use crate::stems::StemSource;
-    let stems = crate::stems::find(path).or_else(|| {
+    let stems = crate::stems::find_valid(path).or_else(|| {
         report(Stage::Separating);
         crate::separation::separate_hq(path).ok()
     });
@@ -94,11 +94,79 @@ fn vocals(path: &Path, report: &Report) -> Result<Vec<f32>, String> {
 fn listen(
     model: &Path,
     samples: &[f32],
-    mut progress: impl FnMut(i32) + 'static,
+    progress: impl FnMut(i32) + 'static,
 ) -> Result<Vec<Heard>, String> {
-    use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     let model = model.to_str().ok_or("the model's path isn't text")?;
-    let ctx = WhisperContext::new_with_params(model, WhisperContextParameters::default())
+    let use_gpu = std::env::var_os("OPENDJ_WHISPER_GPU").is_none_or(|value| value != "0");
+    let gpu_device = std::env::var("OPENDJ_WHISPER_GPU_DEVICE")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(0);
+    let progress: Rc<RefCell<Box<dyn FnMut(i32)>>> = Rc::new(RefCell::new(Box::new(progress)));
+    if use_gpu {
+        #[cfg(target_os = "linux")]
+        {
+            let devices = whisper_rs::vulkan::list_devices();
+            match devices.get(gpu_device.max(0) as usize) {
+                Some(device) => eprintln!(
+                    "Whisper Vulkan GPU {}: {} ({} MiB free / {} MiB total)",
+                    device.id,
+                    device.name,
+                    device.vram.free / (1024 * 1024),
+                    device.vram.total / (1024 * 1024)
+                ),
+                None => {
+                    let error = format!(
+                        "Whisper Vulkan GPU {gpu_device} is unavailable ({} devices)",
+                        devices.len()
+                    );
+                    eprintln!("{error}; retrying with CPU fallback");
+                    return listen_with_backend(model, samples, progress, false, 0)
+                        .map_err(|cpu_error| format!("{error}; CPU fallback failed: {cpu_error}"));
+                }
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = gpu_device;
+    }
+    match listen_with_backend(model, samples, progress.clone(), use_gpu, gpu_device) {
+        Ok(heard) => Ok(heard),
+        Err(gpu_error) if use_gpu => {
+            eprintln!("Whisper Vulkan GPU failed: {gpu_error}; retrying with CPU fallback");
+            listen_with_backend(model, samples, progress, false, 0).map_err(|cpu_error| {
+                format!("Whisper GPU failed: {gpu_error}; CPU fallback failed: {cpu_error}")
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn listen_with_backend(
+    model: &str,
+    samples: &[f32],
+    progress: std::rc::Rc<std::cell::RefCell<Box<dyn FnMut(i32)>>>,
+    use_gpu: bool,
+    gpu_device: i32,
+) -> Result<Vec<Heard>, String> {
+    use std::time::Instant;
+    use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+    let started = Instant::now();
+    let mut context_params = WhisperContextParameters::default();
+    context_params.use_gpu = use_gpu;
+    context_params.gpu_device = gpu_device;
+    eprintln!(
+        "Whisper {} inference starting ({} samples)",
+        if use_gpu {
+            "Vulkan GPU"
+        } else {
+            "CPU fallback"
+        },
+        samples.len()
+    );
+    let ctx = WhisperContext::new_with_params(model, context_params)
         .map_err(|e| format!("couldn't load Whisper: {e}"))?;
     let mut state = ctx.create_state().map_err(|e| e.to_string())?;
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
@@ -113,7 +181,7 @@ fn listen(
     params.set_split_on_word(true);
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
     params.set_n_threads(threads as i32);
-    params.set_progress_callback_safe(move |p: i32| progress(p));
+    params.set_progress_callback_safe(move |p: i32| (progress.borrow_mut())(p));
     state
         .full(params, samples)
         .map_err(|e| format!("Whisper couldn't listen: {e}"))?;
@@ -133,6 +201,17 @@ fn listen(
             text: text.to_owned(),
         });
     }
+    ctx.print_timings();
+    eprintln!(
+        "Whisper {} inference finished in {:.1}s ({} words)",
+        if use_gpu {
+            "Vulkan GPU"
+        } else {
+            "CPU fallback"
+        },
+        started.elapsed().as_secs_f64(),
+        heard.len()
+    );
     Ok(heard)
 }
 

@@ -63,3 +63,6 @@ femtovg = { path = "third_party/femtovg" }
 # Key lock's time-stretcher with split computation; see
 # third_party/signalsmith-stretch/OPENDJ.md.
 signalsmith-stretch = { path = "third_party/signalsmith-stretch" }
+
+# Pinned whisper-rs Vulkan enumeration against its matching sys API.
+whisper-rs = { path = "third_party/whisper-rs" }

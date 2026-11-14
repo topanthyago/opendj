@@ -9,6 +9,8 @@
 //! tracks on decks over a wait-free queue as soon as their files are open,
 //! then decode and analyse them while they play.
 
+#![recursion_limit = "256"]
+
 pub mod analysis;
 pub mod arp;
 mod auto_trim;
@@ -696,9 +698,6 @@ impl AudioEngine {
         let Source::File(path) = &track.source else {
             return;
         };
-        if stems::find(path).is_some() {
-            return;
-        }
         let loaded = self.loaded.clone();
         let file = path.clone();
         stems::separate(path, move |result| {

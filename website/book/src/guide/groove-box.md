@@ -94,6 +94,20 @@ The bar under the tracks plays fills:
   two or three sounds, the tracks' patterns swapped between sounds, and at the far right
   16th rolls over everything.
 
+Controller mappings can set `[GrooveN],auto_fill_style` to 1 for a gentler
+fill derived from the current pattern. It adds percussion without changing the
+written hits or the kick; 0 keeps the original fill. This applies to held and
+automatic fills, not Remix.
+
+`[GrooveN],follow_breaks` makes the sequencer and fills pause when the leading
+track drops into a sustained quiet section. `break_sensitivity` is 0–1 (higher
+detects smaller drops), with 0.5 as its default; `break_active` shows the pause.
+The detector learns the level and ordinary gaps in the track, then resumes on
+the next bar once the audio returns. It cannot anticipate a break, and a quiet
+breakdown can resemble one. Turn the feature off to override it; played pads and
+sound previews still work. With no playing track leader, including Link-only
+or a Groove Box playing alone, the groove plays normally.
+
 On a Maschine Mikro MK3, **PERFORM** turns the touch strip into the REMIX strip (press it
 again for the knob's setting), hold **NOTE REPEAT** for FILL, and **AUTO** steps through
 NO FILLS, AUTO 1 and AUTO 2.
@@ -118,6 +132,15 @@ menu in **SYNTH**.
 **A**, **B**, **C** and **D** are four grooves you can switch between. A new
 one starts at the next bar, so the switch is always in time. Picking a
 groove loads it into the one you picked.
+
+For libraries organized in sets of four consecutive grooves, controllers can
+select the genre and set `[GrooveN],library_set` to the zero-based group number,
+then pulse `load_set`. All four slots load together at the next bar, or
+immediately while stopped; `set_pending` stays lit while waiting. An incomplete
+group is ignored. The genre and group are captured when the pulse is received.
+Brazilian sets also load their kit, swing, fill style, fill frequency and
+per-row sound, level, pitch and decay at the same bar. Other genres keep
+those settings as they were.
 
 The grooves come in genres. **Basics** has openDJ's own six; the other
 genres (techno, house, drum & bass, breakbeat, ambient, dubstep and more, 400

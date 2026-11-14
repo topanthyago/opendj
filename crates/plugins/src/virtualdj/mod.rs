@@ -110,7 +110,7 @@ impl LibraryImport for VirtualDj {
     fn stamp(&self, database: &Path) -> String {
         let home = database.parent().unwrap_or(Path::new("."));
         let mut newest = modified(database);
-        let mut stack: Vec<PathBuf> = ["Playlists", "Folders", "History"]
+        let mut stack: Vec<PathBuf> = ["MyLists", "Playlists", "Folders", "History"]
             .iter()
             .map(|d| home.join(d))
             .collect();
@@ -232,4 +232,47 @@ fn modified(path: &Path) -> u64 {
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_secs())
+}
+
+#[cfg(test)]
+mod stamp_tests {
+    use super::*;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn stamp_detects_changes_to_modern_and_legacy_lists() {
+        let home = std::env::temp_dir().join(format!("opendj-vdj-stamp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("MyLists")).unwrap();
+        std::fs::create_dir_all(home.join("Playlists")).unwrap();
+        let database = home.join("database.xml");
+        let modern = home.join("MyLists/set.vdjfolder");
+        let legacy = home.join("Playlists/set.m3u");
+        for path in [&database, &modern, &legacy] {
+            std::fs::write(path, "").unwrap();
+        }
+        let set_time = |path: &Path, seconds| {
+            let file = std::fs::File::open(path).unwrap();
+            file.set_times(
+                std::fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(seconds)),
+            )
+            .unwrap();
+        };
+        for path in [
+            &database,
+            &modern,
+            &legacy,
+            &home.join("MyLists"),
+            &home.join("Playlists"),
+        ] {
+            set_time(path, 100);
+        }
+        let before = VirtualDj.stamp(&database);
+        set_time(&modern, 101);
+        let modern_change = VirtualDj.stamp(&database);
+        assert_ne!(before, modern_change);
+        set_time(&legacy, 102);
+        assert_ne!(modern_change, VirtualDj.stamp(&database));
+        let _ = std::fs::remove_dir_all(home);
+    }
 }

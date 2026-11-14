@@ -10,6 +10,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
 use opendj_separation::spleeter;
 
@@ -139,19 +140,90 @@ const SPLIT_LEAD: usize = 8192;
 /// each of ours (drums, bass, other, vocals).
 const FROM_SPLEETER: [usize; 4] = [1, 2, 3, 0];
 
-/// The Spleeter networks, loaded once.
-fn spleeter_net() -> Result<Arc<spleeter::cpu::Net>, String> {
-    static NET: Mutex<Option<Arc<spleeter::cpu::Net>>> = Mutex::new(None);
-    let mut net = NET.lock().unwrap();
+/// Cached networks keep the CPU implementation ready for recovery before a
+/// failed GPU window can publish any audio chunks.
+struct FastNet {
+    cpu: spleeter::cpu::Net,
+    gpu: Option<spleeter::gpu::Net<opendj_separation::Gpu>>,
+    gpu_failed: std::sync::atomic::AtomicBool,
+}
+
+impl spleeter::Net for FastNet {
+    fn estimate(&self, magnitudes: Vec<f32>) -> Vec<f32> {
+        use std::sync::atomic::Ordering;
+        if let Some(gpu) = self
+            .gpu
+            .as_ref()
+            .filter(|_| !self.gpu_failed.load(Ordering::Relaxed))
+        {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                gpu.estimate(magnitudes.clone())
+            }));
+            match result {
+                Ok(output) if usable_estimates(&magnitudes, &output) => {
+                    return output;
+                }
+                _ => {
+                    self.gpu_failed.store(true, Ordering::Relaxed);
+                    eprintln!("Spleeter GPU inference failed; using CPU fallback before publishing this window");
+                }
+            }
+        }
+        self.cpu.estimate(magnitudes)
+    }
+}
+
+// Zero estimates on audible input become uniform masks, hiding a failed GPU
+// behind four copies of the mixture. Reject them before the masking stage.
+fn usable_estimates(input: &[f32], output: &[f32]) -> bool {
+    let energy = |values: &[f32]| values.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+    output.len() == input.len() * spleeter::STEMS.len()
+        && output.iter().all(|v| v.is_finite())
+        && energy(output) >= energy(input) * 1.0e-12
+}
+
+/// The Spleeter networks, loaded once. Vulkan/Metal is requested by default;
+/// `OPENDJ_SPLEETER_BACKEND=cpu` selects the native CPU implementation.
+fn spleeter_net() -> Result<Arc<FastNet>, String> {
+    use opendj_separation::burn::prelude::Backend;
+    static NET: Mutex<Option<Arc<FastNet>>> = Mutex::new(None);
+    let mut net = NET.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(n) = net.as_ref() {
         return Ok(n.clone());
     }
     let path = model_or_fetch(SPLEETER, &MODELS)?;
     let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let n = Arc::new(spleeter::cpu::Net::load(&bytes)?);
+    let cpu = spleeter::cpu::Net::load(&bytes)?;
     // Half the cores, so a playing deck keeps its share.
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
     spleeter::cpu::set_threads((cores / 2).max(1));
+    let gpu = if std::env::var("OPENDJ_SPLEETER_BACKEND").as_deref() == Ok("cpu") {
+        eprintln!("Spleeter native CPU selected");
+        None
+    } else {
+        let result = std::panic::catch_unwind(|| {
+            let device = Default::default();
+            let gpu = spleeter::gpu::Net::<opendj_separation::Gpu>::load(&bytes, &device)?;
+            eprintln!(
+                "Spleeter GPU selected: {}",
+                opendj_separation::Gpu::name(&device)
+            );
+            Ok::<_, String>(gpu)
+        })
+        .unwrap_or_else(|_| Err("GPU initialization panicked".into()));
+        match result {
+            Ok(gpu) => Some(gpu),
+            Err(error) => {
+                eprintln!("Spleeter GPU unavailable: {error}; using native CPU fallback");
+                None
+            }
+        }
+    };
+    let n = Arc::new(FastNet {
+        cpu,
+        gpu,
+        gpu_failed: std::sync::atomic::AtomicBool::new(false),
+    });
     *net = Some(n.clone());
     Ok(n)
 }
@@ -272,26 +344,89 @@ pub fn separate_hq(path: &Path) -> Result<StemSource, String> {
         Ok(w) => w,
         Err(e) => return crate::stems::run_demucs(path).map_err(|_| e),
     };
-    let result = std::panic::catch_unwind(|| htdemucs(path, &weights))
+    let requested = std::env::var("OPENDJ_DEMUCS_BACKEND").unwrap_or_default();
+    let gpu = || {
+        let started = Instant::now();
+        let result = std::panic::catch_unwind(|| {
+            htdemucs::<opendj_separation::Gpu>(path, &weights, &Default::default())
+        })
         .unwrap_or_else(|_| Err("the GPU separation crashed".into()));
-    match result {
-        Ok(s) => Ok(s),
-        Err(e) => {
-            eprintln!("HTDemucs: {e}; trying the Demucs command");
-            crate::stems::run_demucs(path).map_err(|_| e)
+        if result.is_ok() {
+            eprintln!(
+                "HTDemucs GPU succeeded in {:.1}s",
+                started.elapsed().as_secs_f64()
+            );
         }
+        result
+    };
+    let cpu = || {
+        let started = Instant::now();
+        let result = std::panic::catch_unwind(|| {
+            htdemucs::<opendj_separation::Cpu>(path, &weights, &Default::default())
+        })
+        .unwrap_or_else(|_| Err("the CPU separation crashed".into()));
+        if result.is_ok() {
+            eprintln!(
+                "HTDemucs CPU fallback succeeded in {:.1}s (GPU acceleration unavailable)",
+                started.elapsed().as_secs_f64()
+            );
+        }
+        result
+    };
+    match requested.as_str() {
+        "cpu" => cpu(),
+        "gpu" => gpu(),
+        _ => match gpu() {
+            Ok(s) => Ok(s),
+            Err(gpu_error) => {
+                eprintln!("HTDemucs GPU unavailable: {gpu_error}; trying CPU fallback");
+                match cpu() {
+                    Ok(s) => Ok(s),
+                    Err(cpu_error) => {
+                        eprintln!(
+                            "HTDemucs CPU fallback failed: {cpu_error}; trying the Demucs command"
+                        );
+                        crate::stems::run_demucs(path).map_err(|_| gpu_error)
+                    }
+                }
+            }
+        },
     }
 }
 
-fn htdemucs(path: &Path, weights: &Path) -> Result<StemSource, String> {
+fn htdemucs<B: opendj_separation::burn::prelude::Backend>(
+    path: &Path,
+    weights: &Path,
+    device: &B::Device,
+) -> Result<StemSource, String> {
     use opendj_separation::htdemucs::HtDemucs;
     let audio = crate::decode::decode(path)?;
     let rate = audio.sample_rate;
     let [l, r] = channels(&audio);
+    let input_rms = rms([&l, &r]);
     let bytes = std::fs::read(weights).map_err(|e| format!("{}: {e}", weights.display()))?;
-    let device = Default::default();
-    let model = HtDemucs::<opendj_separation::Gpu>::load(&bytes, &device)?;
+    let model = HtDemucs::<B>::load(&bytes, device)?;
     let stems = model.separate([&l, &r])?;
+    if stems
+        .iter()
+        .flat_map(|channels| channels.iter())
+        .flatten()
+        .any(|sample| !sample.is_finite())
+    {
+        return Err("backend returned non-finite stem samples".into());
+    }
+    let output_rms = stems
+        .iter()
+        .map(|[left, right]| rms([left, right]))
+        .sum::<f64>();
+    // A genuinely silent input may legitimately produce silent stems. For a
+    // non-silent input, however, an all-zero (or -91 dB) backend result is a
+    // broken separation and must not replace a good cache entry.
+    if input_rms > 1.0e-7 && output_rms < input_rms * 1.0e-3 {
+        return Err(format!(
+            "backend returned silent stems (input RMS {input_rms:.3e}, output RMS {output_rms:.3e})"
+        ));
+    }
     let model_rate = opendj_separation::SAMPLE_RATE;
     let dir = crate::cache::stems_dir(path).ok_or("no cache folder")?;
     let work = dir.with_extension(format!("work{}", std::process::id()));
@@ -315,9 +450,37 @@ fn htdemucs(path: &Path, weights: &Path) -> Result<StemSource, String> {
         let _ = std::fs::remove_dir_all(&work);
         return Err(e);
     }
-    let _ = std::fs::remove_dir_all(&dir);
+    preserve_old_stems(&dir)?;
     std::fs::rename(&work, &dir).map_err(|e| e.to_string())?;
     crate::stems::find(path).ok_or_else(|| "the stems weren't written".into())
+}
+
+/// Keeps an invalid/old cache directory recoverable while a new separation is
+/// installed. The directory is derived data, but retaining it makes a failed
+/// replacement non-destructive and leaves evidence for diagnosis.
+pub(crate) fn preserve_old_stems(dir: &Path) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let backup = dir.with_extension(format!("invalid.{}.{timestamp}", std::process::id()));
+    std::fs::rename(dir, &backup)
+        .map_err(|e| format!("couldn't preserve old stem cache {}: {e}", dir.display()))?;
+    eprintln!("preserved previous stem cache at {}", backup.display());
+    Ok(())
+}
+
+fn rms(channels: [&[f32]; 2]) -> f64 {
+    let (sum, count) = channels
+        .iter()
+        .flat_map(|channel| channel.iter())
+        .fold((0.0f64, 0usize), |(sum, count), sample| {
+            (sum + f64::from(*sample) * f64::from(*sample), count + 1)
+        });
+    (sum / count.max(1) as f64).sqrt()
 }
 
 #[cfg(test)]
@@ -326,6 +489,15 @@ mod tests {
 
     /// Needs the Spleeter weights: `OPENDJ_MODELS=<folder with
     /// spleeter-4stems.safetensors> cargo test -p opendj-engine -- --ignored spleeter_on`.
+    #[test]
+    fn gpu_estimates_reject_nonfinite_and_zero_output_for_audible_input() {
+        assert!(!usable_estimates(&[1.0, 2.0], &[0.0; 8]));
+        assert!(!usable_estimates(&[1.0, 2.0], &[f32::NAN; 8]));
+        assert!(!usable_estimates(&[1.0, 2.0], &[1.0; 4]));
+        assert!(usable_estimates(&[1.0, 2.0], &[0.25; 8]));
+        assert!(usable_estimates(&[0.0, 0.0], &[0.0; 8]));
+    }
+
     #[test]
     #[ignore]
     fn spleeter_on_load_fills_the_stems_from_the_cue() {

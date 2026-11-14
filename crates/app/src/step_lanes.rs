@@ -24,6 +24,7 @@ const KEEP_SECONDS: f64 = 10.0;
 const LILAC: [f32; 4] = [0.714, 0.612, 1.0, 1.0];
 
 /// The Groove Box controls the lanes read, for one deck.
+#[derive(Clone)]
 pub struct GrooveHandles {
     beat: ControlHandle,
     bpm: ControlHandle,

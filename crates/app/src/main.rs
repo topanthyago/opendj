@@ -1260,13 +1260,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let app_weak = app.as_weak();
         let decks = decks.clone();
         let loaded = loaded.clone();
-        let mut live = engine.take_live_waves().map(live_trace::LiveTraces::new);
+        // RenderingSetup can be emitted again when Slint recreates its WGPU
+        // surface. Keep the queue consumers outside the GPU resources so a
+        // new set of views never consumes them a second time.
+        let live = engine
+            .take_live_waves()
+            .map(live_trace::LiveTraces::new)
+            .map(|traces| Rc::new(RefCell::new(traces)));
         let instrument = engine.instrument_view();
-        let mut steps = engine.take_groove_hits().map(step_lanes::StepLanes::new);
-        let mut grooves = Some(std::array::from_fn(|d| {
-            step_lanes::GrooveHandles::new(&registry, d)
-        }));
-        let mut knobs = Some(macro_lanes::KnobHandles::new(&registry));
+        let steps = engine
+            .take_groove_hits()
+            .map(step_lanes::StepLanes::new)
+            .map(|lanes| Rc::new(RefCell::new(lanes)));
+        let grooves = std::array::from_fn(|d| step_lanes::GrooveHandles::new(&registry, d));
+        let knobs = macro_lanes::KnobHandles::new(&registry);
         let scale_mask = registry
             .get("[Instrument1]", "scale_mask")
             .expect("the instrument's scale mask");
@@ -1295,11 +1302,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         tracks: Default::default(),
                         phrases: Default::default(),
                         clocks: Default::default(),
-                        live: live.take(),
+                        live: live.clone(),
                         instrument: instrument.clone(),
-                        steps: steps.take(),
-                        grooves: grooves.take().expect("groove handles"),
-                        knobs: knobs.take().expect("knob handles"),
+                        steps: steps.clone(),
+                        grooves: grooves.clone(),
+                        knobs: knobs.clone(),
                         scale_mask: scale_mask.clone(),
                         macros: Default::default(),
                         knobs_moved: Default::default(),
@@ -2520,11 +2527,11 @@ struct Gpu {
     /// Each deck's drawn position, steadier than the engine's as read.
     clocks: [SmoothClock; NUM_DECKS],
     /// The sound of decks playing live, and each one's waveform on the GPU.
-    live: Option<live_trace::LiveTraces>,
+    live: Option<Rc<RefCell<live_trace::LiveTraces>>>,
     /// The notes the Instrument input holds, for its deck's note roll.
     instrument: Arc<opendj_engine::InstrumentView>,
     /// The Groove Box decks' step lanes, and their Groove Boxes' controls.
-    steps: Option<step_lanes::StepLanes>,
+    steps: Option<Rc<RefCell<step_lanes::StepLanes>>>,
     grooves: [step_lanes::GrooveHandles; NUM_DECKS],
     /// The knobs the macro lanes follow, and their values so far.
     knobs: macro_lanes::KnobHandles,
@@ -2653,16 +2660,16 @@ impl Gpu {
             tracks[d].is_none()
                 && (h.live_input.get() > 0.0 || h.groove.get_bool() || h.looper.get_bool())
         });
-        if let Some(traces) = self.live.as_mut() {
-            traces.poll(live);
+        if let Some(traces) = &self.live {
+            traces.borrow_mut().poll(live);
         }
         // Decks playing their Groove Box, for the step lanes.
         let groove: [bool; NUM_DECKS] = std::array::from_fn(|d| {
             let h = &decks.0[d];
             live[d] && h.groove.get_bool() && h.live_input.get() <= 0.0 && !h.looper.get_bool()
         });
-        if let Some(steps) = self.steps.as_mut() {
-            steps.poll(groove);
+        if let Some(steps) = &self.steps {
+            steps.borrow_mut().poll(groove);
         }
         // The leading deck: the sync leader if it plays, else the first
         // playing deck with a tempo.
@@ -2739,24 +2746,33 @@ impl Gpu {
             // An instrument deck's notes, for its note roll.
             let held = (decks.0[d].live_input.get().round() == INSTRUMENT_INPUT)
                 .then(|| self.instrument.held());
-            if let (Some(_), Some(traces)) = (held, self.live.as_mut()) {
-                traces.set_scale(d, self.scale_mask.get().round() as u16);
+            if let (Some(_), Some(traces)) = (held, &self.live) {
+                traces
+                    .borrow_mut()
+                    .set_scale(d, self.scale_mask.get().round() as u16);
             }
             let window = live[d]
                 .then(|| {
                     let color = DECK_COLORS[d];
                     self.live
-                        .as_mut()
-                        .and_then(|t| t.window(d, now, held, color))
+                        .as_ref()
+                        .and_then(|t| t.borrow_mut().window(d, now, held, color))
                 })
                 .flatten();
             // A Groove Box deck's step lanes, in place of a note roll.
             let window = window.map(|mut w| {
-                if let (true, Some(steps)) = (groove[d], self.steps.as_mut()) {
+                if let (true, Some(steps)) = (groove[d], &self.steps) {
                     let state = self.grooves[d].state();
                     let start = w.clock - w.play_seconds;
                     let ahead = VISIBLE_SECONDS / 2.0;
-                    w.lanes = Some(steps.lanes(d, &state, start, w.clock, ahead, DECK_COLORS[d]));
+                    w.lanes = Some(steps.borrow_mut().lanes(
+                        d,
+                        &state,
+                        start,
+                        w.clock,
+                        ahead,
+                        DECK_COLORS[d],
+                    ));
                 }
                 w
             });

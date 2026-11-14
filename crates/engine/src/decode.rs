@@ -4,8 +4,8 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::codecs::CodecParameters;
+use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, TrackType};
@@ -59,7 +59,10 @@ impl Decoder {
     }
 
     /// Reads the headers of `source`, the bytes of `path`.
-    fn open_source(path: &Path, source: Box<dyn MediaSource>) -> Result<Decoder, String> {
+    pub(crate) fn open_source(
+        path: &Path,
+        source: Box<dyn MediaSource>,
+    ) -> Result<Decoder, String> {
         let err = |e: Error| format!("{}: {e}", path.display());
         let mss = MediaSourceStream::new(source, MediaSourceStreamOptions::default());
         let mut hint = Hint::new();

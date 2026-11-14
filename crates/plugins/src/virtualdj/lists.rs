@@ -4,7 +4,7 @@
 //!   `.vdjfolder` per list, in folders (plain folders or `<name>.subfolders/`).
 //! - `Playlists/`: one `.m3u` per playlist, in folders, from before 2024.
 //!   VirtualDJ copies these into `MyLists/` when it updates and leaves the
-//!   old files behind, so they're read only when there is no `MyLists/`.
+//!   old files behind; exact duplicate lists are only brought in once.
 //!   An `order` file in each folder lists its entries in the order
 //!   VirtualDJ shows them.
 //! - `Folders/`: `.vdjfolder` files, each either a virtual folder (a fixed
@@ -82,28 +82,31 @@ pub fn read(home: &Path, groups: &[&str], skipped: &mut Skipped) -> Vec<Imported
                     l.name = "Sidelist".into();
                 }
             }
-        } else {
-            playlists(&home.join("Playlists"), &top, &mut out);
+        }
+        let mut legacy = Vec::new();
+        playlists(&home.join("Playlists"), &top, &mut legacy);
+        for list in legacy {
+            if !out.iter().any(|m| {
+                m.folders == list.folders
+                    && m.name == list.name
+                    && m.kind == list.kind
+                    && m.entries == list.entries
+            }) {
+                out.push(list);
+            }
         }
     }
     let from_my_lists = out.len();
     if virtual_folders || filters {
         let dir = home.join("Folders");
-        for name in ordered(&dir, |p| p.is_dir()) {
-            // Online music is VirtualDJ's streaming catalogues.
-            if name == "OnlineMusic" {
-                continue;
-            }
-            let folders = vec!["Folders".to_string(), name.clone()];
-            vdj_folders(
-                &dir.join(&name),
-                &folders,
-                virtual_folders,
-                filters,
-                &mut out,
-                skipped,
-            );
-        }
+        vdj_folders(
+            &dir,
+            &["Folders".to_string()],
+            virtual_folders,
+            filters,
+            &mut out,
+            skipped,
+        );
     }
     if modern {
         // VirtualDJ 2024 moves virtual folders into `MyLists/` too: a list
@@ -280,6 +283,9 @@ fn vdj_folders(
     // "X.vdjfolder" and "X.subfolders" share a place in the order.
     let mut seen: Vec<String> = Vec::new();
     for name in names {
+        if folders.len() == 1 && folders[0] == "Folders" && name == "OnlineMusic" {
+            continue;
+        }
         let base = stem(&name).to_string();
         if seen.contains(&base) {
             continue;
@@ -794,6 +800,7 @@ mod tests {
                 "Playlists/Moods",
                 "Playlists/Gigs/2024/Friday",
                 "Playlists/Warm up",
+                "Playlists/Old",
                 "Folders/LocalMusic/Picks",
             ]
         );
@@ -804,11 +811,82 @@ mod tests {
                 "Playlists/Moods/Old hits",
                 "Playlists/Gigs/2024/Friday",
                 "Playlists/Warm up",
+                "Playlists/Old",
             ]
         );
         // Without MyLists (VirtualDJ before 2024) the .m3u playlists count.
         std::fs::remove_dir_all(&ml).unwrap();
         assert_eq!(names(&[PLAYLISTS]), ["Playlists/Old"]);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+    #[test]
+    fn imports_root_folders_and_deduplicates_only_identical_legacy_lists() {
+        let home = std::env::temp_dir().join(format!("opendj-vdj-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        for dir in ["MyLists", "Playlists", "Folders", "Folders/OnlineMusic"] {
+            std::fs::create_dir_all(home.join(dir)).unwrap();
+        }
+        let songs = |path: &str| {
+            format!(r#"<VirtualFolder><song path="{path}" idx="0" /></VirtualFolder>"#)
+        };
+        std::fs::write(home.join("MyLists/Same.vdjfolder"), songs("/a.mp3")).unwrap();
+        std::fs::write(home.join("Playlists/Same.m3u"), "/a.mp3\n").unwrap();
+        std::fs::write(home.join("Playlists/Old.m3u"), "/b.mp3\n/a.mp3\n").unwrap();
+        std::fs::write(home.join("Folders/Funk.vdjfolder"), songs("/c.mp3")).unwrap();
+        std::fs::write(
+            home.join("Folders/OnlineMusic/Hidden.vdjfolder"),
+            songs("/d.mp3"),
+        )
+        .unwrap();
+        let lists = read(&home, &[PLAYLISTS, FOLDERS], &mut Skipped::default());
+        let names: Vec<_> = lists.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Same", "Old", "Funk"]);
+        assert_eq!(
+            lists[1]
+                .entries
+                .iter()
+                .map(|e| e.path.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["/b.mp3", "/a.mp3"]
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+    #[test]
+    fn preserves_identical_lists_in_distinct_folders_and_nested_online_music() {
+        let home =
+            std::env::temp_dir().join(format!("opendj-vdj-hierarchy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        for dir in [
+            "MyLists",
+            "Playlists/Elsewhere",
+            "Folders/OnlineMusic",
+            "Folders/Nested/Folders/OnlineMusic",
+        ] {
+            std::fs::create_dir_all(home.join(dir)).unwrap();
+        }
+        let song = r#"<VirtualFolder><song path="/a.mp3" idx="0" /></VirtualFolder>"#;
+        std::fs::write(home.join("MyLists/Same.vdjfolder"), song).unwrap();
+        std::fs::write(home.join("Playlists/Same.m3u"), "/a.mp3\n").unwrap();
+        std::fs::write(home.join("Playlists/Elsewhere/Same.m3u"), "/a.mp3\n").unwrap();
+        std::fs::write(home.join("Folders/OnlineMusic/Hidden.vdjfolder"), song).unwrap();
+        std::fs::write(
+            home.join("Folders/Nested/Folders/OnlineMusic/Visible.vdjfolder"),
+            song,
+        )
+        .unwrap();
+        let lists = read(&home, &[PLAYLISTS, FOLDERS], &mut Skipped::default());
+        let names: Vec<_> = lists
+            .iter()
+            .map(|list| format!("{}/{}", list.folders.join("/"), list.name))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "Playlists/Same",
+                "Playlists/Elsewhere/Same",
+                "Folders/Nested/Folders/OnlineMusic/Visible"
+            ]
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 }

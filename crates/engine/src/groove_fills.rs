@@ -91,6 +91,32 @@ impl Fill {
     }
 }
 
+/// Add a small response on percussion sounds already used by the pattern.
+/// The written hits, especially the kick, remain intact. This derives its
+/// character from the playing pattern rather than a fixed genre name.
+pub fn pattern_fill(
+    fill: Fill,
+    step: usize,
+    normal: [f32; ROWS],
+    patterns: [u32; ROWS],
+) -> [f32; ROWS] {
+    let mut out = normal;
+    if step < fill.from || step.is_multiple_of(2) {
+        return out;
+    }
+    let previous = (step + STEPS - 1) % STEPS;
+    let start = (fill.kind as usize + step) % 6;
+    for offset in 0..6 {
+        let row = 1 + (start + offset) % 6;
+        if patterns[row] & (1 << previous) != 0 {
+            let progress = (step - fill.from + 1) as f32 / fill.steps() as f32;
+            out[row] = out[row].max(0.35 + 0.35 * progress);
+            break;
+        }
+    }
+    out
+}
+
 /// The fill in bar `bar` (counted from 0) for Auto fill `auto` (1 or 2),
 /// if that bar has one; `seed` varies the figure from Groove Box to Groove
 /// Box.
@@ -217,6 +243,20 @@ mod tests {
         assert_eq!(from(7), Some(0));
         assert_eq!(from(2), None);
         assert_eq!(auto_fill(0, 15, 0), None);
+    }
+
+    #[test]
+    fn pattern_fill_adds_percussion_without_losing_the_written_hits() {
+        let mut patterns = [0; ROWS];
+        patterns[KICK] = 0x1111;
+        patterns[RIM] = 1 << 12;
+        let normal = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let fill = Fill { from: 12, kind: 1 };
+        let out = pattern_fill(fill, 13, normal, patterns);
+        assert_eq!(out[KICK], normal[KICK]);
+        assert!(out[RIM] > 0.0);
+        assert!(out.iter().zip(normal).all(|(a, b)| *a >= b));
+        assert_eq!(patterns[RIM], 1 << 12);
     }
 
     #[test]
