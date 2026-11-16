@@ -168,6 +168,12 @@ component Waveform inherits Rectangle {
     property <int> range-index: Controls.resolve(group, "rateRange");
     property <int> position-index: Controls.resolve(group, "playposition");
     property <int> duration-index: Controls.resolve(group, "duration");
+    property <int> looper-record-state: Controls.value(Controls.resolve(group, "looper_record_state"), Controls.tick);
+    property <float> looper-record-start: Controls.value(Controls.resolve(group, "looper_record_start"), Controls.tick);
+    property <float> looper-record-end: Controls.value(Controls.resolve(group, "looper_record_end"), Controls.tick);
+    property <float> track-now: Controls.value(position-index, Controls.tick) * Controls.value(duration-index, Controls.tick);
+    property <length> record-in-x: (WaveLook.needle + (looper-record-start - track-now) / max(0.001, visible-seconds)) * self.width;
+    property <length> record-out-x: (WaveLook.needle + (looper-record-end - track-now) / max(0.001, visible-seconds)) * self.width;
     property <int> scrub-index: Controls.resolve(group, "scrub_position");
     property <int> scrub-enable-index: Controls.resolve(group, "scrub_enable");
     property <int> grid-by-index: Controls.resolve(group, "beats_translate_by");
@@ -191,6 +197,31 @@ component Waveform inherits Rectangle {
     background: Theme.well;
     clip: true;
     Image { width: parent.width; height: parent.height; source: source; image-fit: fill; }
+    if looper-record-state > 0 && loaded && looper-record-end > looper-record-start: Rectangle {
+        width: parent.width;
+        height: parent.height;
+        property <color> ink: looper-record-state == 2 ? Theme.c-ff453a : Theme.c-ff9f0a;
+        Rectangle {
+            x: clamp(root.record-in-x, 0px, parent.width);
+            width: max(0px, clamp(root.record-out-x, 0px, parent.width) - self.x);
+            height: parent.height;
+            background: parent.ink.with-alpha(0.13);
+        }
+        if root.record-in-x >= 0px && root.record-in-x < parent.width: Rectangle {
+            x: root.record-in-x;
+            width: 2px;
+            height: parent.height;
+            background: parent.ink;
+            Text { x: 4px; y: 3px; text: looper-record-state == 2 ? "REC IN" : "LOOP IN"; color: parent.background; font-size: 10px; font-weight: 700; }
+        }
+        if root.record-out-x >= 0px && root.record-out-x < parent.width: Rectangle {
+            x: root.record-out-x;
+            width: 2px;
+            height: parent.height;
+            background: parent.ink;
+            Text { x: -self.preferred-width - 4px; y: 3px; text: "OUT"; color: parent.background; font-size: 10px; font-weight: 700; }
+        }
+    }
     // Where the right-click menu opens.
     property <length> menu-x;
     property <length> menu-y;
