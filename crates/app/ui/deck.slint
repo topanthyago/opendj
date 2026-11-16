@@ -4543,6 +4543,11 @@ component LooperLayer inherits Rectangle {
                 }
             }
         }
+        if state == 1 || state == 2 || state == 4: LooperButton {
+            g: g; key: n + "_stop_recording";
+            text: state == 4 ? "END OD" : state == 1 ? "CANCEL" : "END REC";
+            tint: #ff9f0a; width: 64px;
+        }
         VerticalLayout {
             alignment: center;
             GrooveToggle { group: g; key: n + "_mute"; text: "M"; tint: #ff9f0a; width: 22px; height: 22px; }
@@ -4600,6 +4605,7 @@ component LooperLayers inherits VerticalLayout {
             tint: tint;
             clicked => { Controls.toggle(play-index); }
         }
+        LooperButton { g: g; key: "stop_recording"; text: "END REC / OD"; tint: #ff9f0a; width: 96px; }
         for beat in 4: VerticalLayout {
             alignment: center;
             Rectangle {

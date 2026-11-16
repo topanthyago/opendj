@@ -99,6 +99,8 @@ impl LooperMemory {
 }
 
 pub struct LayerControls {
+    pub stop_recording: ControlHandle,
+    stop_recording_edge: Edge,
     pub tap: ControlHandle,
     tap_edge: Edge,
     pub clear: ControlHandle,
@@ -113,6 +115,8 @@ pub struct LayerControls {
 }
 
 pub struct LooperControls {
+    pub stop_recording: ControlHandle,
+    stop_recording_edge: Edge,
     pub enabled: ControlHandle,
     /// The looper has its memory and works.
     pub ready: ControlHandle,
@@ -145,6 +149,8 @@ impl LooperControls {
         let g = looper_group(deck);
         let g = g.as_str();
         Self {
+            stop_recording: reg.push(g, "stop_recording"),
+            stop_recording_edge: Edge::default(),
             enabled: reg.toggle(g, "enabled"),
             ready: reg.indicator(g, "ready", 1.0),
             input: reg.create(
@@ -171,6 +177,8 @@ impl LooperControls {
             layers: std::array::from_fn(|k| {
                 let n = k + 1;
                 LayerControls {
+                    stop_recording: reg.push(g, &format!("layer{n}_stop_recording")),
+                    stop_recording_edge: Edge::default(),
                     tap: reg.push(g, &format!("layer{n}_tap")),
                     tap_edge: Edge::default(),
                     clear: reg.push(g, &format!("layer{n}_clear")),
@@ -270,7 +278,7 @@ pub struct Looper {
 pub struct Heard<'a> {
     /// The picked input this buffer, played through the deck.
     pub input: Option<&'a [[f32; 2]]>,
-    /// The main mix of the last buffer, when that is what it records.
+    /// The source mix of the last buffer, excluding looper returns.
     pub mix: Option<&'a [[f32; 2]]>,
 }
 
@@ -377,11 +385,17 @@ impl Looper {
             self.clock.start(source);
             self.last_beat = self.clock.beat;
         }
+        if self.was_playing && !play {
+            self.finish_recordings(source.bpm);
+        }
         self.was_playing = play;
         let mut start = false;
 
         // What the controls ask.
         let bpm = source.bpm;
+        if self.c.stop_recording_edge.pressed(&self.c.stop_recording) {
+            self.finish_recordings(bpm);
+        }
         for k in 0..LAYERS {
             let l = &mut self.c.layers[k];
             if l.clear_edge.pressed(&l.clear) {
@@ -390,7 +404,12 @@ impl Looper {
                     self.undo = None;
                 }
             }
-            if l.tap_edge.pressed(&l.tap) {
+            let finish = l.stop_recording_edge.pressed(&l.stop_recording);
+            let tap = l.tap_edge.pressed(&l.tap);
+            if finish {
+                self.finish_recording(k, bpm);
+            }
+            if tap {
                 start |= self.tap(k, bpm);
             }
         }
@@ -450,7 +469,7 @@ impl Looper {
             let bar = ((b + 1e-7) / BAR).floor();
             if b > self.last_beat && bar > ((self.last_beat + 1e-7) / BAR).floor() {
                 let at = self.t + f as u64;
-                self.on_bar(bar * BAR, at);
+                self.on_bar(bar * BAR, at, play || start);
             }
             self.last_beat = b;
             let mem = self.mem.as_mut().unwrap();
@@ -480,7 +499,7 @@ impl Looper {
                     s[0] += (a[0] + (c[0] - a[0]) * frac) * v;
                     s[1] += (a[1] + (c[1] - a[1]) * frac) * v;
                 }
-                if layer.state == OVERDUBBING {
+                if play && layer.state == OVERDUBBING {
                     if let Some(x) = dub {
                         buf[i][0] += x[0];
                         buf[i][1] += x[1];
@@ -522,6 +541,37 @@ impl Looper {
                 layer.beats / BAR
             };
             self.c.layers[k].bars.set(bars);
+        }
+    }
+
+    fn finish_recordings(&mut self, bpm: f64) {
+        for k in 0..LAYERS {
+            self.finish_recording(k, bpm);
+        }
+    }
+
+    /// Finish at the last frame already heard, preserving a partial take.
+    fn finish_recording(&mut self, k: usize, bpm: f64) {
+        let layer = &mut self.layers[k];
+        match layer.state {
+            ARMED => *layer = Layer::default(),
+            OVERDUBBING => layer.state = PLAYING,
+            RECORDING => {
+                let frames = self.written.saturating_sub(layer.from) as usize;
+                if frames == 0 || !self_fits(self.mem.as_deref(), frames) {
+                    *layer = Layer::default();
+                    return;
+                }
+                layer.frames = frames;
+                layer.beats = frames as f64 / self.rate * bpm / 60.0;
+                layer.to = self.written;
+                layer.copied = 0;
+                layer.copying = true;
+                layer.state = PLAYING;
+                self.undo = Some(Undo::Recorded(k));
+                self.undone = false;
+            }
+            _ => {}
         }
     }
 
@@ -569,13 +619,16 @@ impl Looper {
     }
 
     /// A bar line at beat `bar`, heard at ring frame `at`.
-    fn on_bar(&mut self, bar: f64, at: u64) {
+    fn on_bar(&mut self, bar: f64, at: u64, recording: bool) {
         if self.stamped == STAMPS {
             self.stamps.copy_within(1.., 0);
             self.stamped -= 1;
         }
         self.stamps[self.stamped] = (bar, at);
         self.stamped += 1;
+        if !recording {
+            return;
+        }
         let after = self.c.after.get_bool();
         let mut finished = None;
         for k in 0..LAYERS {
@@ -926,6 +979,74 @@ mod tests {
 
     fn release(c: &ControlHandle) {
         c.set(0.0);
+    }
+
+    fn recorded(l: &mut Looper) {
+        l.c.length.set(1.0);
+        press(&l.c.layers[0].tap.clone());
+        run(l, true, 0, 1, |_| 0.25);
+        release(&l.c.layers[0].tap.clone());
+        run(l, true, BUF, 2 * BAR_FRAMES / BUF + 4, |_| 0.25);
+        assert_eq!(l.layers[0].state, PLAYING);
+    }
+
+    #[test]
+    fn transport_stop_ends_overdub_and_resume_preserves_audio() {
+        let (_, mut l) = looper();
+        recorded(&mut l);
+        press(&l.c.layers[0].tap.clone());
+        run(&mut l, true, 0, 3, |_| 0.5);
+        release(&l.c.layers[0].tap.clone());
+        let saved = l.layer_audio(0).unwrap().to_vec();
+        run(&mut l, false, 0, BAR_FRAMES / BUF * 3, |_| 100.0);
+        assert_eq!(l.layers[0].state, PLAYING);
+        assert_eq!(l.layer_audio(0).unwrap(), saved);
+        run(&mut l, true, 0, 5, |_| 100.0);
+        assert_eq!(l.layer_audio(0).unwrap(), saved);
+    }
+
+    #[test]
+    fn dedicated_end_overdub_preserves_undo_and_redo() {
+        let (_, mut l) = looper();
+        recorded(&mut l);
+        let original = l.layer_audio(0).unwrap().to_vec();
+        press(&l.c.layers[0].tap.clone());
+        run(&mut l, true, 0, 3, |_| 0.5);
+        release(&l.c.layers[0].tap.clone());
+        press(&l.c.layers[0].stop_recording.clone());
+        run(&mut l, true, 0, 1, |_| 100.0);
+        assert_eq!(l.layers[0].state, PLAYING);
+        let saved = l.layer_audio(0).unwrap().to_vec();
+        assert_ne!(saved, original);
+        press(&l.c.undo.clone());
+        run(&mut l, true, 0, 1, |_| 0.0);
+        assert_eq!(l.layer_audio(0).unwrap(), original);
+        press(&l.c.redo.clone());
+        run(&mut l, true, 0, 1, |_| 0.0);
+        assert_eq!(l.layer_audio(0).unwrap(), saved);
+    }
+
+    #[test]
+    fn stop_cancels_armed_and_preserves_partial_recording() {
+        let (_, mut l) = looper();
+        press(&l.c.layers[0].tap.clone());
+        run(&mut l, true, 0, 1, |_| 0.25);
+        release(&l.c.layers[0].tap.clone());
+        run(&mut l, false, 0, BAR_FRAMES / BUF * 2, |_| 100.0);
+        assert_eq!(l.layers[0].state, EMPTY);
+        press(&l.c.layers[0].tap.clone());
+        run(&mut l, true, 0, 1, |_| 0.25);
+        release(&l.c.layers[0].tap.clone());
+        run(&mut l, true, BUF, BAR_FRAMES / BUF + 4, |_| 0.25);
+        assert_eq!(l.layers[0].state, RECORDING);
+        press(&l.c.stop_recording.clone());
+        run(&mut l, true, 0, 1, |_| 100.0);
+        assert_eq!(l.layers[0].state, PLAYING);
+        let saved = l.layer_audio(0).unwrap().to_vec();
+        assert!(!saved.is_empty());
+        assert!(saved.iter().all(|s| s[0] == 0.25));
+        run(&mut l, false, 0, 4, |_| 100.0);
+        assert_eq!(l.layer_audio(0).unwrap(), saved);
     }
 
     #[test]

@@ -1651,7 +1651,7 @@ pub struct Engine {
     groove_seen: [bool; NUM_DECKS],
     /// Each deck's Looper (playing only while `[LooperN],enabled` and it
     /// has its memory), its sound for this buffer, whether it was on last
-    /// buffer, and the main mix of the last buffer, which it can record.
+    /// buffer, and the source mix without looper returns from the last buffer.
     loopers: Loopers,
     looper_buf: Vec<Vec<[f32; 2]>>,
     looper_seen: [bool; NUM_DECKS],
@@ -3918,6 +3918,8 @@ impl Engine {
             let r = (f + 1) as f32 / frames as f32;
             let lerp = |(a, b): (f32, f32)| a + (b - a) * r;
             let mut main = [0.0f32; 2];
+            let mut source_main = [0.0f32; 2];
+            let mut source_keep = [0.0f32; 2];
             // The deck playing the Mixer with the mic in it (`unducked`).
             let mut keep = [0.0f32; 2];
             let mut cue = [0.0f32; 2];
@@ -3945,6 +3947,15 @@ impl Engine {
                 };
                 to[0] += s[0] * g;
                 to[1] += s[1] * g;
+                if !looper_on[i] {
+                    let source = if unducked == Some(i) {
+                        &mut source_keep
+                    } else {
+                        &mut source_main
+                    };
+                    source[0] += s[0] * g;
+                    source[1] += s[1] * g;
+                }
                 // Pre-fader outputs are this deck's `deck_buf` and click,
                 // copied in `write_taps`.
                 if tap == Some(DeckTap::PostFader) {
@@ -3959,6 +3970,8 @@ impl Engine {
             if !external {
                 main[0] += samples[0];
                 main[1] += samples[1];
+                source_main[0] += samples[0];
+                source_main[1] += samples[1];
             }
             if tap.is_some() {
                 tap_buf[NUM_DECKS][f] = samples;
@@ -3989,6 +4002,7 @@ impl Engine {
                 };
                 for c in 0..2 {
                     main[c] += a[c] * ga;
+                    source_main[c] += a[c] * ga;
                 }
                 if inp.pfl {
                     cue[0] += a[0];
@@ -4004,6 +4018,16 @@ impl Engine {
                 for t in tap_buf.iter_mut() {
                     t[f] = t[f].map(|v| v * ducked);
                 }
+            }
+            // MIX capture hears the source mix without looper returns. Feeding
+            // their playback back into an overdub grows it on every pass.
+            let mic_gain = if mic.in_mixer { 0.0 } else { gm };
+            let bal = balance_gains(lerp(balance));
+            for c in 0..2 {
+                self.last_main[f][c] =
+                    (source_main[c] * ducked + source_keep[c] + m[c] * mic_gain)
+                        * lerp(master)
+                        * bal[c];
             }
             main_buf[f] = main;
             cue_buf[f] = cue;
@@ -4241,13 +4265,7 @@ impl Engine {
         self.master
             .vu
             .set(self.master_vu[0].max(self.master_vu[1]) as f64);
-        // The main mix as heard, for loopers recording it next buffer.
-        for f in 0..frames {
-            self.last_main[f] = [
-                out[f * channels],
-                out[(f * channels + 1).min(out.len() - 1)],
-            ];
-        }
+        // Source mix was saved before master FX, without looper returns.
         self.last_main_len = frames;
         // What is recorded and sent on air: one Auxiliary input as it comes
         // in (a hardware mixer's record out), or else the main mix, which
