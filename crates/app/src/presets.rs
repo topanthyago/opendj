@@ -485,6 +485,13 @@ fn rescan() {
     STATE.with_borrow_mut(|s| s.presets = presets);
 }
 
+/// Refreshes installed content in both preset browsers on the UI thread.
+pub fn refresh_installed(app: &AppWindow) {
+    rescan();
+    show_list(app);
+    crate::instruments::presets_changed(app);
+}
+
 /// The instrument plugins the Instrument input lists, in its order; their
 /// own presets are listed again, and CLAP plugins asked for theirs.
 pub fn set_plugins(app: &AppWindow, plugins: Vec<Instrument>) {

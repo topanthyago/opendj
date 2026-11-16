@@ -18,6 +18,20 @@ track.
 To go back to a normal deck, load a track onto the deck, or press EJECT
 on the stopped Groove Box.
 
+## Import a content bank in Deckard
+
+In Deckard's header, click **IMPORT**, then **CHOOSE CONTENT JSON** and select
+`native-recipes.json` from a prepared content bank. The importer installs its
+native projects, kits and patterns into your user preset library. Content banks
+can be added through this window after installation.
+
+Sample preparation runs in the background. The import window shows the number
+of projects, presets and notes imported, existing files preserved, and any
+warnings or failed recipes. Close and reopen **IMPORT** to read the report.
+Choose an installed sound from **Instruments → Presets → Groove Box** to play it.
+Converted `.mxprj` projects are kept under **Converted projects** in the
+**Groove Box** preset folder and can be selected with **OPEN**.
+
 ## Sequencer, Synth and Mixer
 
 The Groove Box fills the whole deck. Along the top are PLAY, the kit menu,

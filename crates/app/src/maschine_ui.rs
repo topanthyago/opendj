@@ -32,6 +32,9 @@ mod calibration;
 #[path = "maschine_launch.rs"]
 mod launch;
 
+#[path = "maschine_content.rs"]
+mod content;
+
 const DECK: usize = 2;
 
 pub const NATIVE_INSTRUMENTS: &[(&str, &str)] = &[
@@ -261,6 +264,7 @@ pub fn install(
     surface: Arc<MaschineSurfaceProvider>,
 ) -> slint::Timer {
     calibration::install(app, registry.clone());
+    content::install(app);
     let selection = Selection::new(&registry);
     let shown = Rc::new(RefCell::new(None));
     let editor = Editor::new(app, handle.clone(), surface.clone());

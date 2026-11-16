@@ -1,7 +1,7 @@
 import { Theme } from "theme.slint";
 import { Controls, ControlButton } from "controls.slint";
 import { GrooveTempo, GrooveFillBar, PerformanceStatus } from "performance.slint";
-import { ListView } from "scroll.slint";
+import { ListView, ScrollView } from "scroll.slint";
 
 export struct MaschineGroup {
     name: string,
@@ -99,6 +99,9 @@ export global MaschineUi {
     in-out property <int> context: 0;
     in-out property <bool> editing-note;
     in-out property <bool> instrument-menu-open;
+    in property <bool> content-import-busy;
+    in property <string> content-import-report: "Choose a native-recipes.json content bank to install kits, projects and patterns. Installed sounds appear in Instruments → Presets → Groove Box.";
+    callback import-content();
     callback open-project();
     callback save-project();
     callback pick-pattern(pattern: int);
@@ -747,6 +750,29 @@ export component MaschinePanel inherits Rectangle {
             ControlButton { group: channel; key: "play"; text: "▶"; width: 34px; height: 28px; tint: tint; fill-when-lit: true; }
             ControlButton { group: group; key: "record"; text: "●"; width: 28px; height: 28px; tint: Theme.c-ff453a; fill-when-lit: true; }
             Text { text: MaschineUi.project-name; color: Theme.text; font-size: 12px; font-weight: 600; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; min-width: 0px; }
+            MaschineButton { text: MaschineUi.content-import-busy ? "IMPORT…" : "IMPORT"; width: 54px; on: MaschineUi.content-import-busy; clicked => { content-import.show(); }
+                content-import := PopupWindow {
+                    x: -260px;
+                    y: 30px;
+                    width: 420px;
+                    height: 300px;
+                    Rectangle { background: Theme.panel-raised; border-radius: 5px; border-width: 1px; border-color: Theme.border; }
+                    VerticalLayout {
+                        padding: 10px;
+                        spacing: 8px;
+                        Text { text: "IMPORT CONTENT BANK"; color: Theme.text; font-size: 12px; font-weight: 600; }
+                        ScrollView {
+                            gutter: true;
+                            Text { width: parent.visible-width; text: MaschineUi.content-import-report; wrap: word-wrap; color: Theme.text; font-size: 11px; }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            MaschineButton { text: MaschineUi.content-import-busy ? "IMPORTING…" : "CHOOSE CONTENT JSON"; horizontal-stretch: 1; enabled: !MaschineUi.content-import-busy; clicked => { MaschineUi.import-content(); } }
+                            MaschineButton { text: "CLOSE"; width: 52px; clicked => { content-import.close(); } }
+                        }
+                    }
+                }
+            }
             MaschineButton { text: "OPEN"; width: 42px; clicked => { MaschineUi.open-project(); } }
             MaschineButton { text: "SAVE"; width: 42px; clicked => { MaschineUi.save-project(); } }
             MaschineButton {
