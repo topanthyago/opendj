@@ -8,7 +8,7 @@ opendj-install-brazilian-presets --content \
   "${XDG_CONFIG_HOME:-$HOME/.config}/opendj/Instruments/Presets/Groove Box"
 ```
 
-The existing three-positional-argument Brazilian library command remains available.
+The same selector also accepts the fixed Brazilian `banks` recipe. Its sample collection comes from `OPENDJ_MASCHINE_SAMPLE_ROOT`, then `$XDG_DATA_HOME/laptopan/opendj/sample-packs`, with `~/.local/share` as the default XDG data directory. Fixed-bank reports use the same summary fields as project catalogs. The existing three-positional-argument Brazilian library command remains available.
 
 ## Catalog
 
@@ -56,7 +56,7 @@ Each project entry may represent an original project's resolved pattern subset. 
 
 `key` and `root_note` are MIDI note numbers, with 60 representing C4. Source octave-display conventions require normalization in the extractor. FL's raw key 60 maps directly to MIDI 60. Note velocity is scaled from `velocity_max` to native 0–127 with nearest-integer rounding. The default `velocity_max` is 128 for the supplied FL extractor. MIDI/Ableton extractors should supply 127 when their velocities use the MIDI range.
 
-`fine_tune` and `channel_pitch_shift` are cents and are summed into the sample zone tuning. `root_note` defaults to 60. `enabled` defaults to true and false preserves a muted channel. Other source parameters remain available as metadata. FL slide, per-note fine pitch, per-note pan, stretching mode, plugin processing and original mixer behavior require separate interpretation. Non-default per-note values and unresolved channels produce warnings. The converter preserves these source fields and creates no substitute instrument for unresolved plugins.
+`fine_tune` and `channel_pitch_shift` are cents and are summed into the sample zone tuning. `root_note` defaults to 60. `enabled` defaults to true and false preserves a muted channel. Optional `sample_start` and `sample_end` set sample playback limits in decoded audio frames. The end is inclusive by default, matching the SDK and supplied ALS extracts. Set `sample_end_inclusive` to false for an exclusive end. The installer rejects trims outside the decoded audio and applies the same bounds to the inactive loop range. Other source parameters remain available as metadata. FL slide, per-note fine pitch, per-note pan, stretching mode, plugin processing and original mixer behavior require separate interpretation. Non-default per-note values and unresolved channels produce warnings. The converter preserves these source fields and creates no substitute instrument for unresolved plugins.
 
 ## Output and preservation
 

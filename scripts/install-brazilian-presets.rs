@@ -20,7 +20,12 @@ fn install(recipe: &Path, root: &Path, output: &Path) -> Result<Value, Box<dyn s
     let mut verified = Vec::new();
     let mut created = 0;
     let mut preserved = 0;
+    let mut total_notes = 0;
+    let mut bank_reports = Vec::new();
     for bank in banks {
+        let previous_notes = total_notes;
+        let previous_created = created;
+        let previous_preserved = preserved;
         let sounds = bank["sounds"].as_array().ok_or("missing sounds")?;
         if sounds.len() != 16 {
             return Err("each bank needs sixteen sounds".into());
@@ -227,6 +232,7 @@ fn install(recipe: &Path, root: &Path, output: &Path) -> Result<Value, Box<dyn s
                     }
                 }
             }
+            total_notes += notes.len();
             doc.edit_notes("Brazilian source pattern", 0, p, &[], &notes)?;
             let scene = if pattern == 0 { 0 } else { doc.add_scene()? };
             doc.assign_pattern(scene, 0, Some(p))?;
@@ -298,9 +304,10 @@ fn install(recipe: &Path, root: &Path, output: &Path) -> Result<Value, Box<dyn s
             }
             result?;
         }
+        bank_reports.push(json!({"name":bank["name"],"tempo":bank["target_bpm"],"groups":1,"notes":total_notes-previous_notes,"presets":4,"created":created-previous_created,"existing_preserved":preserved-previous_preserved,"warnings":if loops {vec!["Source phrase beat counts include duration-based hypotheses; private WSOLA derivatives fit the displayed playback BPM"]} else {Vec::<&str>::new()}}));
     }
     Ok(
-        json!({"banks":banks.len(),"presets":banks.len()*4,"created":created,"existing_preserved":preserved,"sources":verified,"output":output}),
+        json!({"format":1,"imported_projects":banks.len(),"notes":total_notes,"projects":bank_reports,"errors":[],"banks":banks.len(),"presets":banks.len()*4,"created":created,"existing_preserved":preserved,"sources":verified,"output":output}),
     )
 }
 fn publish_new(path: &Path, bytes: &[u8]) -> Result<bool, Box<dyn std::error::Error>> {
@@ -515,7 +522,27 @@ fn content_project(
             ));
         }
         doc.add_slot(group, slot, 0, &NewModule::Sampler)?;
-        let last = audio.frames.len().saturating_sub(1) as f64;
+        let last = i64::try_from(audio.frames.len().saturating_sub(1))?;
+        let first = sound
+            .get("sample_start")
+            .filter(|v| !v.is_null())
+            .map(|v| v.as_i64().ok_or("sample_start must be integer frames"))
+            .transpose()?
+            .unwrap_or(0);
+        let mut end = sound
+            .get("sample_end")
+            .filter(|v| !v.is_null())
+            .map(|v| v.as_i64().ok_or("sample_end must be integer frames"))
+            .transpose()?
+            .unwrap_or(last);
+        if sound["sample_end_inclusive"].as_bool() == Some(false) {
+            end = end
+                .checked_sub(1)
+                .ok_or("exclusive sample_end is invalid")?;
+        }
+        if first < 0 || end < first || end > last {
+            return Err(format!("Sound {index} sample trim lies outside decoded audio").into());
+        }
         doc.set_zones(
             group,
             slot,
@@ -523,8 +550,10 @@ fn content_project(
                 from: ZoneFrom::Template,
                 file: Some(selected_path),
                 set: vec![
-                    ("play_range/low", 0.0),
-                    ("play_range/high", last),
+                    ("play_range/low", first as f64),
+                    ("play_range/high", end as f64),
+                    ("loop_range/low", first as f64),
+                    ("loop_range/high", end as f64),
                     ("root_key", root as f64),
                     ("tune", cents / 100.0),
                 ],
@@ -723,6 +752,24 @@ fn install_content(recipe: &Path, output: &Path) -> Result<Value, Box<dyn std::e
     if root["format"] != 1 {
         return Err("unsupported content recipe format".into());
     }
+    if root["banks"].is_array() {
+        let sample_root = if let Some(root) =
+            std::env::var_os("OPENDJ_MASCHINE_SAMPLE_ROOT").filter(|v| !v.is_empty())
+        {
+            PathBuf::from(root)
+        } else {
+            let data = match std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
+                Some(path) => PathBuf::from(path),
+                None => PathBuf::from(
+                    std::env::var_os("HOME")
+                        .ok_or("HOME or XDG_DATA_HOME is required for the sample collection")?,
+                )
+                .join(".local/share"),
+            };
+            data.join("laptopan/opendj/sample-packs")
+        };
+        return install(recipe, &sample_root, output);
+    }
     let projects = root["projects"]
         .as_array()
         .ok_or("content recipe needs projects")?;
@@ -784,7 +831,7 @@ mod tests {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
-        let mut sounds:Vec<_>=(0..17).map(|i|json!({"name":format!("Original Sound {i}"),"path":"source.wav","sha256":digest,"root_note":57,"fine_tune":12,"channel_pitch_shift":100})).collect();
+        let mut sounds:Vec<_>=(0..17).map(|i|json!({"name":format!("Original Sound {i}"),"path":"source.wav","sha256":digest,"root_note":57,"fine_tune":12,"channel_pitch_shift":100,"sample_start":10,"sample_end":700,"sample_end_inclusive":false})).collect();
         sounds.push(json!({"name":"Opaque source plugin","plugin":"Original synth state"}));
         let recipe = root.join("recipe.json");
         std::fs::write(&recipe,serde_json::to_vec(&json!({"format":1,"projects":[{"name":"Original pattern","ppq":96,"tempo":134,"velocity_max":128,"sounds":sounds,"patterns":[{"name":"Original notes","length":384,"notes":[{"sound":0,"position":24,"length":48,"key":62,"velocity":128},{"sound":16,"position":96,"length":0,"key":65,"velocity":64},{"sound":17,"position":192,"length":48,"key":60,"velocity":100}]}]}]})).unwrap()).unwrap();
@@ -816,6 +863,7 @@ mod tests {
             .unwrap()
             .zones[0];
         assert_eq!(zone.root_key, 57);
+        assert_eq!(zone.play_range, (10, 699));
         assert!((zone.tune - 1.12).abs() < 1e-6);
         assert!(doc.project().groups[1].sounds[1].sampler.is_none());
         let preset = std::fs::read_dir(&output)

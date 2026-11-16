@@ -30,7 +30,7 @@ opendj-install-brazilian-presets \
   "${XDG_CONFIG_HOME:-$HOME/.config}/opendj/Instruments/Presets/Groove Box"
 ```
 
-The three arguments are the recipe, local collection root and exact preset output directory. All sources must already exist. The installer verifies SHA-256, decodes WAVs, checks duration, finite audio and nonzero signal, then reports measurements as JSON on stdout. It publishes each new preset atomically with a hard link. Existing filenames are preserved, including user edits. Rerunning fills missing presets. Private sample audio stays in the collection. No audio is embedded in the repository or preset JSON.
+The three arguments are the recipe, local collection root and exact preset output directory. The shared `--content RECIPE_JSON PRESET_OUTPUT_DIR` command and GUI selector also accept this bank recipe, finding the sample collection through `OPENDJ_MASCHINE_SAMPLE_ROOT` or the default XDG data location. All sources must already exist. The installer verifies SHA-256, decodes WAVs, checks duration, finite audio and nonzero signal, then reports measurements as JSON on stdout. It publishes each new preset atomically with a hard link. Existing filenames are preserved, including user edits. Rerunning fills missing presets. Private sample audio stays in the collection. No audio is embedded in the repository or preset JSON.
 
 Rescan the preset list through the normal instrument selection or restart the app. Choose a preset explicitly to load its bank into the selected group. The installer never loads a preset, modifies a project or changes preferences.
 
