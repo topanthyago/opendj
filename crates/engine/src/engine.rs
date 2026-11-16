@@ -3569,18 +3569,23 @@ impl Engine {
                 if g.c.backend.get_bool() && self.maschines[i].controls.ready.get_bool() {
                     if !self.maschines[i].active() {
                         g.restart_clock();
+                        self.maschines[i].begin_groove_bridge(&g.c);
                     }
                     let break_start = g.c.break_active.get_bool();
                     // Advance the original scheduler, but do not emit its audio
                     // or waveform hits: DECKARD supplies the actual voices.
                     let waveform = g.hit_tx.take();
-                    g.render(play, source, &mut groove_buf[i][..frames], |_| {});
+                    self.maschines[i].capture_groove_actions(&g.c);
+                    g.render_scheduled(play, source, &mut groove_buf[i][..frames]);
+                    self.maschines[i].capture_groove_changes(&g.c, g.step_signals(), g.pad_edits());
+                    self.maschines[i].set_groove_key(g.key);
                     g.hit_tx = waveform;
                     self.maschines[i].render(
                         play,
                         source,
                         g.step_signals(),
                         &g.c,
+                        g.manual_hits(),
                         break_start,
                         &mut groove_buf[i][..frames],
                         &mut maschine_cue_buf[i][..frames],
@@ -3598,6 +3603,7 @@ impl Engine {
                             n += 1;
                         }
                     });
+                    self.maschines[i].observe_inactive_groove(&g.c);
                 }
                 let target = (g.c.duck_deck.get().round() as usize).wrapping_sub(1);
                 if target < NUM_DECKS && target != i {

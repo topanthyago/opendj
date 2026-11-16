@@ -703,6 +703,21 @@ pub fn fill_seed(deck: usize) -> u32 {
 
 const MAX_HITS: usize = 64;
 const MAX_STEP_SIGNALS: usize = 64;
+const MAX_MANUAL_HITS: usize = groove_pads::PADS + ROWS;
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct GrooveManualHit {
+    pub row: usize,
+    pub velocity: f32,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum GroovePadEdit {
+    Toggle { row: usize, step: usize },
+    Clear { row: usize },
+    Record { row: usize, step: usize },
+    Load { genre: usize, index: usize },
+}
 
 /// A sequencer boundary, for an embedded instrument using the same fills and
 /// break detector. The signal describes the state from this frame onward.
@@ -867,6 +882,10 @@ pub struct GrooveBox {
     hits: [Hit; MAX_HITS],
     step_signals: [GrooveStep; MAX_STEP_SIGNALS],
     step_count: usize,
+    manual_hits: [GrooveManualHit; MAX_MANUAL_HITS],
+    manual_count: usize,
+    pad_edits: [Option<GroovePadEdit>; MAX_MANUAL_HITS],
+    pad_edit_count: usize,
     /// A controller's pads (see [`crate::groove_pads`]).
     pub pads: PadSurface,
     /// A live hit recorded into a step still to come: that step skips the
@@ -910,6 +929,10 @@ impl GrooveBox {
             hits: [Hit::default(); MAX_HITS],
             step_signals: [GrooveStep::default(); MAX_STEP_SIGNALS],
             step_count: 0,
+            manual_hits: [GrooveManualHit::default(); MAX_MANUAL_HITS],
+            manual_count: 0,
+            pad_edits: [None; MAX_MANUAL_HITS],
+            pad_edit_count: 0,
             pads,
             skip: [None; ROWS],
             key: None,
@@ -956,6 +979,17 @@ impl GrooveBox {
 
     pub(crate) fn step_signals(&self) -> &[GrooveStep] {
         &self.step_signals[..self.step_count]
+    }
+
+    pub(crate) fn manual_hits(&self) -> &[GrooveManualHit] {
+        &self.manual_hits[..self.manual_count]
+    }
+
+    pub(crate) fn pad_edits(&self) -> impl Iterator<Item = GroovePadEdit> + '_ {
+        self.pad_edits[..self.pad_edit_count]
+            .iter()
+            .flatten()
+            .copied()
     }
 
     /// Start the embedded scheduler in phase with a newly selected backend.
@@ -1008,10 +1042,28 @@ impl GrooveBox {
         play: bool,
         source: Source,
         out: &mut [[f32; 2]],
+        kick: impl FnMut(usize),
+    ) {
+        self.render_inner(play, source, out, true, kick);
+    }
+
+    /// Advance Groove's clock and performance state without its native voices.
+    pub(crate) fn render_scheduled(&mut self, play: bool, source: Source, out: &mut [[f32; 2]]) {
+        self.render_inner(play, source, out, false, |_| {});
+    }
+
+    fn render_inner(
+        &mut self,
+        play: bool,
+        source: Source,
+        out: &mut [[f32; 2]],
+        audible: bool,
         mut kick: impl FnMut(usize),
     ) {
         out.iter_mut().for_each(|s| *s = [0.0; 2]);
         self.step_count = 0;
+        self.manual_count = 0;
+        self.pad_edit_count = 0;
         let frames = out.len();
         let genre = self.c.genre.get().round() as usize;
         let (chosen, partner) = self.c.slots();
@@ -1064,7 +1116,23 @@ impl GrooveBox {
             .groove_queued
             .set(self.queued.unwrap_or(self.playing) as f64);
         self.last_bpm = source.bpm;
-        let mut n = self.take_pads(chosen);
+        let mut n = self.take_pads(chosen, !audible);
+        if !audible {
+            for hit in &self.hits[..n] {
+                self.manual_hits[self.manual_count] = GrooveManualHit {
+                    row: hit.row,
+                    velocity: hit.velocity,
+                };
+                self.manual_count += 1;
+            }
+            for row in 0..ROWS {
+                if self.c.preview[row].get_bool() {
+                    self.c.preview[row].set_bool(false);
+                    self.manual_hits[self.manual_count] = GrooveManualHit { row, velocity: 1.0 };
+                    self.manual_count += 1;
+                }
+            }
+        }
         self.take_dice(chosen);
         let mut span_now = None;
         if self.clock.running {
@@ -1261,6 +1329,14 @@ impl GrooveBox {
         }
         self.c.groove_playing.set(self.playing as f64);
         self.show_pads(chosen);
+        if !audible {
+            // The samples are retained by `kits`, so releasing stale native
+            // voices here never destroys sample storage on the audio thread.
+            for voice in self.voices.iter_mut().flatten() {
+                voice.sample = None;
+            }
+            return;
+        }
         let kit = (self.c.kit.get().round() as usize).min(self.kits.len().saturating_sub(1));
         for row in 0..ROWS {
             if self.c.preview[row].get_bool() {
@@ -1328,9 +1404,13 @@ impl GrooveBox {
     /// Acts on the pads pressed since the last buffer (see
     /// [`crate::groove_pads`]); `chosen` is the groove on screen. Sounds
     /// to play now go into the first hits; returns how many.
-    fn take_pads(&mut self, chosen: usize) -> usize {
+    fn take_pads(&mut self, chosen: usize, embedded: bool) -> usize {
         let row = self.pads.row();
         if self.pads.take_clear() {
+            if embedded {
+                self.pad_edits[self.pad_edit_count] = Some(GroovePadEdit::Clear { row });
+                self.pad_edit_count += 1;
+            }
             self.c.patterns[chosen][row].set(0.0);
             self.c.soft[chosen][row].set(0.0);
             self.c.maybe[chosen][row].set(0.0);
@@ -1362,6 +1442,11 @@ impl GrooveBox {
                     if self.pads.c.record.get_bool() && self.clock.running {
                         let beat = self.clock.beat;
                         let step = groove_pads::nearest_step(beat);
+                        if embedded {
+                            self.pad_edits[self.pad_edit_count] =
+                                Some(GroovePadEdit::Record { row, step });
+                            self.pad_edit_count += 1;
+                        }
                         let now = ((beat * 4.0).floor() as i64).rem_euclid(STEPS as i64) as usize;
                         let cell = &self.c.patterns[self.playing][row];
                         let bits = cell.get() as u32;
@@ -1379,11 +1464,23 @@ impl GrooveBox {
                     } else if k >= 8 && k - 8 < self.genre_size() {
                         // The genre's grooves, into the groove playing.
                         let genre = self.c.genre.get().round().max(0.0) as usize;
+                        if embedded {
+                            self.pad_edits[self.pad_edit_count] = Some(GroovePadEdit::Load {
+                                genre,
+                                index: k - 7,
+                            });
+                            self.pad_edit_count += 1;
+                        }
                         self.c.pattern.set((k - 7) as f64);
                         self.c.load_groove(self.playing, genre, k - 7);
                     }
                 }
                 _ => {
+                    if embedded {
+                        self.pad_edits[self.pad_edit_count] =
+                            Some(GroovePadEdit::Toggle { row, step: k });
+                        self.pad_edit_count += 1;
+                    }
                     let cell = &self.c.patterns[chosen][row];
                     let bits = cell.get() as u32 ^ (1 << k);
                     cell.set(bits as f64);
@@ -1513,7 +1610,7 @@ pub fn kick_shift(hz: f32, key: Option<u8>, choice: u8) -> Option<(i32, u8)> {
 /// The tone knob's filter: centre off, left a low-pass from 20 kHz down to
 /// 200 Hz, right a high-pass from 20 Hz up to 4 kHz. Returns the one-pole
 /// coefficient (0 = off) and whether it is a high-pass.
-fn tone_filter(tone: f64, rate: f64) -> (f32, bool) {
+pub(crate) fn tone_filter(tone: f64, rate: f64) -> (f32, bool) {
     let t = tone.clamp(-1.0, 1.0);
     if t.abs() < 0.02 {
         return (0.0, false);

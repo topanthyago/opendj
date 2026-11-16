@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -30,13 +30,132 @@ pub use mxprj::decode::Value;
 pub use mxprj::sound_info::SoundInfo;
 
 use crate::effects::BLOCK;
-use crate::groove::{GrooveControls, GrooveStep, Source};
+use crate::groove::{GrooveControls, GrooveManualHit, GroovePadEdit, GrooveStep, Source};
+use crate::groove_dice::{self, Dice, Habits, Move, Track};
 use crate::groove_fills;
 use crate::kits::Kit;
 
 pub const GROUPS: usize = 8;
 pub const SOUNDS: usize = 16;
 const QUEUE: usize = 8;
+
+/// Runs on DECKARD's original sequenced note, so variation never needs to
+/// recreate a note and lose its pitch, length or expression.
+struct GrooveVariation {
+    habits: Arc<Habits>,
+    rng: groove_dice::Rng,
+}
+
+impl deckard_engine::SequenceTransform for GrooveVariation {
+    fn note(&mut self, note: &deckard_engine::NoteEvent, context: &[u64; 16]) -> Option<i64> {
+        let vary = f32::from_bits(context[2] as u32).clamp(0.0, 1.0);
+        if vary <= 0.0 || note.group != context[0] as usize {
+            return Some(note.velocity);
+        }
+        let Some(row) = context[4..12]
+            .iter()
+            .position(|sound| *sound as usize == note.sound)
+        else {
+            return Some(note.velocity);
+        };
+        let role = if row == crate::groove::ROWS - 1 && context[12] == 8 {
+            8
+        } else {
+            row
+        };
+        let step = context[3] as usize % crate::groove::STEPS;
+        let genre = context[1] as usize;
+        if !groove_dice::keeps(vary, role, step, genre, &self.habits, &mut self.rng) {
+            return None;
+        }
+        // The DECKARD Sampler's velocity curve is cubic; scale its velocity
+        // by the cube root of the original Groove's amplitude variation.
+        let gain = groove_dice::humanize(1.0, vary, &mut self.rng)
+            .max(0.0)
+            .cbrt();
+        Some((note.velocity as f32 * gain).round().clamp(1.0, 127.0) as i64)
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq)]
+pub struct LegacySoundSettings {
+    pub sound: Option<usize>,
+    pub level: Option<f64>,
+    pub pitch: Option<f64>,
+    pub decay: Option<f64>,
+    pub tone: Option<f64>,
+    pub pan: Option<f64>,
+    pub mute: Option<bool>,
+    pub solo: Option<bool>,
+}
+
+#[derive(Clone, Copy)]
+struct LegacyMixSnapshot {
+    kit: usize,
+    rows: [LegacySoundSettings; crate::groove::ROWS],
+}
+
+pub struct NativeGroovePreset {
+    pub group_file: Vec<u8>,
+    pub project: Vec<u8>,
+    pub origin: Option<Vec<u8>>,
+}
+
+// Small, copy-only messages from the audio callback. The document and all
+// note editing, allocation and preparation remain on the editor thread.
+#[derive(Clone, Copy)]
+enum GrooveAction {
+    Dice {
+        movement: Move,
+        row: Option<usize>,
+        locked: [bool; crate::groove::ROWS],
+        genre: usize,
+    },
+    Load {
+        genre: usize,
+        index: usize,
+        slot: Option<usize>,
+    },
+    LoadSet {
+        genre: usize,
+        set: usize,
+        tone: [f64; crate::groove::ROWS],
+    },
+    Swing(f64),
+    SelectSlot(usize),
+    Pad(GroovePadEdit),
+    TrackDelta {
+        slot: usize,
+        row: usize,
+        before: Track,
+        after: Track,
+    },
+    Mix {
+        kit: usize,
+        settings: [LegacySoundSettings; crate::groove::ROWS],
+        rebuild: [bool; crate::groove::ROWS],
+        replace: [bool; crate::groove::ROWS],
+        parameters: [u8; crate::groove::ROWS],
+        mute_changed: [bool; crate::groove::ROWS],
+    },
+    Undo,
+}
+
+#[derive(Clone, Copy)]
+struct GrooveCommand {
+    generation: u64,
+    group: usize,
+    scene: usize,
+    action: GrooveAction,
+}
+
+struct GrooveUndo {
+    generation: u64,
+    group: usize,
+    slot: usize,
+    removed: Vec<Note>,
+    added: Vec<Note>,
+}
 
 /// Controls for the embedded instrument. Indices are zero-based; pad names
 /// are numbered from 1, like the controller.
@@ -146,6 +265,7 @@ struct Prepared {
     telemetry: deckard_engine::Telemetry,
     base_keys: [[i64; SOUNDS]; GROUPS],
     roles: [[usize; crate::groove::ROWS]; GROUPS],
+    legacy_sounds: [[bool; SOUNDS]; GROUPS],
     project: Option<Arc<Project>>,
 }
 
@@ -159,9 +279,15 @@ enum Request {
     EditDeferredForProject(u64, Edit),
     Undo,
     Redo,
+    UndoStep,
+    RedoStep,
     Open(PathBuf),
     Save(PathBuf),
     Flush,
+    ExportGroovePreset {
+        group: usize,
+        reply: std::sync::mpsc::SyncSender<Result<NativeGroovePreset, String>>,
+    },
     SelectPattern {
         scene: usize,
         group: usize,
@@ -189,7 +315,10 @@ struct Shared {
     snapshot: RwLock<Option<Snapshot>>,
     revision: AtomicU64,
     project_generation: AtomicU64,
+    groove_overflow: AtomicBool,
+    groove_lost: AtomicBool,
     rate: u32,
+    kits: Arc<[Kit]>,
     controls: MaschineControls,
     last_report: Mutex<Option<deckard_engine::LoadReport>>,
     last_error: Mutex<Option<String>>,
@@ -204,7 +333,7 @@ impl Shared {
     }
 
     fn clear_error(&self) {
-        if !self.controls.save_error.get_bool() {
+        if !self.controls.save_error.get_bool() && !self.groove_lost.load(Ordering::Acquire) {
             self.controls.error.set_bool(false);
             if let Ok(mut last) = self.last_error.lock() {
                 *last = None;
@@ -228,6 +357,14 @@ impl Shared {
     /// must be prepared from the main thread, as DECKARD's host requires.
     fn prepare(&self) -> Result<(), String> {
         self.collect();
+        if self
+            .ready
+            .lock()
+            .map_err(|_| "Maschine audio queue unavailable")?
+            .is_full()
+        {
+            return Err("Maschine audio update queue is full".into());
+        }
         let version = self.revision.load(Ordering::Acquire);
         let (project, path) = {
             let snapshot = self
@@ -277,6 +414,19 @@ impl Shared {
             })
         });
         let roles = std::array::from_fn(|g| roles_of(project.groups.get(g)));
+        let root = legacy_samples_root().ok();
+        let legacy_sounds = std::array::from_fn(|g| {
+            std::array::from_fn(|s| {
+                project
+                    .groups
+                    .get(g)
+                    .and_then(|group| group.sounds.get(s))
+                    .is_some_and(|sound| {
+                        root.as_ref()
+                            .is_some_and(|root| is_managed_sound(sound, root))
+                    })
+            })
+        });
         if self.revision.load(Ordering::Acquire) != version {
             return Err("Maschine project changed while its audio was prepared".into());
         }
@@ -292,6 +442,7 @@ impl Shared {
                 telemetry,
                 base_keys,
                 roles,
+                legacy_sounds,
                 project: Some(project),
             })
             .map_err(|_| "Maschine audio update queue is full".to_string())?;
@@ -306,6 +457,10 @@ struct Editor {
     kits: Arc<[Kit]>,
     recorded: rtrb::Consumer<deckard_engine::Recorded>,
     held_recording: HashMap<(usize, usize, i64), deckard_engine::Recorded>,
+    groove_commands: rtrb::Consumer<GrooveCommand>,
+    groove_dice: Dice,
+    groove_undo: Vec<GrooveUndo>,
+    groove_solo_saved: [Option<[bool; crate::groove::ROWS]>; GROUPS],
     autosave: Option<PathBuf>,
     project_lock: Option<std::fs::File>,
     backed_up: bool,
@@ -314,6 +469,326 @@ struct Editor {
 }
 
 impl Editor {
+    fn take_groove_commands(&mut self) -> Result<bool, String> {
+        let mut changed = false;
+        if let Ok(mut command) = self.groove_commands.pop() {
+            // A dragged swing control can produce many updates while the
+            // worker prepares audio. Keep the last consecutive value.
+            while matches!(command.action, GrooveAction::Swing(_))
+                && self.groove_commands.peek().is_ok_and(|next| {
+                    matches!(next.action, GrooveAction::Swing(_))
+                        && next.group == command.group
+                        && next.generation == command.generation
+                })
+            {
+                command = self.groove_commands.pop().expect("peeked");
+            }
+            while matches!(command.action, GrooveAction::Mix { .. })
+                && self.groove_commands.peek().is_ok_and(|next| {
+                    matches!(next.action, GrooveAction::Mix { .. })
+                        && next.group == command.group
+                        && next.generation == command.generation
+                })
+            {
+                let next = self.groove_commands.pop().expect("peeked");
+                merge_mix(&mut command.action, next.action);
+            }
+            if command.generation != self.shared.project_generation.load(Ordering::Acquire) {
+                return Ok(false);
+            }
+            self.ensure_document()?;
+            let doc = self.document.as_mut().expect("initialized");
+            match command.action {
+                GrooveAction::Swing(value) => {
+                    let old = doc
+                        .project()
+                        .groups
+                        .get(command.group)
+                        .ok_or("no such group")?
+                        .swing;
+                    let amount = groove_swing(value);
+                    if (old.amount - amount).abs() > 1e-9 {
+                        doc.set_swing(Target::Group(command.group), Swing { amount, ..old })?;
+                        changed = true;
+                    }
+                }
+                GrooveAction::SelectSlot(slot) => {
+                    doc.transaction("Select Groove", |doc| {
+                        let pattern = pattern_in_slot(doc, command.group, slot)?;
+                        doc.assign_pattern(command.scene, command.group, Some(pattern))
+                    })?;
+                    changed = true;
+                }
+                GrooveAction::Pad(edit) => match edit {
+                    GroovePadEdit::Load { genre, index } => {
+                        let tracks = library_tracks(genre, index)?;
+                        let pattern = scene_pattern(doc.project(), command.scene, command.group)?;
+                        load_tracks(
+                            doc,
+                            command.group,
+                            pattern,
+                            tracks,
+                            [true; crate::groove::ROWS],
+                        )?;
+                        changed = true;
+                    }
+                    _ => {
+                        let pattern = scene_pattern(doc.project(), command.scene, command.group)?;
+                        changed = apply_pad_edit(doc, command.group, pattern, edit)?;
+                    }
+                },
+                GrooveAction::TrackDelta {
+                    slot,
+                    row,
+                    before,
+                    after,
+                } => {
+                    doc.transaction("Edit Groove step", |doc| {
+                        let pattern = pattern_in_slot(doc, command.group, slot)?;
+                        apply_track_delta(doc, command.group, pattern, row, before, after)
+                    })?;
+                    changed = true;
+                }
+                GrooveAction::Mix {
+                    kit,
+                    mut settings,
+                    rebuild,
+                    replace,
+                    parameters,
+                    mute_changed,
+                } => {
+                    let solo_touched = settings.iter().any(|s| s.solo.is_some());
+                    let any_solo = settings.iter().any(|s| s.solo == Some(true));
+                    let mut saved = self.groove_solo_saved[command.group];
+                    if solo_touched && any_solo {
+                        let was_active = saved.is_some();
+                        if saved.is_none() {
+                            let g = doc
+                                .project()
+                                .groups
+                                .get(command.group)
+                                .ok_or("no such group")?;
+                            let roles = roles_of(Some(g));
+                            saved = Some(std::array::from_fn(|r| {
+                                g.sounds.get(roles[r]).is_some_and(|s| s.muted)
+                            }));
+                        }
+                        if was_active {
+                            if let Some(mutes) = saved.as_mut() {
+                                for row in 0..crate::groove::ROWS {
+                                    if mute_changed[row] {
+                                        if let Some(mute) = settings[row].mute {
+                                            mutes[row] = mute;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else if solo_touched {
+                        if let Some(mutes) = saved.take() {
+                            for row in 0..crate::groove::ROWS {
+                                settings[row].mute = Some(if mute_changed[row] {
+                                    settings[row].mute.unwrap_or(mutes[row])
+                                } else {
+                                    mutes[row]
+                                });
+                            }
+                        } else {
+                            for row in 0..crate::groove::ROWS {
+                                if !mute_changed[row] {
+                                    settings[row].mute = None;
+                                    settings[row].solo = None;
+                                }
+                            }
+                        }
+                    }
+                    doc.transaction("Edit Groove sound", |doc| {
+                        apply_legacy_sounds(
+                            doc,
+                            command.group,
+                            &self.kits,
+                            self.shared.rate,
+                            Some(kit),
+                            settings,
+                            rebuild,
+                            replace,
+                            parameters,
+                        )
+                    })?;
+                    self.groove_solo_saved[command.group] = saved;
+                    changed = true;
+                }
+                GrooveAction::Dice {
+                    movement,
+                    row,
+                    locked,
+                    genre,
+                } => {
+                    let pattern = scene_pattern(doc.project(), command.scene, command.group)?;
+                    let group = &doc.project().groups[command.group];
+                    let slot = group.patterns[pattern].slot;
+                    let roles = roles_of(Some(group));
+                    let rows = std::array::from_fn(|r| row.map_or(!locked[r], |only| only == r));
+                    let before = tracks_of(&group.patterns[pattern], roles)?;
+                    let mut after = before;
+                    for r in 0..crate::groove::ROWS {
+                        if rows[r] {
+                            let role = if r == crate::groove::ROWS - 1
+                                && self.legacy.sound[r].get().round() as usize == 8
+                            {
+                                8
+                            } else {
+                                r
+                            };
+                            groove_dice::apply(
+                                movement,
+                                &mut after[r],
+                                role,
+                                genre,
+                                &self.groove_dice.habits,
+                                &mut self.groove_dice.rng,
+                            );
+                        }
+                    }
+                    let (removed, added) = dice_notes(
+                        &group.patterns[pattern],
+                        roles,
+                        rows,
+                        before,
+                        after,
+                        movement,
+                        group,
+                    )?;
+                    if !removed.is_empty() || !added.is_empty() {
+                        doc.edit_notes("Groove Dice", command.group, pattern, &removed, &added)?;
+                        if self.groove_undo.len() == 16 {
+                            self.groove_undo.remove(0);
+                        }
+                        self.groove_undo.push(GrooveUndo {
+                            generation: command.generation,
+                            group: command.group,
+                            slot,
+                            removed,
+                            added,
+                        });
+                        changed = true;
+                    }
+                    self.legacy.can_undo.set_bool(!self.groove_undo.is_empty());
+                }
+                GrooveAction::Undo => {
+                    if let Some(edit) = self.groove_undo.last() {
+                        if edit.generation != command.generation {
+                            self.groove_undo.clear();
+                        } else {
+                            let group = doc
+                                .project()
+                                .groups
+                                .get(edit.group)
+                                .ok_or("no such group")?;
+                            let pattern = group
+                                .patterns
+                                .iter()
+                                .position(|p| p.slot == edit.slot)
+                                .ok_or("Dice pattern no longer exists")?;
+                            let notes = &group.patterns[pattern].notes;
+                            if edit.added.iter().any(|n| !notes.contains(n))
+                                || edit.removed.iter().any(|old| {
+                                    notes.iter().any(|n| {
+                                        n.sound == old.sound
+                                            && n.position == old.position
+                                            && n.pitch == old.pitch
+                                            && !edit.added.contains(n)
+                                    })
+                                })
+                            {
+                                return Err("Dice undo conflicts with a later note edit".into());
+                            }
+                            doc.edit_notes(
+                                "Undo Groove Dice",
+                                edit.group,
+                                pattern,
+                                &edit.added,
+                                &edit.removed,
+                            )?;
+                            self.groove_undo.pop();
+                            changed = true;
+                        }
+                    }
+                    self.legacy.can_undo.set_bool(!self.groove_undo.is_empty());
+                }
+                GrooveAction::Load { genre, index, slot } => {
+                    let tracks = library_tracks(genre, index)?;
+                    doc.transaction("Load Groove", |doc| {
+                        let pattern = match slot {
+                            Some(slot) => pattern_in_slot(doc, command.group, slot)?,
+                            None => scene_pattern(doc.project(), command.scene, command.group)?,
+                        };
+                        load_tracks(
+                            doc,
+                            command.group,
+                            pattern,
+                            tracks,
+                            [true; crate::groove::ROWS],
+                        )
+                    })?;
+                    changed = true;
+                }
+                GrooveAction::LoadSet { genre, set, tone } => {
+                    let tracks: Vec<_> = (0..crate::groove::GROOVES)
+                        .map(|slot| library_tracks(genre, set * crate::groove::GROOVES + slot + 1))
+                        .collect::<Result<_, _>>()?;
+                    doc.transaction("Load Groove set", |doc| {
+                        for (slot, tracks) in tracks.into_iter().enumerate() {
+                            let pattern = pattern_in_slot(doc, command.group, slot)?;
+                            load_tracks(
+                                doc,
+                                command.group,
+                                pattern,
+                                tracks,
+                                [true; crate::groove::ROWS],
+                            )?;
+                        }
+                        if let Some(defaults) = crate::patterns::set_defaults(genre, set) {
+                            let settings = std::array::from_fn(|row| LegacySoundSettings {
+                                sound: Some(defaults.sounds[row] as usize),
+                                level: Some(defaults.levels[row]),
+                                pitch: Some(defaults.pitches[row]),
+                                decay: Some(defaults.decay[row]),
+                                tone: Some(tone[row]),
+                                ..Default::default()
+                            });
+                            apply_legacy_sounds(
+                                doc,
+                                command.group,
+                                &self.kits,
+                                self.shared.rate,
+                                Some(defaults.kit),
+                                settings,
+                                [true; crate::groove::ROWS],
+                                [true; crate::groove::ROWS],
+                                [7; crate::groove::ROWS],
+                            )?;
+                            let old = doc.project().groups[command.group].swing;
+                            doc.set_swing(
+                                Target::Group(command.group),
+                                Swing {
+                                    amount: groove_swing(defaults.swing),
+                                    ..old
+                                },
+                            )?;
+                        }
+                        Ok(())
+                    })?;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.publish_snapshot(true)?;
+        }
+        Ok(changed)
+    }
+
     fn ensure_document(&mut self) -> Result<(), String> {
         if self.document.is_none() {
             self.lock_project()?;
@@ -328,6 +803,7 @@ impl Editor {
                 let mut document = Document::from_bytes(data, origin)?;
                 let modified = complete_groups(&mut document)?;
                 self.document = Some(document);
+                self.groove_solo_saved = [None; GROUPS];
                 self.publish_snapshot(modified)?;
                 return Ok(());
             }
@@ -421,6 +897,28 @@ impl Editor {
 
     fn request(&mut self, request: Request) -> Result<bool, String> {
         match request {
+            Request::ExportGroovePreset { group, reply } => {
+                let result = (|| {
+                    self.ensure_document()?;
+                    let doc = self.document.as_ref().expect("initialized");
+                    let group_file =
+                        doc.file_bytes(FileItem::Group(group), &SoundInfo::default())?;
+                    let mut isolated =
+                        Document::from_bytes(doc.to_bytes()?, doc.path().map(Path::to_path_buf))?;
+                    for other in (0..isolated.project().groups.len()).rev() {
+                        if other != group {
+                            isolated.delete_group(other)?;
+                        }
+                    }
+                    Ok(NativeGroovePreset {
+                        group_file,
+                        project: isolated.to_bytes()?,
+                        origin: doc.path().map(encode_path),
+                    })
+                })();
+                let _ = reply.send(result);
+                Ok(false)
+            }
             Request::Open(path) => {
                 self.lock_project()?;
                 let mut document = Document::open(&path)?;
@@ -435,6 +933,7 @@ impl Editor {
                 }
                 self.backed_up = true;
                 self.document = Some(document);
+                self.groove_solo_saved = [None; GROUPS];
                 self.shared
                     .project_generation
                     .fetch_add(1, Ordering::AcqRel);
@@ -466,6 +965,7 @@ impl Editor {
                 }
                 self.backed_up = true;
                 self.document = Some(reset_initial_history(empty_project()?)?);
+                self.groove_solo_saved = [None; GROUPS];
                 self.shared
                     .project_generation
                     .fetch_add(1, Ordering::AcqRel);
@@ -522,13 +1022,15 @@ impl Editor {
                 self.shared.prepare()?;
                 Ok(true)
             }
-            Request::Undo | Request::Redo => {
+            Request::Undo | Request::Redo | Request::UndoStep | Request::RedoStep => {
                 self.ensure_document()?;
                 let document = self.document.as_mut().expect("initialized");
-                let changed = if matches!(request, Request::Undo) {
-                    document.undo()
-                } else {
-                    document.redo()
+                let changed = match request {
+                    Request::Undo => document.undo(),
+                    Request::Redo => document.redo(),
+                    Request::UndoStep => document.undo_step(),
+                    Request::RedoStep => document.redo_step(),
+                    _ => unreachable!(),
                 };
                 if changed {
                     self.publish_snapshot(true)?;
@@ -613,6 +1115,218 @@ pub struct MaschineHandle {
 }
 
 impl MaschineHandle {
+    pub fn export_native_groove_preset(&self, group: usize) -> Result<NativeGroovePreset, String> {
+        let (reply, result) = std::sync::mpsc::sync_channel(1);
+        self.request(Request::ExportGroovePreset { group, reply })?;
+        result
+            .recv()
+            .map_err(|_| "Maschine editor stopped".to_string())?
+    }
+
+    pub fn load_native_groove_preset(
+        &self,
+        group: usize,
+        scene: usize,
+        source_group: usize,
+        source_scene: usize,
+        preset: NativeGroovePreset,
+    ) -> Result<(), String> {
+        self.edit(move |doc| {
+            let origin = preset.origin.map(decode_path).transpose()?;
+            let source = Document::from_bytes(preset.project, origin)?;
+            let source_data = source
+                .project()
+                .groups
+                .get(source_group)
+                .ok_or("preset group is missing")?
+                .clone();
+            let old_patterns = doc
+                .project()
+                .groups
+                .get(group)
+                .ok_or("no such group")?
+                .patterns
+                .clone();
+            let source_slot = scene_pattern(source.project(), source_scene, source_group)
+                .ok()
+                .and_then(|p| source_data.patterns.get(p))
+                .map(|p| p.slot);
+
+            // A preset can be loaded into a project in a different folder.
+            // Resolve its zones now so they still name the original samples.
+            let mut resolver = deckard_engine::library::Resolver::new(source.path());
+            let mut zones = Vec::new();
+            let mut takes = Vec::new();
+            for (sound, data) in source_data.sounds.iter().take(SOUNDS).enumerate() {
+                if let Some(sampler) = &data.sampler {
+                    let mut paths = Vec::new();
+                    for zone in &sampler.zones {
+                        let path = if zone.sample.path.is_empty() {
+                            None
+                        } else {
+                            Some(resolver.resolve(&zone.sample).ok_or_else(|| {
+                                format!("preset sample is missing: {}", zone.sample.path)
+                            })?)
+                        };
+                        paths.push(path);
+                    }
+                    zones.push((sound, paths));
+                }
+                if let Some(audio) = &data.audio {
+                    for (take, item) in audio.takes.iter().enumerate() {
+                        if !item.sample.path.is_empty() {
+                            let file = resolver.resolve(&item.sample).ok_or_else(|| {
+                                format!("preset sample is missing: {}", item.sample.path)
+                            })?;
+                            takes.push((sound, take, file));
+                        }
+                    }
+                }
+            }
+            // The decoder can undo its own failed group import. Probe it on a
+            // separate document first, so a malformed preset cannot change
+            // the history length of the transaction editing the real project.
+            let mut probe =
+                Document::from_bytes(doc.to_bytes()?, doc.path().map(Path::to_path_buf))?;
+            probe.load_group_file_with(group, &preset.group_file, false, false)?;
+            doc.load_group_file_with(group, &preset.group_file, false, false)?;
+            for pattern in &source_data.patterns {
+                pattern_in_slot(doc, group, pattern.slot)?;
+            }
+            let mut clips = Vec::new();
+            for sound in 0..source_data.sounds.len().min(SOUNDS) {
+                clips.push(
+                    source
+                        .copy_sound(source_group, sound)?
+                        .carried(&source, doc),
+                );
+            }
+            doc.paste_sounds(group, 0, &clips)?;
+            for (sound, paths) in zones {
+                let specs: Vec<_> = paths
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, file)| ZoneSpec {
+                        from: ZoneFrom::Zone(i),
+                        file,
+                        set: Vec::new(),
+                    })
+                    .collect();
+                doc.set_zones(group, sound, &specs, "Resolve preset samples")?;
+            }
+            for (sound, take, file) in takes {
+                let target = Target::Take(group, sound, take);
+                let fields = [
+                    "length",
+                    "play_range/low",
+                    "play_range/high",
+                    "selection_range/low",
+                    "selection_range/high",
+                    "unknown_98",
+                ];
+                let saved: Vec<_> = fields
+                    .into_iter()
+                    .filter_map(|field| {
+                        doc.value(target, field)
+                            .cloned()
+                            .map(|value| (field, value))
+                    })
+                    .collect();
+                doc.set_take_sample(group, sound, take, &file, 1, "Resolve preset take")?;
+                for (field, value) in saved {
+                    doc.set("Restore take settings", target, field, value)?;
+                }
+            }
+            let slots: Vec<_> = doc.project().groups[group]
+                .patterns
+                .iter()
+                .map(|p| p.slot)
+                .collect();
+            for (index, slot) in slots.into_iter().enumerate() {
+                let desired = source_data.patterns.iter().find(|p| p.slot == slot);
+                let old = old_patterns.iter().find(|p| p.slot == slot);
+                let Some(pattern) = desired.or(old) else {
+                    continue;
+                };
+                let current = doc.project().groups[group].patterns[index].clone();
+                let notes = if desired.is_some() {
+                    pattern
+                        .notes
+                        .iter()
+                        .map(|n| doc.carry_note(&source, *n))
+                        .collect::<Vec<_>>()
+                } else {
+                    pattern.notes.clone()
+                };
+                doc.edit_notes("Restore preset notes", group, index, &current.notes, &notes)?;
+                doc.edit_midi(
+                    "Restore preset MIDI",
+                    group,
+                    index,
+                    &current.midi,
+                    &pattern.midi,
+                )?;
+                if desired.is_some() {
+                    doc.set_pattern_span(group, index, pattern.start, pattern.length)?;
+                    doc.rename(Target::Pattern(group, index), &pattern.name)?;
+                    doc.set_color(&[Target::Pattern(group, index)], pattern.color)?;
+                    for sound in 0..SOUNDS {
+                        let before = current
+                            .audio
+                            .iter()
+                            .find(|cue| cue.sound == sound)
+                            .map(|cue| cue.take);
+                        let after = pattern
+                            .audio
+                            .iter()
+                            .find(|cue| cue.sound == sound)
+                            .map(|cue| cue.take);
+                        if before != after {
+                            doc.set_audio_in(
+                                group,
+                                sound,
+                                &[index],
+                                after,
+                                "Restore preset audio",
+                            )?;
+                        }
+                    }
+                    let mut channels = std::collections::BTreeSet::new();
+                    for point in current.mods.iter().chain(&pattern.mods) {
+                        channels.insert(point.sound);
+                    }
+                    for sound in channels {
+                        let chain = sound.map_or(Chain::Group(group), |s| Chain::Sound(group, s));
+                        doc.clear_pattern_modulation(chain, index)?;
+                    }
+                    let mut lanes: std::collections::BTreeMap<
+                        (Option<usize>, Option<usize>, String),
+                        Vec<(i64, f64)>,
+                    > = std::collections::BTreeMap::new();
+                    for point in &pattern.mods {
+                        lanes
+                            .entry((point.sound, point.slot, point.field.clone()))
+                            .or_default()
+                            .push((point.position, point.value));
+                    }
+                    for ((sound, slot, field), points) in lanes {
+                        let chain = sound.map_or(Chain::Group(group), |s| Chain::Sound(group, s));
+                        let target = deckard_model::ModTarget { slot, field };
+                        doc.set_modulation(chain, &target, index, (i64::MIN, i64::MAX), &points)?;
+                    }
+                }
+            }
+            if let Some(slot) = source_slot {
+                let pattern = doc.project().groups[group]
+                    .patterns
+                    .iter()
+                    .position(|p| p.slot == slot)
+                    .ok_or("preset pattern is missing")?;
+                doc.assign_pattern(scene, group, Some(pattern))?;
+            }
+            Ok(())
+        })
+    }
     /// Identity of the current document, unchanged by ordinary edits.
     pub fn project_generation(&self) -> u64 {
         self.shared.project_generation.load(Ordering::Acquire)
@@ -678,6 +1392,66 @@ impl MaschineHandle {
         Ok(())
     }
 
+    /// Apply only the tracks actually present in an older Groove preset to the
+    /// focused group. Other sounds, patterns and off-grid events stay intact.
+    pub fn load_legacy_groove_preset(
+        &self,
+        group: usize,
+        tracks: [[Option<Track>; crate::groove::ROWS]; crate::groove::GROOVES],
+        swing: Option<f64>,
+        kit: Option<usize>,
+        settings: [LegacySoundSettings; crate::groove::ROWS],
+    ) -> Result<(), String> {
+        let kits = self.shared.kits.clone();
+        let rate = self.shared.rate;
+        self.edit(move |doc| {
+            apply_legacy_sounds(
+                doc,
+                group,
+                &kits,
+                rate,
+                kit,
+                settings,
+                [true; crate::groove::ROWS],
+                [true; crate::groove::ROWS],
+                [7; crate::groove::ROWS],
+            )?;
+            for (slot, rows) in tracks.into_iter().enumerate() {
+                if rows.iter().all(Option::is_none) {
+                    continue;
+                }
+                let pattern = pattern_in_slot(doc, group, slot)?;
+                let g = doc.project().groups.get(group).ok_or("no such group")?;
+                let roles = roles_of(Some(g));
+                let mut next = tracks_of(&g.patterns[pattern], roles)?;
+                let mut selected = [false; crate::groove::ROWS];
+                for (row, track) in rows.into_iter().enumerate() {
+                    if let Some(track) = track {
+                        next[row] = track;
+                        selected[row] = true;
+                    }
+                }
+                load_tracks(doc, group, pattern, next, selected)?;
+            }
+            if let Some(swing) = swing {
+                let old = doc
+                    .project()
+                    .groups
+                    .get(group)
+                    .ok_or("no such group")?
+                    .swing;
+                doc.set_swing(
+                    Target::Group(group),
+                    Swing {
+                        amount: groove_swing(swing),
+                        ..old
+                    },
+                )?;
+            }
+            Ok(())
+        })
+    }
+
     /// Queue an edit and audio preparation on the worker. The receiver reports
     /// completion; plug-ins that require the main thread set `needs_main`.
     pub fn edit_deferred(
@@ -720,6 +1494,24 @@ impl MaschineHandle {
 
     pub fn redo(&self) -> Result<bool, String> {
         let changed = self.request(Request::Redo)?;
+        if changed {
+            self.shared.prepare()?;
+        }
+        Ok(changed)
+    }
+
+    /// Undo one sub-edit of a take without wrapping history changes in an edit transaction.
+    pub fn undo_step(&self) -> Result<bool, String> {
+        let changed = self.request(Request::UndoStep)?;
+        if changed {
+            self.shared.prepare()?;
+        }
+        Ok(changed)
+    }
+
+    /// Redo one sub-edit of a take without wrapping history changes in an edit transaction.
+    pub fn redo_step(&self) -> Result<bool, String> {
+        let changed = self.request(Request::RedoStep)?;
         if changed {
             self.shared.prepare()?;
         }
@@ -889,6 +1681,21 @@ pub(crate) struct Maschine {
     retired: rtrb::Producer<Prepared>,
     junk: rtrb::Producer<deckard_engine::Junk>,
     recorded: rtrb::Producer<deckard_engine::Recorded>,
+    groove_commands: rtrb::Producer<GrooveCommand>,
+    shared: Arc<Shared>,
+    groove_set_seen: u32,
+    groove_swing_seen: u32,
+    groove_slot_seen: u32,
+    groove_chain_seen: u32,
+    groove_tracks_seen: [[Track; crate::groove::ROWS]; crate::groove::GROOVES],
+    groove_mix_seen: LegacyMixSnapshot,
+    groove_mix_group: usize,
+    groove_mix_pending: Option<GrooveCommand>,
+    groove_mix_next_frame: u64,
+    vary_habits: Arc<Habits>,
+    vary_rng: groove_dice::Rng,
+    leader_key: Option<u8>,
+    kick_semitones: i64,
     preview: rtrb::Consumer<Option<Arc<Sample>>>,
     retired_previews: rtrb::Producer<Arc<Sample>>,
     preview_sample: Option<Arc<Sample>>,
@@ -907,6 +1714,7 @@ pub(crate) struct Maschine {
     keyboard_focus: Option<(usize, usize, i64)>,
     base_keys: [[i64; SOUNDS]; GROUPS],
     roles: [[usize; crate::groove::ROWS]; GROUPS],
+    legacy_sounds: [[bool; SOUNDS]; GROUPS],
     project: Option<Arc<Project>>,
     fill_seed: u32,
     crash_next: bool,
@@ -930,6 +1738,7 @@ impl Maschine {
         let (retired, rx) = rtrb::RingBuffer::new(QUEUE);
         let (junk, junk_rx) = rtrb::RingBuffer::new(512);
         let (recorded, recorded_rx) = rtrb::RingBuffer::new(4096);
+        let (groove_commands, groove_commands_rx) = rtrb::RingBuffer::new(64);
         let (preview_tx, preview) = rtrb::RingBuffer::new(QUEUE);
         let (retired_previews, preview_retired_rx) = rtrb::RingBuffer::new(QUEUE);
         let (mut engine, _) = Engine::new(
@@ -941,6 +1750,11 @@ impl Maschine {
         );
         engine.looping = true;
         engine.sequencing = false;
+        let vary_habits = Habits::shared();
+        let _ = engine.set_sequence_transform(Some(Box::new(GrooveVariation {
+            habits: vary_habits.clone(),
+            rng: groove_dice::Rng(0x9e37_79b9 ^ ((deck as u32 + 1) * 7919)),
+        })));
         let shared = Arc::new(Shared {
             cache: Mutex::new(SampleCache::default()),
             ready: Mutex::new(tx),
@@ -951,7 +1765,10 @@ impl Maschine {
             snapshot: RwLock::new(None),
             revision: AtomicU64::new(0),
             project_generation: AtomicU64::new(1),
+            groove_overflow: AtomicBool::new(false),
+            groove_lost: AtomicBool::new(false),
             rate: rate as u32,
+            kits: kits.clone(),
             controls: controls.clone(),
             last_report: Mutex::new(None),
             last_error: Mutex::new(None),
@@ -962,6 +1779,13 @@ impl Maschine {
             shared: shared.clone(),
         };
         let worker_controls = controls.clone();
+        let audio_shared = shared.clone();
+        let groove_set_seen = legacy.load_set.version();
+        let groove_swing_seen = legacy.swing.version();
+        let groove_slot_seen = legacy.groove.version();
+        let groove_chain_seen = legacy.chain.version();
+        let groove_tracks_seen = std::array::from_fn(|slot| legacy.tracks(slot));
+        let groove_mix_seen = legacy_mix(&legacy);
         std::thread::Builder::new()
             .name(format!("maschine-editor-{}", deck + 1))
             .spawn(move || {
@@ -973,6 +1797,13 @@ impl Maschine {
                     kits,
                     recorded: recorded_rx,
                     held_recording: HashMap::new(),
+                    groove_commands: groove_commands_rx,
+                    groove_dice: Dice::new(
+                        Habits::shared(),
+                        0x9e37_79b9 ^ ((deck as u32 + 1) * 7919),
+                    ),
+                    groove_undo: Vec::new(),
+                    groove_solo_saved: [None; GROUPS],
                     autosave: autosave_path(deck),
                     project_lock: None,
                     backed_up: false,
@@ -981,6 +1812,7 @@ impl Maschine {
                 };
                 let mut initialized = false;
                 let mut attempted = false;
+                let mut groove_prepare_pending = false;
                 let mut scene_seen = worker_controls.scene.version();
                 let mut group_seen = worker_controls.group.version();
                 let mut pattern_seen = worker_controls.pattern.version();
@@ -1016,6 +1848,12 @@ impl Maschine {
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     }
                     editor.shared.collect();
+                    if editor.shared.groove_overflow.swap(false, Ordering::AcqRel) {
+                        editor.shared.groove_lost.store(true, Ordering::Release);
+                        editor
+                            .shared
+                            .set_error("Groove edit queue is full; repeat the last action".into());
+                    }
                     if let Err(error) = editor.autosave_if_due() {
                         worker_controls.error.set_bool(true);
                         worker_controls.save_error.set_bool(true);
@@ -1032,6 +1870,21 @@ impl Maschine {
                         }
                         Ok(false) => {}
                         Err(error) => editor.shared.set_error(error),
+                    }
+                    match editor.take_groove_commands() {
+                        Ok(true) => groove_prepare_pending = true,
+                        Ok(false) => {}
+                        Err(error) => editor.shared.set_error(error),
+                    }
+                    if groove_prepare_pending {
+                        match editor.shared.prepare() {
+                            Ok(()) => groove_prepare_pending = false,
+                            Err(error) if error == "Maschine audio update queue is full" => {}
+                            Err(error) => {
+                                groove_prepare_pending = false;
+                                editor.shared.set_error(error);
+                            }
+                        }
                     }
                     if !editor.legacy.backend.get_bool() {
                         attempted = false;
@@ -1131,6 +1984,21 @@ impl Maschine {
                 retired,
                 junk,
                 recorded,
+                groove_commands,
+                shared: audio_shared,
+                groove_set_seen,
+                groove_swing_seen,
+                groove_slot_seen,
+                groove_chain_seen,
+                groove_tracks_seen,
+                groove_mix_seen,
+                groove_mix_group: 0,
+                groove_mix_pending: None,
+                groove_mix_next_frame: 0,
+                vary_habits,
+                vary_rng: groove_dice::Rng(0x85eb_ca6b ^ ((deck as u32 + 1) * 3571)),
+                leader_key: None,
+                kick_semitones: 0,
                 preview,
                 retired_previews,
                 preview_sample: None,
@@ -1149,6 +2017,7 @@ impl Maschine {
                 keyboard_focus: Some((0, 0, 60)),
                 base_keys: [[60; SOUNDS]; GROUPS],
                 roles: [[0, 1, 2, 3, 4, 5, 6, 7]; GROUPS],
+                legacy_sounds: [[false; SOUNDS]; GROUPS],
                 project: None,
                 fill_seed: crate::groove::fill_seed(deck),
                 crash_next: false,
@@ -1160,6 +2029,186 @@ impl Maschine {
             },
             handle,
         )
+    }
+
+    /// Establish a baseline without copying saved legacy settings over an
+    /// already existing DECKARD project on activation.
+    pub fn begin_groove_bridge(&mut self, controls: &GrooveControls) {
+        self.groove_swing_seen = controls.swing.version();
+        self.groove_slot_seen = controls.groove.version();
+        self.groove_chain_seen = controls.chain.version();
+        self.groove_tracks_seen = std::array::from_fn(|slot| controls.tracks(slot));
+        self.groove_mix_seen = legacy_mix(controls);
+        self.groove_mix_group = (self.controls.group.get().round() as usize).min(GROUPS - 1);
+    }
+
+    pub fn set_groove_key(&mut self, key: Option<u8>) {
+        self.leader_key = key;
+    }
+
+    pub fn observe_inactive_groove(&mut self, controls: &GrooveControls) {
+        self.groove_set_seen = controls.load_set.version();
+        self.groove_swing_seen = controls.swing.version();
+        self.groove_slot_seen = controls.groove.version();
+        self.groove_chain_seen = controls.chain.version();
+        self.groove_tracks_seen = std::array::from_fn(|slot| controls.tracks(slot));
+        self.groove_mix_seen = legacy_mix(controls);
+        self.groove_mix_group = (self.controls.group.get().round() as usize).min(GROUPS - 1);
+    }
+
+    fn send_groove_action(&mut self, action: GrooveAction) {
+        let command = GrooveCommand {
+            generation: self.shared.project_generation.load(Ordering::Acquire),
+            group: (self.controls.group.get().round() as usize).min(GROUPS - 1),
+            scene: (self.controls.scene.get().round() as usize).min(127),
+            action,
+        };
+        if self.groove_commands.push(command).is_err() {
+            self.controls.error.set_bool(true);
+            self.shared.groove_overflow.store(true, Ordering::Release);
+        }
+    }
+
+    fn flush_legacy_mix(&mut self, force: bool) {
+        let now = self.engine.output_frame();
+        if !force && now < self.groove_mix_next_frame {
+            return;
+        }
+        if let Some(command) = self.groove_mix_pending.take() {
+            match self.groove_commands.push(command) {
+                Ok(()) => self.groove_mix_next_frame = now.saturating_add((self.rate * 0.1) as u64),
+                Err(_) => self.groove_mix_pending = Some(command),
+            }
+        }
+    }
+
+    fn capture_legacy_mix(&mut self, controls: &GrooveControls) {
+        let group = (self.controls.group.get().round() as usize).min(GROUPS - 1);
+        let now = legacy_mix(controls);
+        if group != self.groove_mix_group {
+            self.flush_legacy_mix(true);
+            self.groove_mix_group = group;
+            self.groove_mix_seen = now;
+        } else if let Some(action) = changed_mix(self.groove_mix_seen, now) {
+            let generation = self.shared.project_generation.load(Ordering::Acquire);
+            if self
+                .groove_mix_pending
+                .as_ref()
+                .is_some_and(|p| p.group != group || p.generation != generation)
+            {
+                self.flush_legacy_mix(true);
+            }
+            if let Some(pending) = self.groove_mix_pending.as_mut() {
+                if pending.group == group && pending.generation == generation {
+                    merge_mix(&mut pending.action, action);
+                } else {
+                    self.controls.error.set_bool(true);
+                    self.shared.groove_overflow.store(true, Ordering::Release);
+                }
+            } else {
+                self.groove_mix_pending = Some(GrooveCommand {
+                    generation,
+                    group,
+                    scene: (self.controls.scene.get().round() as usize).min(127),
+                    action,
+                });
+            }
+        }
+        self.flush_legacy_mix(false);
+    }
+
+    /// Capture the explicit actions before the legacy scheduler consumes the
+    /// push controls. The worker prepares their timeline for the next bar.
+    pub fn capture_groove_actions(&mut self, c: &GrooveControls) {
+        self.capture_legacy_mix(c);
+        for slot in 0..crate::groove::GROOVES {
+            let tracks = c.tracks(slot);
+            for (row, &after) in tracks.iter().enumerate() {
+                let before = self.groove_tracks_seen[slot][row];
+                if before != after {
+                    self.send_groove_action(GrooveAction::TrackDelta {
+                        slot,
+                        row,
+                        before,
+                        after,
+                    });
+                }
+            }
+        }
+        let genre = c.genre.get().round() as usize;
+        if c.load.get_bool() {
+            self.send_groove_action(GrooveAction::Load {
+                genre,
+                index: c.pattern.get().round() as usize,
+                slot: None,
+            });
+        }
+        if c.load_chain.get_bool() {
+            let chosen = (c.groove.get().round() as usize).min(crate::groove::GROOVES - 1);
+            self.send_groove_action(GrooveAction::Load {
+                genre,
+                index: c.chain.get().round() as usize,
+                slot: Some(chosen ^ 1),
+            });
+        }
+        if c.load_set.get_bool() || c.load_set.version() != self.groove_set_seen {
+            self.send_groove_action(GrooveAction::LoadSet {
+                genre,
+                set: c.library_set.get().round() as usize,
+                tone: std::array::from_fn(|row| c.tone[row].get()),
+            });
+        }
+        if let Some(movement) = Move::from_number(c.dice.get().round() as u8) {
+            self.send_groove_action(GrooveAction::Dice {
+                movement,
+                row: (c.dice_row.get().round() as usize)
+                    .min(crate::groove::ROWS)
+                    .checked_sub(1),
+                locked: std::array::from_fn(|r| c.lock[r].get_bool()),
+                genre,
+            });
+        }
+        if c.dice_undo.get_bool() {
+            self.send_groove_action(GrooveAction::Undo);
+        }
+    }
+
+    pub fn capture_groove_changes(
+        &mut self,
+        c: &GrooveControls,
+        signals: &[GrooveStep],
+        edits: impl Iterator<Item = GroovePadEdit>,
+    ) {
+        self.groove_set_seen = c.load_set.version();
+        self.groove_tracks_seen = std::array::from_fn(|slot| c.tracks(slot));
+        self.groove_mix_seen = legacy_mix(c);
+        let version = c.swing.version();
+        if version != self.groove_swing_seen {
+            self.send_groove_action(GrooveAction::Swing(c.swing.get()));
+            self.groove_swing_seen = version;
+        }
+        for edit in edits {
+            if !matches!(edit, GroovePadEdit::Record { .. }) || !self.controls.record.get_bool() {
+                self.send_groove_action(GrooveAction::Pad(edit));
+            }
+        }
+        let slot_changed = c.groove.version() != self.groove_slot_seen;
+        let chain_changed = c.chain.version() != self.groove_chain_seen;
+        self.groove_slot_seen = c.groove.version();
+        self.groove_chain_seen = c.chain.version();
+        let chosen = (c.groove.get().round() as usize).min(crate::groove::GROOVES - 1);
+        if slot_changed {
+            self.send_groove_action(GrooveAction::SelectSlot(chosen));
+        } else if c.chain.get() >= 0.5 && (chain_changed || signals.iter().any(|s| s.step == 0)) {
+            let playing = (c.groove_playing.get().round() as usize).min(crate::groove::GROOVES - 1);
+            self.send_groove_action(GrooveAction::SelectSlot(if playing == chosen {
+                chosen ^ 1
+            } else {
+                chosen
+            }));
+        } else if chain_changed {
+            self.send_groove_action(GrooveAction::SelectSlot(chosen));
+        }
     }
 
     /// Install prepared project changes, keeping sounding voices and transport.
@@ -1189,6 +2238,7 @@ impl Maschine {
             let old = self.engine.adopt_with(next.engine, &mut next.timelines);
             std::mem::swap(&mut self.base_keys, &mut next.base_keys);
             std::mem::swap(&mut self.roles, &mut next.roles);
+            std::mem::swap(&mut self.legacy_sounds, &mut next.legacy_sounds);
             std::mem::swap(&mut self.project, &mut next.project);
             self.own_bpm = f64::NAN;
             std::mem::swap(&mut self.telemetry, &mut next.telemetry);
@@ -1208,6 +2258,7 @@ impl Maschine {
         source: Source,
         signals: &[GrooveStep],
         controls: &GrooveControls,
+        manual: &[GrooveManualHit],
         break_start: bool,
         out: &mut [[f32; 2]],
         cue: &mut [[f32; 2]],
@@ -1291,6 +2342,49 @@ impl Maschine {
         self.sound_seen = self.controls.sound.version();
         self.sync_keyboard_focus(group, self.last_sound);
         self.engine.set_focus(Some(group));
+        let kit =
+            (controls.kit.get().round() as usize).min(self.shared.kits.len().saturating_sub(1));
+        let sound = controls.sound[0].get().round() as usize;
+        let hz = if self.legacy_sounds[group][self.roles[group][0]] {
+            self.shared
+                .kits
+                .get(kit)
+                .and_then(|k| k.sounds.get(sound))
+                .map_or(0.0, |s| s.pitch)
+        } else {
+            0.0
+        };
+        let tuning =
+            crate::groove::kick_shift(hz, self.leader_key, controls.kick_key.get().round() as u8);
+        self.kick_semitones = tuning.map_or(0, |(shift, _)| i64::from(shift));
+        controls
+            .kick_note
+            .set(tuning.map_or(0.0, |(_, note)| f64::from(note) + 1.0));
+        self.engine.set_sequence_pitch_shift(
+            Some(group),
+            self.roles[group][0],
+            self.kick_semitones,
+        );
+        let step = controls.position.get().round().max(0.0) as usize;
+        self.update_vary_context(controls, group, step);
+        for hit in manual {
+            let sound = self.roles[group][hit.row.min(crate::groove::ROWS - 1)];
+            let velocity = ((hit.velocity.clamp(0.0, 1.25) as f64 / 1.25).cbrt() * 127.0)
+                .round()
+                .clamp(1.0, 127.0) as i64;
+            self.engine.schedule(
+                0,
+                Live::NoteOn {
+                    group,
+                    sound,
+                    pitch: (self.base_keys[group][sound]
+                        + if hit.row == 0 { self.kick_semitones } else { 0 })
+                    .clamp(0, 127),
+                    velocity,
+                    length: PPQ / 4,
+                },
+            );
+        }
         for pad in 0..SOUNDS {
             let value = self.controls.pads[pad].get();
             let version = self.controls.pads[pad].version();
@@ -1317,6 +2411,11 @@ impl Maschine {
                         + self.controls.semitone.get().round() as i64
                 } else {
                     self.base_keys[group][sound]
+                        + if sound == self.roles[group][0] {
+                            self.kick_semitones
+                        } else {
+                            0
+                        }
                 };
                 let pitch = pitch.clamp(0, 127);
                 let level = if value > 0.0 {
@@ -1465,6 +2564,7 @@ impl Maschine {
     }
 
     fn apply_step(&mut self, controls: &GrooveControls, signal: GrooveStep, group: usize) {
+        self.update_vary_context(controls, group, signal.step);
         if signal.break_active {
             self.break_gate = true;
             self.crash_next = false;
@@ -1483,6 +2583,44 @@ impl Maschine {
             self.fill_seed,
             &mut self.crash_next,
         );
+        let vary = controls.vary.get() as f32;
+        let genre = controls.genre.get().round() as usize;
+        for row in 0..crate::groove::ROWS {
+            let role = if row == crate::groove::ROWS - 1
+                && controls.sound[row].get().round() as usize == 8
+            {
+                8
+            } else {
+                row
+            };
+            if plan.gate & (1 << roles[row]) != 0
+                || normal[row] > 0.0
+                || written[row] == 0
+                || !groove_dice::ghost(
+                    vary,
+                    role,
+                    signal.step,
+                    genre,
+                    &self.vary_habits,
+                    &mut self.vary_rng,
+                )
+            {
+                continue;
+            }
+            let gain = groove_dice::humanize(0.35, vary, &mut self.vary_rng);
+            let velocity = ((gain.clamp(0.0, 1.25) as f64 / 1.25).cbrt() * 127.0)
+                .round()
+                .clamp(1.0, 127.0) as i64;
+            let sound = roles[row];
+            self.engine.note_on_generated(
+                group,
+                sound,
+                (self.base_keys[group][sound] + if row == 0 { self.kick_semitones } else { 0 })
+                    .clamp(0, 127),
+                velocity,
+                PPQ / 4,
+            );
+        }
         if plan.gate == 0 {
             self.engine.set_sequence_gate_sounds(None, None, false);
             return;
@@ -1500,11 +2638,25 @@ impl Maschine {
             self.engine.note_on_generated(
                 group,
                 sound,
-                self.base_keys[group][sound],
+                (self.base_keys[group][sound] + if row == 0 { self.kick_semitones } else { 0 })
+                    .clamp(0, 127),
                 velocity,
                 PPQ / 4,
             );
         }
+    }
+
+    fn update_vary_context(&mut self, controls: &GrooveControls, group: usize, step: usize) {
+        let mut context = [0u64; 16];
+        context[0] = group as u64;
+        context[1] = controls.genre.get().round() as u64;
+        context[2] = (controls.vary.get() as f32).to_bits() as u64;
+        context[3] = (step % crate::groove::STEPS) as u64;
+        for (row, sound) in self.roles[group].iter().enumerate() {
+            context[4 + row] = *sound as u64;
+        }
+        context[12] = controls.sound[crate::groove::ROWS - 1].get().round() as u64;
+        self.engine.set_sequence_transform_context(context);
     }
 
     fn written_steps(
@@ -1593,6 +2745,753 @@ fn roles_of(group: Option<&deckard_model::Group>) -> [usize; crate::groove::ROWS
         // A legacy or external kit keeps its own first-eight order.
         [0, 1, 2, 3, 4, 5, 6, 7]
     }
+}
+
+fn groove_swing(value: f64) -> f64 {
+    ((1.0 + 80.0 * value.clamp(0.0, 0.75) / 9.0).sqrt() - 1.0) * 50.0
+}
+
+fn legacy_mix(c: &GrooveControls) -> LegacyMixSnapshot {
+    LegacyMixSnapshot {
+        kit: c.kit.get().round() as usize,
+        rows: std::array::from_fn(|r| LegacySoundSettings {
+            sound: Some(c.sound[r].get().round() as usize),
+            level: Some(c.level[r].get()),
+            pitch: Some(c.pitch[r].get()),
+            decay: Some(c.decay[r].get()),
+            tone: Some(c.tone[r].get()),
+            pan: Some(c.pan[r].get()),
+            mute: Some(c.mute[r].get_bool()),
+            solo: Some(c.solo[r].get_bool()),
+        }),
+    }
+}
+
+fn changed_mix(before: LegacyMixSnapshot, after: LegacyMixSnapshot) -> Option<GrooveAction> {
+    let kit_changed = before.kit != after.kit;
+    let mute_changed: [bool; crate::groove::ROWS] =
+        std::array::from_fn(|r| before.rows[r].mute != after.rows[r].mute);
+    let solo_changed = (0..crate::groove::ROWS).any(|r| before.rows[r].solo != after.rows[r].solo);
+    let solo_active = after.rows.iter().any(|s| s.solo == Some(true));
+    let mut settings = [LegacySoundSettings::default(); crate::groove::ROWS];
+    let mut rebuild = [false; crate::groove::ROWS];
+    let mut replace = [false; crate::groove::ROWS];
+    let mut parameters = [0u8; crate::groove::ROWS];
+    for row in 0..crate::groove::ROWS {
+        let (a, b) = (before.rows[row], after.rows[row]);
+        replace[row] = kit_changed || a.sound != b.sound;
+        parameters[row] = u8::from(a.pitch != b.pitch)
+            | (u8::from(a.decay != b.decay) << 1)
+            | (u8::from(a.tone != b.tone) << 2);
+        rebuild[row] = replace[row] || parameters[row] != 0;
+        if rebuild[row] {
+            settings[row].sound = b.sound;
+            settings[row].pitch = b.pitch;
+            settings[row].decay = b.decay;
+            settings[row].tone = b.tone;
+        }
+        if a.level != b.level {
+            settings[row].level = b.level;
+        }
+        if a.pan != b.pan {
+            settings[row].pan = b.pan;
+        }
+        if solo_changed || (solo_active && mute_changed.iter().any(|v| *v)) {
+            settings[row].mute = b.mute;
+            settings[row].solo = b.solo;
+        } else if a.mute != b.mute {
+            settings[row].mute = b.mute;
+        }
+    }
+    (rebuild.iter().any(|v| *v)
+        || settings
+            .iter()
+            .any(|s| *s != LegacySoundSettings::default()))
+    .then_some(GrooveAction::Mix {
+        kit: after.kit,
+        settings,
+        rebuild,
+        replace,
+        parameters,
+        mute_changed,
+    })
+}
+
+fn merge_mix(previous: &mut GrooveAction, next: GrooveAction) {
+    let (
+        GrooveAction::Mix {
+            kit,
+            settings,
+            rebuild,
+            replace,
+            parameters,
+            mute_changed,
+        },
+        GrooveAction::Mix {
+            kit: next_kit,
+            settings: next_settings,
+            rebuild: next_rebuild,
+            replace: next_replace,
+            parameters: next_parameters,
+            mute_changed: next_mute_changed,
+        },
+    ) = (previous, next)
+    else {
+        return;
+    };
+    *kit = next_kit;
+    for row in 0..crate::groove::ROWS {
+        rebuild[row] |= next_rebuild[row];
+        replace[row] |= next_replace[row];
+        parameters[row] |= next_parameters[row];
+        mute_changed[row] |= next_mute_changed[row];
+        let (a, b) = (&mut settings[row], next_settings[row]);
+        if b.sound.is_some() {
+            a.sound = b.sound;
+        }
+        if b.level.is_some() {
+            a.level = b.level;
+        }
+        if b.pitch.is_some() {
+            a.pitch = b.pitch;
+        }
+        if b.decay.is_some() {
+            a.decay = b.decay;
+        }
+        if b.tone.is_some() {
+            a.tone = b.tone;
+        }
+        if b.pan.is_some() {
+            a.pan = b.pan;
+        }
+        if b.mute.is_some() {
+            a.mute = b.mute;
+        }
+        if b.solo.is_some() {
+            a.solo = b.solo;
+        }
+    }
+}
+
+fn scene_pattern(project: &Project, scene: usize, group: usize) -> Result<usize, String> {
+    project
+        .scenes
+        .get(scene)
+        .and_then(|s| s.patterns.iter().find(|(g, _)| *g == group))
+        .map(|(_, p)| *p)
+        .filter(|p| {
+            project
+                .groups
+                .get(group)
+                .is_some_and(|g| *p < g.patterns.len())
+        })
+        .ok_or_else(|| "the focused group has no pattern in this scene".into())
+}
+
+fn pattern_in_slot(doc: &mut Document, group: usize, slot: usize) -> Result<usize, String> {
+    let patterns = &doc
+        .project()
+        .groups
+        .get(group)
+        .ok_or("no such group")?
+        .patterns;
+    if let Some(index) = patterns.iter().position(|p| p.slot == slot) {
+        return Ok(index);
+    }
+    doc.add_pattern_in_slot(group, 0, slot, &format!("Pattern {}", slot + 1))
+}
+
+fn grid_step(pattern: &Pattern, note: &Note) -> Option<usize> {
+    let relative = note.position - pattern.start;
+    let grid = PPQ / 4;
+    (relative >= 0 && relative < PPQ * 4 && relative % grid == 0)
+        .then_some((relative / grid) as usize)
+}
+
+fn tracks_of(
+    pattern: &Pattern,
+    roles: [usize; crate::groove::ROWS],
+) -> Result<[Track; crate::groove::ROWS], String> {
+    if pattern.length < PPQ * 4 {
+        return Err("Groove actions need a pattern at least one bar long".into());
+    }
+    let mut tracks = [Track::default(); crate::groove::ROWS];
+    for note in &pattern.notes {
+        let Some(step) = grid_step(pattern, note) else {
+            continue;
+        };
+        let Some(row) = roles.iter().position(|sound| *sound == note.sound) else {
+            continue;
+        };
+        let bit = 1 << step;
+        tracks[row].hits |= bit;
+        if note.velocity <= 105 {
+            tracks[row].soft |= bit;
+        }
+        if note.velocity >= 123 {
+            tracks[row].accent |= bit;
+        }
+        if note.probability <= 50 {
+            tracks[row].maybe |= bit;
+        }
+    }
+    Ok(tracks)
+}
+
+fn note_for_track(
+    pattern: &Pattern,
+    sound: usize,
+    step: usize,
+    track: Track,
+    group: &deckard_model::Group,
+) -> Note {
+    let bit = 1 << step;
+    let gain: f64 = if track.accent & bit != 0 {
+        1.25
+    } else if track.soft & bit != 0 {
+        0.5
+    } else {
+        1.0
+    };
+    Note {
+        sound,
+        position: pattern.start + step as i64 * PPQ / 4,
+        length: PPQ / 4,
+        pitch: group
+            .sounds
+            .get(sound)
+            .map_or(60, |s| s.channel.base_key.clamp(0, 127)),
+        velocity: ((gain / 1.25).cbrt() * 127.0).round() as i64,
+        probability: if track.maybe & bit != 0 { 50 } else { 100 },
+        expr: None,
+    }
+}
+
+fn dice_notes(
+    pattern: &Pattern,
+    roles: [usize; crate::groove::ROWS],
+    rows: [bool; crate::groove::ROWS],
+    before: [Track; crate::groove::ROWS],
+    after: [Track; crate::groove::ROWS],
+    movement: Move,
+    group: &deckard_model::Group,
+) -> Result<(Vec<Note>, Vec<Note>), String> {
+    // An explicit rotation moves the actual notes, including their expression,
+    // pitches and probabilities, even when every grid cell is occupied.
+    let rotation = match movement {
+        Move::RotateRight => Some(1),
+        Move::RotateLeft => Some(15),
+        _ => None,
+    };
+    let mut removed = Vec::new();
+    let mut added = Vec::new();
+    for (row, sound) in roles.into_iter().enumerate() {
+        if !rows[row] {
+            continue;
+        }
+        if let Some(by) = rotation {
+            for note in pattern.notes.iter().filter(|n| n.sound == sound) {
+                if let Some(step) = grid_step(pattern, note) {
+                    removed.push(*note);
+                    added.push(Note {
+                        position: pattern.start + ((step + by) % 16) as i64 * PPQ / 4,
+                        ..*note
+                    });
+                }
+            }
+            continue;
+        }
+        let lost = before[row].hits & !after[row].hits;
+        let gained = after[row].hits & !before[row].hits;
+        for note in pattern.notes.iter().filter(|n| n.sound == sound) {
+            let Some(step) = grid_step(pattern, note) else {
+                continue;
+            };
+            if lost & (1 << step) != 0 {
+                removed.push(*note);
+            } else if matches!(movement, Move::New | Move::Even)
+                && after[row].hits & (1 << step) != 0
+            {
+                let template = note_for_track(pattern, sound, step, after[row], group);
+                if note.velocity != template.velocity || note.probability != template.probability {
+                    removed.push(*note);
+                    added.push(Note {
+                        velocity: template.velocity,
+                        probability: template.probability,
+                        ..*note
+                    });
+                }
+            }
+        }
+        let mut used = 0u32;
+        for step in 0..crate::groove::STEPS {
+            if gained & (1 << step) != 0 {
+                let from = if matches!(movement, Move::Mutate | Move::Even) {
+                    (0..crate::groove::STEPS)
+                        .filter(|&old| lost & !used & (1 << old) != 0)
+                        .filter(|&old| {
+                            movement == Move::Even
+                                || [before[row].soft, before[row].accent, before[row].maybe]
+                                    .into_iter()
+                                    .zip([after[row].soft, after[row].accent, after[row].maybe])
+                                    .all(|(a, b)| (a & (1 << old) != 0) == (b & (1 << step) != 0))
+                        })
+                        .min_by_key(|&old| {
+                            let d = old.abs_diff(step);
+                            d.min(crate::groove::STEPS - d)
+                        })
+                } else {
+                    None
+                };
+                if let Some(from) = from {
+                    used |= 1 << from;
+                    let template = note_for_track(pattern, sound, step, after[row], group);
+                    for note in pattern
+                        .notes
+                        .iter()
+                        .filter(|n| n.sound == sound && grid_step(pattern, n) == Some(from))
+                    {
+                        let mut moved = Note {
+                            position: template.position,
+                            ..*note
+                        };
+                        if movement == Move::Even {
+                            moved.velocity = template.velocity;
+                            moved.probability = template.probability;
+                        }
+                        added.push(moved);
+                    }
+                } else {
+                    added.push(note_for_track(pattern, sound, step, after[row], group));
+                }
+            }
+        }
+    }
+    Ok((removed, added))
+}
+
+fn library_tracks(genre: usize, index: usize) -> Result<[Track; crate::groove::ROWS], String> {
+    let p = index
+        .checked_sub(1)
+        .and_then(|i| crate::patterns::groove(genre, i))
+        .ok_or("no such library groove")?;
+    let cymbal = if p.rows[8].hits != 0 { 8 } else { 7 };
+    Ok(std::array::from_fn(|row| {
+        let s = p.rows[if row == crate::groove::ROWS - 1 {
+            cymbal
+        } else {
+            row
+        }];
+        Track {
+            hits: s.hits,
+            soft: s.soft,
+            accent: s.accent,
+            maybe: s.maybe,
+        }
+    }))
+}
+
+fn load_tracks(
+    doc: &mut Document,
+    group: usize,
+    pattern: usize,
+    tracks: [Track; crate::groove::ROWS],
+    selected: [bool; crate::groove::ROWS],
+) -> Result<(), String> {
+    let g = doc.project().groups.get(group).ok_or("no such group")?;
+    let p = g.patterns.get(pattern).ok_or("no such pattern")?;
+    let roles = roles_of(Some(g));
+    let _ = tracks_of(p, roles)?;
+    let mut removed = Vec::new();
+    let mut added = Vec::new();
+    for (row, sound) in roles.into_iter().enumerate() {
+        if !selected[row] {
+            continue;
+        }
+        for step in 0..crate::groove::STEPS {
+            let present = tracks[row].hits & (1 << step) != 0;
+            let template = note_for_track(p, sound, step, tracks[row], g);
+            let existing: Vec<_> = p
+                .notes
+                .iter()
+                .filter(|n| n.sound == sound && grid_step(p, n) == Some(step))
+                .copied()
+                .collect();
+            for n in &existing {
+                if !present {
+                    removed.push(*n);
+                } else if n.velocity != template.velocity || n.probability != template.probability {
+                    removed.push(*n);
+                    added.push(Note {
+                        velocity: template.velocity,
+                        probability: template.probability,
+                        ..*n
+                    });
+                }
+            }
+            if present && existing.is_empty() {
+                added.push(template);
+            }
+        }
+    }
+    doc.edit_notes("Load Groove", group, pattern, &removed, &added)
+}
+
+fn apply_pad_edit(
+    doc: &mut Document,
+    group: usize,
+    pattern: usize,
+    edit: GroovePadEdit,
+) -> Result<bool, String> {
+    let g = doc.project().groups.get(group).ok_or("no such group")?;
+    let p = g.patterns.get(pattern).ok_or("no such pattern")?;
+    let roles = roles_of(Some(g));
+    let _ = tracks_of(p, roles)?;
+    let (row, step, clear, record) = match edit {
+        GroovePadEdit::Toggle { row, step } => (row, Some(step), false, false),
+        GroovePadEdit::Clear { row } => (row, None, true, false),
+        GroovePadEdit::Record { row, step } => (row, Some(step), false, true),
+        GroovePadEdit::Load { .. } => return Err("not a pad step edit".into()),
+    };
+    let sound = *roles.get(row).ok_or("no such Groove row")?;
+    let removed: Vec<_> = p
+        .notes
+        .iter()
+        .filter(|n| n.sound == sound && grid_step(p, n).is_some_and(|s| clear || Some(s) == step))
+        .copied()
+        .collect();
+    if clear {
+        if removed.is_empty() {
+            return Ok(false);
+        }
+        doc.edit_notes("Clear Groove row", group, pattern, &removed, &[])?;
+    } else if !removed.is_empty() {
+        if record {
+            return Ok(false);
+        }
+        doc.edit_notes("Toggle Groove step", group, pattern, &removed, &[])?;
+    } else {
+        let step = step
+            .filter(|s| *s < crate::groove::STEPS)
+            .ok_or("no such Groove step")?;
+        let note = note_for_track(p, sound, step, Track::default(), g);
+        doc.edit_notes("Add Groove step", group, pattern, &[], &[note])?;
+    }
+    Ok(true)
+}
+
+fn apply_track_delta(
+    doc: &mut Document,
+    group: usize,
+    pattern: usize,
+    row: usize,
+    before: Track,
+    after: Track,
+) -> Result<(), String> {
+    let g = doc.project().groups.get(group).ok_or("no such group")?;
+    let p = g.patterns.get(pattern).ok_or("no such pattern")?;
+    let roles = roles_of(Some(g));
+    let sound = *roles.get(row).ok_or("no such Groove row")?;
+    let current = tracks_of(p, roles)?[row];
+    let hit_delta = before.hits ^ after.hits;
+    let soft_delta = before.soft ^ after.soft;
+    let accent_delta = before.accent ^ after.accent;
+    let maybe_delta = before.maybe ^ after.maybe;
+    let merged = Track {
+        hits: (current.hits & !hit_delta) | (after.hits & hit_delta),
+        soft: (current.soft & !soft_delta) | (after.soft & soft_delta),
+        accent: (current.accent & !accent_delta) | (after.accent & accent_delta),
+        maybe: (current.maybe & !maybe_delta) | (after.maybe & maybe_delta),
+    };
+    let mut removed = Vec::new();
+    let mut added = Vec::new();
+    for step in 0..crate::groove::STEPS {
+        let bit = 1 << step;
+        if (hit_delta | soft_delta | accent_delta | maybe_delta) & bit == 0 {
+            continue;
+        }
+        let existing: Vec<_> = p
+            .notes
+            .iter()
+            .filter(|n| n.sound == sound && grid_step(p, n) == Some(step))
+            .copied()
+            .collect();
+        let present = if hit_delta & bit != 0 {
+            after.hits & bit != 0
+        } else {
+            !existing.is_empty()
+        };
+        if !present {
+            removed.extend(existing);
+        } else if existing.is_empty() {
+            // A newly enabled step uses the explicitly supplied masks.
+            added.push(note_for_track(p, sound, step, after, g));
+        } else {
+            let template = note_for_track(p, sound, step, merged, g);
+            for note in existing {
+                let velocity = if (soft_delta | accent_delta) & bit != 0 {
+                    template.velocity
+                } else {
+                    note.velocity
+                };
+                let probability = if maybe_delta & bit != 0 {
+                    template.probability
+                } else {
+                    note.probability
+                };
+                if velocity != note.velocity || probability != note.probability {
+                    removed.push(note);
+                    added.push(Note {
+                        velocity,
+                        probability,
+                        ..note
+                    });
+                }
+            }
+        }
+    }
+    doc.edit_notes("Edit Groove step", group, pattern, &removed, &added)
+}
+
+fn apply_legacy_sounds(
+    doc: &mut Document,
+    group: usize,
+    kits: &[Kit],
+    rate: u32,
+    kit: Option<usize>,
+    settings: [LegacySoundSettings; crate::groove::ROWS],
+    rebuild: [bool; crate::groove::ROWS],
+    replace: [bool; crate::groove::ROWS],
+    parameters: [u8; crate::groove::ROWS],
+) -> Result<(), String> {
+    let roles = roles_of(doc.project().groups.get(group));
+    let selected_kit = kit
+        .map(|i| kits.get(i).ok_or("no such Groove kit"))
+        .transpose()?;
+    let any_solo = settings.iter().any(|s| s.solo == Some(true));
+    for (row, sound) in roles.into_iter().enumerate() {
+        let setting = settings[row];
+        let current = doc
+            .project()
+            .groups
+            .get(group)
+            .and_then(|g| g.sounds.get(sound))
+            .ok_or("no such sound")?;
+        let managed = legacy_samples_root().is_ok_and(|root| is_managed_sound(current, &root));
+        if rebuild[row] && !replace[row] && !managed {
+            if current.sampler.is_none() {
+                return Err(format!(
+                    "Groove pitch, decay and tone cannot modify this group's non-Sampler sound {}",
+                    sound + 1
+                ));
+            }
+            apply_native_sampler_settings(doc, group, sound, setting, parameters[row])?;
+        } else if let Some(kit) = selected_kit.filter(|_| rebuild[row]) {
+            let sample = kit
+                .sounds
+                .get(setting.sound.unwrap_or(row))
+                .ok_or("no such Groove kit sound")?;
+            let (file, frames) = persist_processed_sample(
+                &sample.sample,
+                rate,
+                setting.pitch.unwrap_or(0.0),
+                setting.decay.unwrap_or(1.0),
+                setting.tone.unwrap_or(0.0),
+            )?;
+            if managed && !replace[row] {
+                let zone = &current.sampler.as_ref().expect("managed sampler").zones[0];
+                let mut set = Vec::new();
+                if parameters[row] & 1 != 0 {
+                    let bytes = std::fs::metadata(&zone.sample.path)
+                        .map_err(|e| format!("{}: {e}", zone.sample.path))?
+                        .len();
+                    let old_frames = bytes
+                        .checked_sub(44)
+                        .filter(|n| n % 4 == 0)
+                        .ok_or("invalid managed Groove sample")?
+                        / 4;
+                    let old_last = old_frames.saturating_sub(1).max(1) as f64;
+                    let new_last = frames.saturating_sub(1) as f64;
+                    let scale = |n: i64| {
+                        ((n.max(0) as f64 / old_last) * new_last)
+                            .round()
+                            .clamp(0.0, new_last)
+                    };
+                    set.extend([
+                        ("play_range/low", scale(zone.play_range.0)),
+                        ("play_range/high", scale(zone.play_range.1)),
+                        ("loop_range/low", scale(zone.loop_range.0)),
+                        ("loop_range/high", scale(zone.loop_range.1)),
+                    ]);
+                }
+                doc.set_zones(
+                    group,
+                    sound,
+                    &[ZoneSpec {
+                        from: ZoneFrom::Zone(0),
+                        file: Some(file),
+                        set,
+                    }],
+                    "Update Groove sample",
+                )?;
+            } else {
+                let first_is_instrument = doc.project().groups[group].sounds[sound]
+                    .slots
+                    .first()
+                    .is_some_and(|s| s.is_instrument());
+                if first_is_instrument {
+                    doc.remove_slot(group, sound, 0)?;
+                }
+                doc.add_slot(group, sound, 0, &NewModule::Sampler)?;
+                doc.set(
+                    "Set Groove polyphony",
+                    Target::Sampler(group, sound),
+                    "polyphony",
+                    Value::Int(1),
+                )?;
+                // The processed file already includes pitch, decay and tone.
+                d_set_legacy_zone(doc, group, sound, file, frames)?;
+                doc.rename(Target::Sound(group, sound), sample.name)?;
+            }
+        }
+        if let Some(level) = setting.level {
+            let gain = (level * 1.25).max(0.0);
+            let level = if gain > 0.0 {
+                deckard_model::level_from_db(20.0 * gain.log10())
+            } else {
+                0.0
+            };
+            doc.set_level(Target::Sound(group, sound), level)?;
+        }
+        if let Some(pan) = setting.pan {
+            doc.set_pan(Target::Sound(group, sound), pan)?;
+        }
+        if any_solo || setting.mute.is_some() || setting.solo.is_some() {
+            doc.set_mute(
+                Target::Sound(group, sound),
+                if any_solo {
+                    setting.solo != Some(true)
+                } else {
+                    setting.mute.unwrap_or(false)
+                },
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn is_managed_sound(sound: &Sound, root: &Path) -> bool {
+    sound
+        .sampler
+        .as_ref()
+        .is_some_and(|s| s.zones.len() == 1 && Path::new(&s.zones[0].sample.path).starts_with(root))
+}
+
+fn apply_native_sampler_settings(
+    doc: &mut Document,
+    group: usize,
+    sound: usize,
+    settings: LegacySoundSettings,
+    parameters: u8,
+) -> Result<(), String> {
+    let target = Target::Sampler(group, sound);
+    if parameters & 1 != 0 {
+        doc.set(
+            "Groove pitch",
+            target,
+            "tune",
+            Value::Float(settings.pitch.unwrap_or(0.0) / 36.0),
+        )?;
+    }
+    if parameters & 2 != 0 {
+        let decay = settings.decay.unwrap_or(1.0).clamp(0.0, 1.0);
+        doc.set(
+            "Groove decay mode",
+            target,
+            "envelope_type",
+            Value::Int(if decay >= 0.999 { 0 } else { 1 }),
+        )?;
+        if decay < 0.999 {
+            let wanted_ms = (0.02 + decay * decay * 1.2) * 5000.0;
+            let (mut low, mut high) = (0.0, 1.0);
+            for _ in 0..32 {
+                let mid = (low + high) / 2.0;
+                if deckard_engine::sampler::envelope_ms(0.0, 0.0, mid).2 < wanted_ms {
+                    low = mid;
+                } else {
+                    high = mid;
+                }
+            }
+            doc.set(
+                "Groove decay",
+                target,
+                "volume_envelope/decay",
+                Value::Float((low + high) / 2.0),
+            )?;
+        }
+    }
+    if parameters & 4 != 0 {
+        let tone = settings.tone.unwrap_or(0.0).clamp(-1.0, 1.0);
+        let mode = if tone.abs() < 0.02 {
+            0
+        } else if tone < 0.0 {
+            1
+        } else {
+            3
+        };
+        doc.set("Groove tone mode", target, "filter", Value::Int(mode))?;
+        if mode != 0 {
+            let hz = if tone < 0.0 {
+                20_000.0 * (0.01f64).powf(-tone)
+            } else {
+                20.0 * 200f64.powf(tone)
+            };
+            let (mut low, mut high) = (0.0, 1.0);
+            for _ in 0..32 {
+                let mid = (low + high) / 2.0;
+                if deckard_engine::sampler::cutoff_hz(mid, mode) < hz {
+                    low = mid;
+                } else {
+                    high = mid;
+                }
+            }
+            doc.set(
+                "Groove tone",
+                target,
+                "cutoff",
+                Value::Float((low + high) / 2.0),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn d_set_legacy_zone(
+    doc: &mut Document,
+    group: usize,
+    sound: usize,
+    file: PathBuf,
+    frames: usize,
+) -> Result<(), String> {
+    let frames = frames.saturating_sub(1) as f64;
+    let base_key = doc.project().groups[group].sounds[sound]
+        .channel
+        .base_key
+        .clamp(0, 127) as f64;
+    doc.set_zones(
+        group,
+        sound,
+        &[ZoneSpec {
+            from: ZoneFrom::Template,
+            file: Some(file),
+            set: vec![
+                ("play_range/high", frames),
+                ("loop_range/high", frames),
+                ("root_key", base_key),
+            ],
+        }],
+        "Load Groove sound",
+    )
 }
 
 #[derive(Default)]
@@ -1800,8 +3699,56 @@ fn import_legacy(
 }
 
 fn persist_sample(sample: &crate::sampler::Sample, rate: u32) -> Result<PathBuf, String> {
-    let length = sample
-        .len()
+    persist_frames(sample.len(), rate, |i| sample.frame(i))
+}
+
+fn persist_processed_sample(
+    sample: &crate::sampler::Sample,
+    rate: u32,
+    pitch: f64,
+    decay: f64,
+    tone: f64,
+) -> Result<(PathBuf, usize), String> {
+    let speed = 2f64.powf(pitch.clamp(-12.0, 12.0) / 12.0);
+    let frames = ((sample.len().saturating_sub(1) as f64 / speed).ceil() as usize).max(1);
+    let decay = decay.clamp(0.0, 1.0);
+    let fall = if decay >= 0.999 {
+        1.0
+    } else {
+        (-1.0 / ((0.02 + decay * decay * 1.2) * rate as f64)).exp() as f32
+    };
+    let (tone, high) = crate::groove::tone_filter(tone, rate as f64);
+    let mut env = 1.0f32;
+    let mut z = [0.0f32; 2];
+    let path = persist_frames(frames, rate, |i| {
+        let pos = i as f64 * speed;
+        let a = sample.frame(pos as usize);
+        let b = sample.frame(pos as usize + 1);
+        let t = pos.fract() as f32;
+        let mut result = [0.0; 2];
+        for channel in 0..2 {
+            let x = (a[channel] + (b[channel] - a[channel]) * t) * env;
+            z[channel] += tone * (x - z[channel]);
+            result[channel] = if tone == 0.0 {
+                x
+            } else if high {
+                x - z[channel]
+            } else {
+                z[channel]
+            };
+        }
+        env *= fall;
+        result
+    })?;
+    Ok((path, frames))
+}
+
+fn persist_frames(
+    frames: usize,
+    rate: u32,
+    mut frame: impl FnMut(usize) -> [f32; 2],
+) -> Result<PathBuf, String> {
+    let length = frames
         .checked_mul(4)
         .and_then(|n| u32::try_from(n).ok())
         .ok_or("Groove sample is too large")?;
@@ -1818,19 +3765,12 @@ fn persist_sample(sample: &crate::sampler::Sample, rate: u32) -> Result<PathBuf,
     wav.extend_from_slice(&16u16.to_le_bytes());
     wav.extend_from_slice(b"data");
     wav.extend_from_slice(&length.to_le_bytes());
-    for i in 0..sample.len() {
-        for v in sample.frame(i) {
+    for i in 0..frames {
+        for v in frame(i) {
             wav.extend_from_slice(&((v * i16::MAX as f32).round() as i16).to_le_bytes());
         }
     }
-    #[cfg(not(test))]
-    let root = crate::paths::config_base()
-        .ok_or("no configuration directory")?
-        .join(crate::paths::app_folder_name())
-        .join("maschine")
-        .join("samples");
-    #[cfg(test)]
-    let root = std::env::temp_dir().join(format!("opendj-maschine-tests-{}", std::process::id()));
+    let root = legacy_samples_root()?;
     std::fs::create_dir_all(&root).map_err(|e| format!("{}: {e}", root.display()))?;
     let mut crc = flate2::Crc::new();
     crc.update(&wav);
@@ -1857,6 +3797,18 @@ fn persist_sample(sample: &crate::sampler::Sample, rate: u32) -> Result<PathBuf,
         }
     }
     Err("too many Groove sample filename collisions".into())
+}
+
+fn legacy_samples_root() -> Result<PathBuf, String> {
+    #[cfg(not(test))]
+    let root = crate::paths::config_base()
+        .ok_or("no configuration directory")?
+        .join(crate::paths::app_folder_name())
+        .join("maschine")
+        .join("samples");
+    #[cfg(test)]
+    let root = std::env::temp_dir().join(format!("opendj-maschine-tests-{}", std::process::id()));
+    Ok(root)
 }
 
 fn autosave_path(deck: usize) -> Option<PathBuf> {
@@ -2112,6 +4064,169 @@ mod tests {
     use crate::groove::{GrooveControls, Source};
     use crate::kits::{Kit, KitSound};
 
+    #[test]
+    fn groove_grid_edits_keep_unselected_notes_and_rotation_expression() {
+        let mut doc = empty_project().unwrap();
+        let expression = doc.add_expression(deckard_model::Expression {
+            release_velocity: Some(9),
+            ..Default::default()
+        });
+        let selected = Note {
+            sound: 0,
+            position: 0,
+            length: 271,
+            pitch: 53,
+            velocity: 97,
+            probability: 37,
+            expr: Some(expression),
+        };
+        let off_grid = Note {
+            position: 123,
+            pitch: 65,
+            ..selected
+        };
+        let other_sound = Note {
+            sound: 12,
+            ..selected
+        };
+        let other_group = Note {
+            sound: 0,
+            pitch: 71,
+            ..selected
+        };
+        for note in [selected, off_grid, other_sound] {
+            doc.add_note(0, 0, note).unwrap();
+        }
+        doc.add_note(1, 0, other_group).unwrap();
+        let roles = roles_of(doc.project().groups.first());
+        let group = &doc.project().groups[0];
+        let pattern = &group.patterns[0];
+        let before = tracks_of(pattern, roles).unwrap();
+        let mut after = before;
+        groove_dice::apply(
+            Move::RotateRight,
+            &mut after[0],
+            0,
+            0,
+            &Habits::shared(),
+            &mut groove_dice::Rng(1),
+        );
+        let (remove, add) = dice_notes(
+            pattern,
+            roles,
+            [true, false, false, false, false, false, false, false],
+            before,
+            after,
+            Move::RotateRight,
+            group,
+        )
+        .unwrap();
+        assert_eq!(remove, [selected]);
+        assert_eq!(
+            add,
+            [Note {
+                position: PPQ / 4,
+                ..selected
+            }]
+        );
+        doc.edit_notes("Dice", 0, 0, &remove, &add).unwrap();
+        assert!(doc.project().groups[0].patterns[0]
+            .notes
+            .contains(&off_grid));
+        assert!(doc.project().groups[0].patterns[0]
+            .notes
+            .contains(&other_sound));
+        assert!(doc.project().groups[1].patterns[0]
+            .notes
+            .contains(&other_group));
+        doc.edit_notes("Undo Dice", 0, 0, &add, &remove).unwrap();
+        assert!(doc.project().groups[0].patterns[0]
+            .notes
+            .contains(&selected));
+
+        let mut tracks = [Track::default(); crate::groove::ROWS];
+        tracks[0].hits = 1;
+        load_tracks(&mut doc, 0, 0, tracks, [true; crate::groove::ROWS]).unwrap();
+        let notes = &doc.project().groups[0].patterns[0].notes;
+        assert!(notes.contains(&off_grid));
+        assert!(notes.contains(&other_sound));
+        assert!(notes.iter().any(|n| n.sound == 0
+            && n.position == 0
+            && n.pitch == 53
+            && n.length == 271
+            && n.expr == Some(expression)));
+        assert!(doc.project().groups[1].patterns[0]
+            .notes
+            .contains(&other_group));
+    }
+
+    #[test]
+    fn groove_swing_maps_the_original_sixteenth_delay() {
+        for value in [0.0, 0.1, 0.4, 0.75] {
+            let swing = Swing {
+                amount: groove_swing(value),
+                cycle: 0,
+                invert: false,
+            };
+            assert!((swing.apply(0.25) - (0.25 + value * 0.25)).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn legacy_step_delta_keeps_other_cells_and_note_properties() {
+        let mut doc = empty_project().unwrap();
+        let expression = doc.add_expression(deckard_model::Expression {
+            release_velocity: Some(7),
+            ..Default::default()
+        });
+        let note = Note {
+            sound: 0,
+            position: 0,
+            length: 271,
+            pitch: 53,
+            velocity: 97,
+            probability: 37,
+            expr: Some(expression),
+        };
+        let other = Note { sound: 12, ..note };
+        doc.add_note(0, 0, note).unwrap();
+        doc.add_note(0, 0, other).unwrap();
+        let before = Track::default();
+        let after = Track {
+            hits: 1 << 3,
+            ..before
+        };
+        apply_track_delta(&mut doc, 0, 0, 0, before, after).unwrap();
+        assert!(doc.project().groups[0].patterns[0].notes.contains(&note));
+        let before = Track {
+            hits: 1,
+            ..Track::default()
+        };
+        let after = Track { maybe: 1, ..before };
+        apply_track_delta(&mut doc, 0, 0, 0, before, after).unwrap();
+        let pattern = &doc.project().groups[0].patterns[0];
+        let got = pattern
+            .notes
+            .iter()
+            .find(|n| n.sound == 0 && n.position == 0)
+            .unwrap();
+        assert_eq!(
+            (
+                got.pitch,
+                got.velocity,
+                got.length,
+                got.expr,
+                got.probability
+            ),
+            (53, 97, 271, Some(expression), 50)
+        );
+        assert!(pattern.notes.contains(&other));
+        assert!(pattern
+            .notes
+            .iter()
+            .any(|n| n.sound == 0 && n.position == 3 * PPQ / 4));
+    }
+
     fn fixture(deck: usize) -> (Maschine, MaschineHandle, GrooveControls) {
         let registry = ControlRegistry::default();
         let controls = GrooveControls::new(&registry, deck);
@@ -2209,6 +4324,55 @@ mod tests {
     }
 
     #[test]
+    fn step_undo_and_redo_keep_editor_alive_and_preserve_take() {
+        let (mut machine, handle, _) = fixture(109);
+        handle.snapshot().unwrap();
+        let first = Note {
+            sound: 1,
+            position: 120,
+            length: 120,
+            pitch: 61,
+            velocity: 90,
+            probability: 100,
+            expr: None,
+        };
+        let second = Note {
+            sound: 1,
+            position: 360,
+            pitch: 62,
+            ..first
+        };
+        handle
+            .edit(|d| {
+                d.begin_take("Test take");
+                Ok(())
+            })
+            .unwrap();
+        machine.poll();
+        handle.edit(move |d| d.add_note(0, 0, first)).unwrap();
+        machine.poll();
+        handle.edit(move |d| d.add_note(0, 0, second)).unwrap();
+        machine.poll();
+        assert!(handle.undo_step().unwrap());
+        machine.poll();
+        let undone = handle.snapshot().unwrap();
+        assert!(undone.groups[0].patterns[0].notes.contains(&first));
+        assert!(!undone.groups[0].patterns[0].notes.contains(&second));
+        assert!(handle.redo_step().unwrap());
+        machine.poll();
+        let restored = handle.snapshot().unwrap();
+        assert!(restored.groups[0].patterns[0].notes.contains(&first));
+        assert!(restored.groups[0].patterns[0].notes.contains(&second));
+        handle
+            .edit(|d| d.rename(Target::Group(0), "Editor still alive"))
+            .unwrap();
+        assert_eq!(
+            handle.snapshot().unwrap().groups[0].name,
+            "Editor still alive"
+        );
+    }
+
+    #[test]
     fn real_document_plays_two_groups_and_autosave_reopens() {
         // A deck outside the app's range keeps this test's autosave isolated.
         let deck = 31;
@@ -2269,6 +4433,7 @@ mod tests {
             source,
             &[],
             &legacy,
+            &[],
             false,
             &mut output,
             &mut cue,
@@ -2289,6 +4454,7 @@ mod tests {
             source,
             &[],
             &legacy,
+            &[],
             false,
             &mut output,
             &mut cue,
@@ -2309,6 +4475,7 @@ mod tests {
             source,
             &[],
             &legacy,
+            &[],
             false,
             &mut output,
             &mut cue,
@@ -2325,6 +4492,7 @@ mod tests {
             source,
             &[],
             &legacy,
+            &[],
             false,
             &mut output,
             &mut cue,
@@ -2341,6 +4509,7 @@ mod tests {
             source,
             &[],
             &legacy,
+            &[],
             false,
             &mut output,
             &mut cue,
@@ -2357,6 +4526,7 @@ mod tests {
             source,
             &[],
             &legacy,
+            &[],
             false,
             &mut output,
             &mut cue,
@@ -2371,6 +4541,7 @@ mod tests {
             source,
             &[],
             &legacy,
+            &[],
             false,
             &mut output,
             &mut cue,
@@ -2499,6 +4670,7 @@ mod tests {
             source,
             &[signal],
             &legacy,
+            &[],
             false,
             &mut out,
             &mut cue,
@@ -2535,6 +4707,7 @@ mod tests {
             source,
             &[breaking],
             &legacy,
+            &[],
             true,
             &mut out,
             &mut cue,
@@ -2570,6 +4743,7 @@ mod tests {
             source,
             &[],
             &legacy,
+            &[],
             false,
             &mut out,
             &mut cue,
@@ -2585,6 +4759,7 @@ mod tests {
                 source,
                 &[],
                 &legacy,
+                &[],
                 false,
                 &mut out,
                 &mut cue,
