@@ -614,9 +614,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         settings::publish_tag_groups(db);
     }
+    // Show the cached collection immediately. Checking every external-media
+    // path here can block the window for minutes; sync_library performs the
+    // filesystem scan on its background thread after the UI is installed.
     let saved: Vec<Arc<Track>> = db
         .as_ref()
-        .and_then(|db| db.all_tracks(Path::exists).ok())
+        .and_then(|db| db.all_tracks(|_| true).ok())
         .unwrap_or_default()
         .into_iter()
         .map(Arc::new)
