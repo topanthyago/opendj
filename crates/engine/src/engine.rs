@@ -3703,7 +3703,7 @@ impl Engine {
                 detected: deck
                     .track
                     .as_ref()
-                    .is_some_and(|t| t.key_detected == Some(true)),
+                    .is_some_and(|t| t.info.key_detected == Some(true)),
             }
         });
         for (i, on) in groove_on.iter().enumerate() {
