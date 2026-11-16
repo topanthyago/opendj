@@ -205,6 +205,7 @@ pub struct MaschineControls {
     pub pad_velocity: [ControlHandle; SOUNDS],
     pub colors: [ControlHandle; SOUNDS],
     pub meters: [[ControlHandle; SOUNDS]; GROUPS],
+    pub group_cue: [ControlHandle; GROUPS],
 }
 
 impl MaschineControls {
@@ -215,6 +216,7 @@ impl MaschineControls {
         };
         Self {
             group: create("group", 0.0, 0.0, 7.0),
+            group_cue: std::array::from_fn(|g| registry.toggle(&group, &format!("group_cue{}", g + 1))),
             sound: create("sound", 0.0, 0.0, 15.0),
             scene: create("scene", 0.0, 0.0, 127.0),
             pattern: create("pattern", 0.0, 0.0, 127.0),
@@ -281,8 +283,46 @@ impl MaschineControls {
     }
 }
 
+/// Isolate the SDK Cue bus in the playback copy. The saved document retains all
+/// user routing. An existing distinct Cue output also carries its shared routes.
+pub fn cue_playback_project(project: &Project) -> Result<(Project, usize), String> {
+    use deckard_model::AudioDest;
+    let mut playback = project.clone();
+    if let AudioDest::Ext(bus) = project.cue_output {
+        if (0..deckard_engine::OUTPUTS as i64).contains(&bus)
+            && project.cue_output != project.master_output
+        {
+            return Ok((playback, bus as usize));
+        }
+    }
+    let mut used = [false; deckard_engine::OUTPUTS];
+    let mut mark = |dest: AudioDest| {
+        if let AudioDest::Ext(bus) = dest {
+            if let Some(entry) = usize::try_from(bus).ok().and_then(|bus| used.get_mut(bus)) {
+                *entry = true;
+            }
+        }
+    };
+    mark(project.master_output);
+    for group in &project.groups {
+        mark(group.channel.dest);
+        for dest in group.channel.aux_dest { mark(dest); }
+        for sound in &group.sounds {
+            mark(sound.channel.dest);
+            for dest in sound.channel.aux_dest { mark(dest); }
+        }
+    }
+    for output in &project.extra_outs { mark(output.dest); }
+    let cue_bus = used.iter().position(|used| !used)
+        .ok_or("No free output for isolated Cue playback")?;
+    playback.cue_output = AudioDest::Ext(cue_bus as i64);
+    Ok((playback, cue_bus))
+}
+
 struct Prepared {
     engine: Engine,
+    cue_bus: usize,
+    external: Vec<Vec<f32>>,
     timelines: Timelines,
     target: Option<(Mode, deckard_engine::Timeline)>,
     telemetry: deckard_engine::Telemetry,
@@ -400,12 +440,13 @@ impl Shared {
         let scene = (self.controls.scene.get().round() as usize)
             .min(project.scenes.len().saturating_sub(1));
         let mode = Mode::Scene(scene);
+        let (playback, cue_bus) = cue_playback_project(&project)?;
         let (mut engine, report) = {
             let mut cache = self
                 .cache
                 .lock()
                 .map_err(|_| "Maschine sample cache unavailable")?;
-            Engine::new(&project, path.as_deref(), self.rate, mode, &mut cache)
+            Engine::new(&playback, path.as_deref(), self.rate, mode, &mut cache)
         };
         let needs_main = report
             .plugin_errors
@@ -460,6 +501,8 @@ impl Shared {
         ready
             .push(Prepared {
                 engine,
+                cue_bus,
+                external: vec![vec![0.0; BLOCK * 2]; deckard_engine::OUTPUTS],
                 timelines,
                 target,
                 telemetry,
@@ -855,6 +898,9 @@ impl Editor {
             project: Arc::new(doc.project().clone()),
             path: doc.path().map(Path::to_path_buf),
         });
+        for (g, control) in self.shared.controls.group_cue.iter().enumerate() {
+            control.set_bool(doc.project().groups.get(g).is_some_and(|group| group.cue));
+        }
         self.shared.revision.fetch_add(1, Ordering::Release);
         if modified {
             self.dirty_since = Some(Instant::now());
@@ -1679,6 +1725,17 @@ impl MaschineHandle {
             .map_err(|_| "preview queue is full".to_string())
     }
 
+    /// Audition prepared audio exclusively through OpenDJ's headphone bus.
+    /// Call off the audio thread, including any range or tuning preparation.
+    pub fn preview_audio(&self, sample: Arc<Sample>) -> Result<(), String> {
+        if sample.frames.is_empty() || sample.rate == 0 {
+            return Err("empty preview sample".into());
+        }
+        self.shared.collect();
+        self.shared.preview.lock().map_err(|_| "preview queue unavailable")?
+            .push(Some(sample)).map_err(|_| "preview queue is full".to_string())
+    }
+
     /// Preview a file from the browser without changing the project.
     pub fn preview_file(&self, path: &Path) -> Result<(), String> {
         let sample = Sample::load(path)?;
@@ -1726,6 +1783,8 @@ pub(crate) struct Maschine {
     preview_active: bool,
     rate: f64,
     scratch: Vec<f32>,
+    cue_bus: usize,
+    external: Vec<Vec<f32>>,
     pad_last: [f64; SOUNDS],
     pad_seen: [u32; SOUNDS],
     count_in_seen: u32,
@@ -1840,6 +1899,7 @@ impl Maschine {
                 let mut group_seen = worker_controls.group.version();
                 let mut pattern_seen = worker_controls.pattern.version();
                 let mut selected_patterns = [0usize; GROUPS];
+                let mut cue_seen = std::array::from_fn::<_, GROUPS, _>(|g| worker_controls.group_cue[g].version());
                 loop {
                     match requests.recv_timeout(Duration::from_millis(4)) {
                         Ok(job) => {
@@ -1979,6 +2039,28 @@ impl Maschine {
                         // Editor focus is independent of the scene's playback assignment.
                         // Launches use SelectPattern or an explicit document assignment.
                     }
+                    let mut cue_changed = false;
+                    if let Some(doc) = editor.document.as_mut() {
+                        for (group, seen) in cue_seen.iter_mut().enumerate() {
+                            let control = &worker_controls.group_cue[group];
+                            let version = control.version();
+                            if version != *seen {
+                                *seen = version;
+                                let cue = control.get_bool();
+                                if doc.project().groups.get(group).is_some_and(|g| g.cue != cue) {
+                                    match doc.set_cue(Target::Group(group), cue) {
+                                        Ok(()) => cue_changed = true,
+                                        Err(error) => editor.shared.set_error(error),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if cue_changed {
+                        if let Err(error) = editor.publish_snapshot(true).and_then(|()| editor.shared.prepare()) {
+                            editor.shared.set_error(error);
+                        }
+                    }
                     if scene_changed {
                         if let Err(error) = editor.shared.prepare() {
                             editor.shared.set_error(error);
@@ -2021,6 +2103,8 @@ impl Maschine {
                 preview_active: false,
                 rate,
                 scratch: vec![0.0; BLOCK * 2],
+                cue_bus: 1,
+                external: vec![vec![0.0; BLOCK * 2]; deckard_engine::OUTPUTS],
                 pad_last: [0.0; SOUNDS],
                 pad_seen,
                 count_in_seen,
@@ -2281,6 +2365,8 @@ impl Maschine {
             std::mem::swap(&mut self.roles, &mut next.roles);
             std::mem::swap(&mut self.legacy_sounds, &mut next.legacy_sounds);
             std::mem::swap(&mut self.project, &mut next.project);
+            std::mem::swap(&mut self.cue_bus, &mut next.cue_bus);
+            std::mem::swap(&mut self.external, &mut next.external);
             self.own_bpm = f64::NAN;
             std::mem::swap(&mut self.telemetry, &mut next.telemetry);
             if let Some((mode, timeline)) = next.target.as_mut() {
@@ -2519,19 +2605,20 @@ impl Maschine {
                 self.crash_next = false;
             }
         }
+        cue.fill([0.0; 2]);
         let mut cursor = 0;
         for &signal in signals {
             let boundary = signal.frame.min(out.len());
             if boundary < cursor {
                 continue;
             }
-            self.render_audio(&mut out[cursor..boundary]);
+            self.render_audio(&mut out[cursor..boundary], &mut cue[cursor..boundary]);
             cursor = boundary;
             if self.engine.sequencing {
                 self.apply_step(controls, signal, group);
             }
         }
-        self.render_audio(&mut out[cursor..]);
+        self.render_audio(&mut out[cursor..], &mut cue[cursor..]);
         for note in self.engine.played_notes() {
             if note.group < GROUPS && note.sound == self.roles[note.group][0] {
                 let offset = note.frame.saturating_sub(start_frame) as usize;
@@ -2540,7 +2627,6 @@ impl Maschine {
                 }
             }
         }
-        cue.fill([0.0; 2]);
         if self.preview_active {
             if let Some(sample) = &self.preview_sample {
                 let step = sample.rate as f64 / self.rate;
@@ -2553,7 +2639,7 @@ impl Maschine {
                     let next = (i + 1).min(sample.frames.len() - 1);
                     let t = (self.preview_position - i as f64) as f32;
                     for (channel, output) in frame.iter_mut().enumerate() {
-                        *output = sample.frames[i][channel] * (1.0 - t)
+                        *output += sample.frames[i][channel] * (1.0 - t)
                             + sample.frames[next][channel] * t;
                     }
                     self.preview_position += step;
@@ -2611,11 +2697,17 @@ impl Maschine {
         self.active
     }
 
-    fn render_audio(&mut self, out: &mut [[f32; 2]]) {
-        for block in out.chunks_mut(BLOCK) {
+    fn render_audio(&mut self, out: &mut [[f32; 2]], cue: &mut [[f32; 2]]) {
+        for (block, cue) in out.chunks_mut(BLOCK).zip(cue.chunks_mut(BLOCK)) {
             let audio = &mut self.scratch[..block.len() * 2];
-            self.engine.process(audio);
+            for buffer in &mut self.external {
+                buffer[..audio.len()].fill(0.0);
+            }
+            self.engine.process_outputs(audio, &mut self.external);
             for (frame, samples) in block.iter_mut().zip(audio.chunks_exact(2)) {
+                *frame = [samples[0], samples[1]];
+            }
+            for (frame, samples) in cue.iter_mut().zip(self.external[self.cue_bus].chunks_exact(2)) {
                 *frame = [samples[0], samples[1]];
             }
         }
