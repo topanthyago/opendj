@@ -453,6 +453,13 @@ impl MaschineSurface {
                 f64::from(delta),
                 encoder_response::counts(registry, wheel) / 8.0 * if shift { 10.0 } else { 1.0 },
             );
+            if self.browsing && (wheel || key == 23) {
+                return Some(if discrete == 0 {
+                    Vec::new()
+                } else {
+                    vec![A::Browse(deckard_surface::Browse::Focus(discrete))]
+                });
+            }
             if wheel && !self.browsing && self.mode != 2 {
                 let fine = if shift { 0.1 } else { 1.0 };
                 let turns = f64::from(delta) / encoder_response::counts(registry, true);
