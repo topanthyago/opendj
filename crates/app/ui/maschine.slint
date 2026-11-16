@@ -137,6 +137,7 @@ export global MaschineUi {
     callback browser-focus-result(index: int, load: bool);
     callback browser-action(action: string);
     callback pad-calibration(key: string, value: float);
+    callback encoder-calibration(action: string);
     pure callback pad-curve-value(input: int, curve: int, gain: float, fixed: int) -> float;
 }
 
@@ -282,6 +283,44 @@ component HarmonicTools inherits Rectangle {
             MaschineButton { text: "SHARED NOTES"; horizontal-stretch: 1; enabled: MaschineUi.harmony-key1 != "?" && MaschineUi.harmony-key2 != "?"; clicked => { Controls.set-value(Controls.resolve(group, "harmony_mode"), 3); } }
         }
         Text { text: "Wheel and scale guidance · audition the bass and chord voicing."; color: Theme.text-dim; font-size: 10px; wrap: word-wrap; height: 22px; }
+    }
+}
+
+component EncoderCalibration inherits Rectangle {
+    callback close();
+    in property <color> tint: Theme.deck3;
+    property <string> g: "[MaschineEncoders]";
+    property <int> knobs: Controls.value(Controls.resolve(g, "knob_counts"), Controls.tick);
+    property <int> wheel: Controls.value(Controls.resolve(g, "wheel_counts"), Controls.tick);
+    property <int> measure: Controls.value(Controls.resolve(g, "measure"), Controls.tick);
+    property <bool> knob-measured: Controls.value(Controls.resolve(g, "knob_measured"), Controls.tick) > 0;
+    property <bool> wheel-measured: Controls.value(Controls.resolve(g, "wheel_measured"), Controls.tick) > 0;
+    property <int> measured: Controls.value(Controls.resolve(g, "measured"), Controls.tick);
+    property <int> encoder: Controls.value(Controls.resolve(g, "measured_encoder"), Controls.tick);
+    background: Theme.panel;
+    border-width: 1px; border-color: Theme.border; border-radius: 6px;
+    VerticalLayout {
+        padding: 12px; spacing: 8px;
+        Text { text: "Resposta angular · Maschine MK2"; color: Theme.text; font-size: 13px; font-weight: 600; }
+        Text { text: "Opções 45° · contínuos 270° · SHIFT 10× mais fino"; color: Theme.text; font-size: 11px; }
+        Text { text: "Knobs " + knobs + (knob-measured ? " medidos" : " padrão") + " · encoder " + wheel + (wheel-measured ? " medidos" : " padrão") + " pulsos/360°"; color: Theme.text; font-size: 11px; }
+        Text { text: "Padrões derivados do bridge. Calibre com uma volta física completa."; color: Theme.text-dim; font-size: 11px; wrap: word-wrap; }
+        HorizontalLayout {
+            spacing: 6px;
+            MaschineButton { text: "MEDIR KNOB 360°"; horizontal-stretch: 1; clicked => { MaschineUi.encoder-calibration("knob"); } }
+            MaschineButton { text: "MEDIR ENCODER 360°"; horizontal-stretch: 1; clicked => { MaschineUi.encoder-calibration("wheel"); } }
+        }
+        Text { text: measure == 0 ? "Escolha o controle para iniciar a medição." : "Gire um único controle 360° no mesmo sentido. " + abs(measured) + " pulsos · CC " + encoder; color: tint; font-size: 11px; wrap: word-wrap; }
+        HorizontalLayout {
+            spacing: 6px;
+            MaschineButton { text: "SALVAR VOLTA"; enabled: measure > 0 && abs(measured) >= 16 && abs(measured) <= 4096; horizontal-stretch: 1; clicked => { MaschineUi.encoder-calibration("save"); } }
+            MaschineButton { text: "CANCELAR"; horizontal-stretch: 1; clicked => { MaschineUi.encoder-calibration("cancel"); } }
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            MaschineButton { text: "RESTAURAR PADRÕES"; horizontal-stretch: 1; clicked => { MaschineUi.encoder-calibration("reset"); } }
+            MaschineButton { text: "FECHAR"; width: 70px; clicked => { MaschineUi.encoder-calibration("cancel"); root.close(); } }
+        }
     }
 }
 
@@ -868,6 +907,14 @@ export component MaschinePanel inherits Rectangle {
                 calibration := PopupWindow {
                     y: 30px; width: 360px; height: 310px;
                     PadCalibration { tint: root.tint; }
+                }
+            }
+            MaschineButton {
+                text: "ENCODERS"; width: 74px; clicked => { encoder-calibration.show(); }
+                encoder-calibration := PopupWindow {
+                    y: 30px; x: -200px; width: 390px; height: 258px;
+                    close-policy: no-auto-close;
+                    EncoderCalibration { tint: root.tint; close => { encoder-calibration.close(); } }
                 }
             }
             ControlButton { group: group; key: "undo"; text: "↶"; momentary: true; width: 26px; height: 26px; }

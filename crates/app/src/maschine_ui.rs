@@ -27,6 +27,9 @@ use crate::{
     MaschineUi,
 };
 
+#[path = "maschine_encoders.rs"]
+mod encoders;
+
 #[path = "maschine_calibration.rs"]
 mod calibration;
 #[path = "maschine_launch.rs"]
@@ -266,6 +269,7 @@ pub fn install(
     surface: Arc<MaschineSurfaceProvider>,
 ) -> slint::Timer {
     calibration::install(app, registry.clone());
+    encoders::install(app, registry.clone());
     content::install(app);
     let harmony = harmonic::Harmony::install(app, registry.clone());
     let selection = Selection::new(&registry);

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use opendj_control::{Behavior, ConfigKey, ControlHandle, ControlRegistry};
 
 use crate::pickup::{self, Takeover};
+use opendj_control::maschine_encoders as encoder_response;
 
 /// The embedded Maschine document, as the existing controller thread sees it.
 /// The app supplies snapshots and queues actions onto its document-owning thread.
@@ -41,6 +42,11 @@ struct MaschineSurface {
     physical: HashSet<u8>,
     pinned: HashSet<u8>,
     encoders: HashMap<u8, u8>,
+    encoder_turns: HashMap<String, f64>,
+    wheel_target: Option<u8>,
+    input_encoders: HashMap<u8, u8>,
+    encoder_delta: i32,
+    measuring_encoder: bool,
     taps: Vec<Instant>,
     browsing: bool,
     multi_select: bool,
@@ -59,6 +65,83 @@ struct MaschineSurface {
 }
 
 impl MaschineSurface {
+    fn sampling_response(view: &mut deckard_surface::View, counts: f64) {
+        for knob in view
+            .sampling
+            .pages
+            .iter_mut()
+            .flatten()
+            .flat_map(|page| page.knobs.iter_mut())
+            .chain(view.sampling.slice.iter_mut())
+        {
+            if knob.key == "sampling_bars" {
+                let bars = [1.0_f64, 2.0, 4.0, 8.0, 16.0];
+                knob.value = bars
+                    .iter()
+                    .enumerate()
+                    .min_by(|(_, a), (_, b)| {
+                        (*a - knob.value).abs().total_cmp(&(*b - knob.value).abs())
+                    })
+                    .map_or(0.0, |(index, _)| index as f64);
+                knob.min = 0.0;
+                knob.max = 4.0;
+                knob.step = 1.0;
+            }
+            let range = knob.max - knob.min;
+            if range > 0.0 && knob.step > 0.0 {
+                // Canonical metadata carries choice indices. Large frame ranges use continuous travel.
+                let discrete = matches!(
+                    knob.key.as_str(),
+                    "sampling_source"
+                        | "sampling_stem"
+                        | "sampling_bars"
+                        | "sampling_slice"
+                        | "mode"
+                        | "count"
+                        | "grid"
+                        | "zone"
+                );
+                let musical = matches!(knob.key.as_str(), "low" | "high" | "root");
+                if matches!(
+                    knob.key.as_str(),
+                    "start" | "end" | "loop_start" | "loop_end"
+                ) {
+                    // Frame quantization remains practical even for multi-minute recordings.
+                    knob.step = knob.step.max((range / (counts * 0.75)).ceil());
+                }
+                knob.turn = counts / 127.0
+                    * if discrete {
+                        45.0 / 360.0
+                    } else if musical {
+                        15.0 / 360.0
+                    } else {
+                        270.0 / 360.0 * knob.step / range
+                    };
+            }
+        }
+    }
+
+    fn angle_action(
+        mut action: deckard_surface::Action,
+        view: &deckard_surface::View,
+        counts: f64,
+    ) -> deckard_surface::Action {
+        if let deckard_surface::Action::SamplingKnob { page, knob, value } = &mut action {
+            if view.sampling.tab == 0
+                && view.sampling.pages[0]
+                    .get(*page)
+                    .and_then(|p| p.knobs.get(*knob))
+                    .is_some_and(|k| k.key == "sampling_bars")
+            {
+                *value = [1.0, 2.0, 4.0, 8.0, 16.0][value.round().clamp(0.0, 4.0) as usize];
+            }
+        }
+        if let deckard_surface::Action::Turn { inc, .. } = &mut action {
+            *inc *= 127.0 / (counts * 0.75);
+        }
+        action
+    }
+
     fn new() -> Self {
         Self {
             device: deckard_surface::device::Device::new(
@@ -71,6 +154,11 @@ impl MaschineSurface {
             physical: HashSet::new(),
             pinned: HashSet::new(),
             encoders: HashMap::new(),
+            encoder_turns: HashMap::new(),
+            wheel_target: None,
+            input_encoders: HashMap::new(),
+            encoder_delta: 0,
+            measuring_encoder: false,
             taps: Vec::new(),
             browsing: false,
             multi_select: false,
@@ -97,6 +185,20 @@ impl MaschineSurface {
         view: &deckard_surface::View,
         now: Instant,
     ) -> Vec<deckard_surface::device::Out> {
+        let mut normalized = [0u8; 3];
+        let bytes = if bytes.len() == 3 && bytes[0] & 0xf0 == 0xb0 && (15..=23).contains(&bytes[1])
+        {
+            let virtual_value = self.input_encoders.entry(bytes[1]).or_insert(bytes[2]);
+            if !self.measuring_encoder {
+                *virtual_value =
+                    (i32::from(*virtual_value) + self.encoder_delta).rem_euclid(128) as u8;
+            }
+            normalized.copy_from_slice(bytes);
+            normalized[2] = *virtual_value;
+            &normalized[..]
+        } else {
+            bytes
+        };
         if bytes.len() != 3 || bytes[0] & 0xf0 != 0xb0 || bytes[1] != 26 {
             return self.device.midi("controls", bytes, view, now);
         }
@@ -160,6 +262,7 @@ impl MaschineSurface {
         view: &deckard_surface::View,
         keyboard: bool,
         now: Instant,
+        registry: &ControlRegistry,
     ) -> Option<Vec<deckard_surface::Action>> {
         use deckard_surface::Action as A;
         if bytes.len() != 3 {
@@ -311,22 +414,89 @@ impl MaschineSurface {
             return None;
         }
         if (15..=23).contains(&key) {
-            let old = self.encoders.insert(key, value)?;
+            self.encoder_delta = 0;
+            self.measuring_encoder = false;
+            let Some(old) = self.encoders.insert(key, value) else {
+                return Some(Vec::new());
+            };
             let delta = (i32::from(value) - i32::from(old) + 192) % 128 - 64;
+            let wheel = key == 15;
+            let measuring = registry
+                .get(encoder_response::GROUP, "measure")
+                .is_some_and(|c| c.get() == if wheel { 2.0 } else { 1.0 });
+            self.encoder_delta = delta;
+            self.measuring_encoder = measuring;
+            if measuring {
+                let measured_key = registry.get(encoder_response::GROUP, "measured_encoder");
+                if measured_key.as_ref().is_some_and(|c| c.get() == 0.0) {
+                    measured_key.as_ref().unwrap().set(f64::from(key));
+                }
+                if measured_key.is_some_and(|c| c.get() == f64::from(key)) {
+                    if let Some(c) = registry.get(encoder_response::GROUP, "measured") {
+                        c.set(c.get() + f64::from(delta));
+                    }
+                }
+                return Some(Vec::new());
+            }
+            let context = format!(
+                "{key}:{}:{}:{}:{}:{shift}",
+                self.mode,
+                self.sampling,
+                self.browsing,
+                [4, 27, 10]
+                    .iter()
+                    .find(|k| self.held.contains(k))
+                    .unwrap_or(&0)
+            );
+            let discrete = encoder_response::steps(
+                self.encoder_turns.entry(context).or_default(),
+                f64::from(delta),
+                encoder_response::counts(registry, wheel) / 8.0 * if shift { 10.0 } else { 1.0 },
+            );
+            if wheel && !self.browsing && self.mode != 2 {
+                let fine = if shift { 0.1 } else { 1.0 };
+                let turns = f64::from(delta) / encoder_response::counts(registry, true);
+                let action = match self.wheel_target {
+                    Some(51) => {
+                        A::Volume((view.master_volume + turns / 0.75 * fine).clamp(0.0, 1.0))
+                    }
+                    Some(50) => {
+                        A::Swing((view.swing + turns / 0.75 * 100.0 * fine).clamp(0.0, 100.0))
+                    }
+                    Some(35) => {
+                        let movement = encoder_response::steps(
+                            self.encoder_turns
+                                .entry(format!("tempo:{shift}"))
+                                .or_default(),
+                            turns * 360.0 * fine,
+                            15.0,
+                        );
+                        if movement == 0 {
+                            return Some(Vec::new());
+                        }
+                        A::Tempo((view.tempo + movement as f64).clamp(10.0, 400.0))
+                    }
+                    _ if !self.sampling => {
+                        if discrete == 0 {
+                            return Some(Vec::new());
+                        }
+                        A::Slot(discrete)
+                    }
+                    _ => {
+                        self.encoder_delta = (discrete * 8) as i32;
+                        return None;
+                    }
+                };
+                return Some(vec![action]);
+            }
             if self.held.contains(&4) {
+                if discrete == 0 {
+                    return Some(Vec::new());
+                }
                 let action = match key {
-                    16 => A::Grid(
-                        "step",
-                        (view.grid.step + i64::from(delta.signum())).clamp(0, 15),
-                    ),
-                    17 => A::Grid(
-                        "nudge",
-                        (view.grid.nudge + i64::from(delta.signum())).clamp(0, 4),
-                    ),
-                    18 => A::Grid(
-                        "perform",
-                        (view.grid.perform + i64::from(delta.signum())).clamp(0, 6),
-                    ),
+                    16 => A::Grid("step", (view.grid.step + discrete).clamp(0, 15)),
+                    17 => A::Grid("nudge", (view.grid.nudge + discrete).clamp(0, 4)),
+                    18 => A::Grid("perform", (view.grid.perform + discrete).clamp(0, 6)),
                     _ => return Some(Vec::new()),
                 };
                 return Some(vec![action]);
@@ -344,6 +514,9 @@ impl MaschineSurface {
                 )]);
             }
             if self.held.contains(&27) {
+                if discrete == 0 {
+                    return Some(Vec::new());
+                }
                 let sound = view
                     .groups
                     .get(view.group)
@@ -360,10 +533,36 @@ impl MaschineSurface {
                 };
                 return Some(vec![A::SoundSetting(
                     field,
-                    (shown + i64::from(delta.signum())).clamp(0, max),
+                    (shown + discrete).clamp(0, max),
                 )]);
             }
+            // The pinned Lua pages use integer steps and a minimum of one per
+            // packet. Feed whole angular steps through its own counters so local
+            // browser/slice/page selection stays synchronized as well.
+            if wheel {
+                self.encoder_delta = (discrete * 8) as i32;
+            } else if !self.sampling {
+                let scale = if self.browsing {
+                    Some(2)
+                } else if self.mode == 2 && key == 16 {
+                    Some(8)
+                } else if self.mode == 1 && key == 17 {
+                    Some(4)
+                } else {
+                    None
+                };
+                if let Some(scale) = scale {
+                    self.encoder_delta = (discrete * scale) as i32;
+                }
+            }
             return None;
+        }
+        if value > 0 && [35, 50, 51].contains(&key) {
+            self.wheel_target = if self.wheel_target == Some(key) {
+                None
+            } else {
+                Some(key)
+            };
         }
         if value == 0 {
             if key == 2 {
@@ -1282,6 +1481,8 @@ impl Host {
         let Some(mut view) = source.view(deck) else {
             return "{\"available\":false,\"midi\":[]}".into();
         };
+        let counts = encoder_response::counts(&self.registry, false);
+        MaschineSurface::sampling_response(&mut view, counts);
         let now = Instant::now();
         let maschine_group = format!("[Maschine{deck}]");
         let keyboard = self
@@ -1339,7 +1540,7 @@ impl Host {
                         }
                     }
                 }
-                overridden = surface.gesture(bytes, &view, keyboard, now);
+                overridden = surface.gesture(bytes, &view, keyboard, now, &self.registry);
                 if bytes.len() == 3
                     && bytes[0] & 0xf0 == 0xb0
                     && bytes[2] == 0
@@ -1384,7 +1585,8 @@ impl Host {
         };
         for event in events {
             match event {
-                deckard_surface::device::Out::App(action) => {
+                deckard_surface::device::Out::App(mut action) => {
+                    action = MaschineSurface::angle_action(action, &view, counts);
                     if let deckard_surface::Action::Sampling(on) = action {
                         surface.sampling = on;
                     }

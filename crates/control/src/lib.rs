@@ -6,6 +6,8 @@
 //! resolved once to a [`ControlHandle`]. Reading or writing a handle is a single
 //! atomic operation: no locks, no allocation, safe on the real-time audio thread.
 
+pub mod maschine_encoders;
+
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
