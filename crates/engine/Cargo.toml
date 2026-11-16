@@ -11,10 +11,10 @@ opendj-separation = { path = "../separation" }
 # Plugins run in a helper process; the engine only needs the client side.
 opendj-plugin-host = { path = "../plugin-host", default-features = false }
 # DECKARD supplies the Maschine project model and instrument, not audio I/O.
-deckard-engine = { git = "https://github.com/topanthyago/Deckard", rev = "0510e7aba372c9c5ab4cd5508c51d98eea717a3b", default-features = false }
-deckard-model = { git = "https://github.com/topanthyago/Deckard", rev = "0510e7aba372c9c5ab4cd5508c51d98eea717a3b" }
-deckard-doc = { git = "https://github.com/topanthyago/Deckard", rev = "0510e7aba372c9c5ab4cd5508c51d98eea717a3b" }
-mxprj = { git = "https://github.com/topanthyago/Deckard", rev = "0510e7aba372c9c5ab4cd5508c51d98eea717a3b" }
+deckard-engine = { git = "https://github.com/topanthyago/Deckard", rev = "0fce5f016a057ec68649b62465c0baf754225c7c", default-features = false }
+deckard-model = { git = "https://github.com/topanthyago/Deckard", rev = "0fce5f016a057ec68649b62465c0baf754225c7c" }
+deckard-doc = { git = "https://github.com/topanthyago/Deckard", rev = "0fce5f016a057ec68649b62465c0baf754225c7c" }
+mxprj = { git = "https://github.com/topanthyago/Deckard", rev = "0fce5f016a057ec68649b62465c0baf754225c7c" }
 cpal = "0.18"
 symphonia = { version = "0.6", features = ["all"] }
 lofty = "0.25"

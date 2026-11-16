@@ -295,24 +295,30 @@ pub fn install(
             let bpm = selection.tempo.get();
             let action = action.to_string();
             if let Some(app) = weak.upgrade() {
-                app.global::<MaschineUi>().set_status("Updating selected Sound…".into());
+                app.global::<MaschineUi>()
+                    .set_status("Updating selected Sound…".into());
             }
             editor.command(move |handle| {
                 let sampler = handle.snapshot_cached().is_some_and(|project| {
-                    project.groups.get(group)
+                    project
+                        .groups
+                        .get(group)
                         .and_then(|g| g.sounds.get(sound))
                         .is_some_and(|s| s.instrument == "Sampler")
                 });
-                let bars = action.strip_prefix("fit-")
+                let bars = action
+                    .strip_prefix("fit-")
                     .and_then(|s| s.parse::<u32>().ok())
                     .filter(|_| sampler);
                 if let Some(bars) = bars {
                     return launch::fit(handle, generation, version, group, sound, bars, bpm);
                 }
-                handle.edit_deferred_for_project(generation, move |doc| {
-                    launch::apply(doc, group, sound, &action)
-                })?
-                .recv().map_err(|_| "Maschine editor stopped".to_string())??;
+                handle
+                    .edit_deferred_for_project(generation, move |doc| {
+                        launch::apply(doc, group, sound, &action)
+                    })?
+                    .recv()
+                    .map_err(|_| "Maschine editor stopped".to_string())??;
                 Ok(())
             });
         });

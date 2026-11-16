@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 opendj-control = { path = "../control" }
 opendj-script = { path = "../script" }
-deckard-surface = { git = "https://github.com/topanthyago/Deckard", rev = "0510e7aba372c9c5ab4cd5508c51d98eea717a3b" }
+deckard-surface = { git = "https://github.com/topanthyago/Deckard", rev = "0fce5f016a057ec68649b62465c0baf754225c7c" }
 base64 = "0.22"
 # USB HID controllers (Native Instruments Traktor Kontrol and others). On
 # Linux it uses the native hidraw backend shared with DECKARD; on macOS devices are opened shared,
