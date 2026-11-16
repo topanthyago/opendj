@@ -84,3 +84,7 @@ winresource = { version = "0.1", default-features = false }
 
 [dev-dependencies]
 hound = "3"
+
+[[bin]]
+name = "opendj-install-brazilian-presets"
+path = "../../scripts/install-brazilian-presets.rs"
