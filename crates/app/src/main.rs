@@ -68,6 +68,7 @@ mod list_picker;
 mod live_trace;
 mod lookup;
 mod lrclib;
+mod lyricmotion;
 #[cfg(target_os = "macos")]
 mod mac_menu;
 #[cfg(target_os = "macos")]
@@ -1223,6 +1224,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     }
+    let _motion_timer = lyricmotion::install(
+        &app,
+        registry.clone(),
+        engine.loaded_tracks(),
+        engine.visual_positions(),
+    );
     // OSC for tablets, visuals and show software: Settings › Controllers.
     osc::install(&registry, engine.loaded_tracks(), engine.visual_positions());
     let _osc_timer = {

@@ -3,6 +3,7 @@
 // Timed lyrics follow the deck: the line sung now is lit and kept in view,
 // and a click on a line plays from there. Find searches LRCLIB and Letras.
 // PlayerLyrics shows the same lyrics large in Player mode.
+import { MotionPanel } from "lyricmotion.slint";
 import { Theme } from "theme.slint";
 import { WaveLook } from "wave_look.slint";
 import { ListView } from "scroll.slint";
@@ -424,6 +425,7 @@ export component LyricsPanel inherits Rectangle {
                 SmallButton { text: "Karaoke"; primary: LyricsUi.karaoke; clicked => { LyricsUi.set-karaoke(!LyricsUi.karaoke); } }
             }
         }
+        MotionPanel { }
         // While the karaoke screen is open: how loud the singer's voice
         // stays in the mix, from gone (left) to full (right).
         if LyricsUi.karaoke: HorizontalLayout {

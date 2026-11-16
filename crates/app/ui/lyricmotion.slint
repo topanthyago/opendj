@@ -1,0 +1,107 @@
+// Optional visual director. Audio and transport controls remain in their decks.
+import { Theme } from "theme.slint";
+import { Button, CheckBox, ComboBox, LineEdit } from "std-widgets.slint";
+import { ScrollView } from "scroll.slint";
+
+export global MotionUi {
+    in-out property <bool> expanded;
+    in-out property <bool> enabled;
+    in-out property <int> source;
+    in property <string> status: "Visual bridge off";
+    in property <string> origin;
+    in property <string> clock-status;
+    in property <string> scene;
+    in property <string> explanation;
+    in property <string> feedback;
+    in property <string> policy-status;
+    in property <[string]> universes;
+    in property <[string]> scenes;
+    in property <[string]> targets;
+    in property <[string]> capabilities;
+    in property <[string]> assets;
+    in property <[string]> history;
+    in-out property <int> universe-index;
+    in-out property <int> scene-index;
+    in-out property <int> target-index;
+    in-out property <int> capability-index;
+    in-out property <int> asset-index;
+    in-out property <int> mode;
+    in-out property <bool> lock-universe;
+    in-out property <string> weight: "1";
+    in-out property <int> clock;
+    in-out property <string> at;
+    in-out property <int> motion;
+    in-out property <string> strength: "1";
+    in-out property <string> duration: "1";
+    in-out property <string> x: "0";
+    in-out property <string> y: "0";
+    in-out property <string> scale: "1";
+    callback command(operation: string);
+    callback target-changed();
+    callback universe-changed();
+    callback open-preview();
+}
+
+export component MotionPanel inherits VerticalLayout {
+    spacing: 4px;
+    HorizontalLayout {
+        height: 26px;
+        Button { text: MotionUi.expanded ? "▾ Motion" : "▸ Motion"; clicked => { MotionUi.expanded = !MotionUi.expanded; } }
+        Text { text: MotionUi.status; color: Theme.text-dim; font-size: 11px; overflow: elide; vertical-alignment: center; }
+    }
+    if MotionUi.expanded: ScrollView {
+        height: 340px;
+        VerticalLayout {
+            padding: 4px;
+            spacing: 5px;
+            HorizontalLayout {
+                CheckBox { text: "Visual bridge"; checked <=> MotionUi.enabled; }
+                ComboBox { model: ["Auto · master", "Deck 1", "Deck 2", "Deck 3", "Deck 4"]; current-index <=> MotionUi.source; }
+                Button { text: "Preview ↗"; clicked => { MotionUi.open-preview(); } }
+            }
+            Text { text: MotionUi.origin; color: Theme.text-dim; font-size: 11px; overflow: elide; }
+            Text { text: MotionUi.clock-status; color: Theme.text-dim; font-size: 11px; overflow: elide; }
+            Text { text: MotionUi.scene; color: Theme.text; font-size: 12px; overflow: elide; }
+            Text { text: MotionUi.explanation; color: Theme.label; font-size: 11px; wrap: word-wrap; }
+            HorizontalLayout {
+                ComboBox { model: ["Explore balanced", "Strict meaning"]; current-index <=> MotionUi.mode; }
+                Button { text: "Apply policy"; clicked => { MotionUi.command("policy.update"); } }
+            }
+            Text { text: MotionUi.policy-status; color: Theme.label; font-size: 11px; overflow: elide; }
+            Text { text: "Asset universe / weight"; color: Theme.text-dim; font-size: 11px; }
+            HorizontalLayout {
+                ComboBox { model: MotionUi.universes; current-index <=> MotionUi.universe-index; selected(_) => { MotionUi.universe-changed(); } }
+                CheckBox { text: "Lock"; checked <=> MotionUi.lock-universe; }
+                LineEdit { text <=> MotionUi.weight; placeholder-text: "Weight 0–10"; preferred-width: 70px; }
+            }
+            Text { text: "Scene / musical cue"; color: Theme.text-dim; font-size: 11px; }
+            ComboBox { model: MotionUi.scenes; current-index <=> MotionUi.scene-index; }
+            HorizontalLayout {
+                ComboBox { model: ["Now", "Track seconds", "Native beat"]; current-index <=> MotionUi.clock; }
+                LineEdit { text <=> MotionUi.at; placeholder-text: "Time / beat"; }
+            }
+            HorizontalLayout {
+                Button { text: "Select scene"; clicked => { MotionUi.command("scene.select"); } }
+                Button { text: "Override"; clicked => { MotionUi.command("operator.override"); } }
+                Button { text: "Release"; clicked => { MotionUi.command("operator.release"); } }
+            }
+            Text { text: "Target / action"; color: Theme.text-dim; font-size: 11px; }
+            ComboBox { model: MotionUi.targets; current-index <=> MotionUi.target-index; selected(_) => { MotionUi.target-changed(); } }
+            ComboBox { model: MotionUi.capabilities; current-index <=> MotionUi.capability-index; }
+            ComboBox { model: MotionUi.assets; current-index <=> MotionUi.asset-index; }
+            HorizontalLayout {
+                ComboBox { model: ["rise", "drop", "shiver", "freeze", "ripple", "heartbeat", "stamp", "bounce"]; current-index <=> MotionUi.motion; }
+                LineEdit { text <=> MotionUi.strength; placeholder-text: "Strength"; }
+                LineEdit { text <=> MotionUi.duration; placeholder-text: "Seconds"; }
+            }
+            HorizontalLayout {
+                LineEdit { text <=> MotionUi.x; placeholder-text: "X"; }
+                LineEdit { text <=> MotionUi.y; placeholder-text: "Y"; }
+                LineEdit { text <=> MotionUi.scale; placeholder-text: "Scale"; }
+                Button { text: "Schedule action"; clicked => { MotionUi.command("action.schedule"); } }
+            }
+            Text { text: MotionUi.feedback; color: Theme.lilac-text; font-size: 11px; wrap: word-wrap; }
+            for row in MotionUi.history: Text { text: row; color: Theme.text-dim; font-size: 10px; wrap: word-wrap; }
+        }
+    }
+}
