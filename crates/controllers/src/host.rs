@@ -46,6 +46,7 @@ struct MaschineSurface {
     multi_select: bool,
     duplicate_from: Option<(u8, usize)>,
     pattern_bank: usize,
+    pattern_pinned: bool,
     scene_bank: usize,
     step_page: usize,
     erase_sounds: HashMap<u8, usize>,
@@ -71,12 +72,75 @@ impl MaschineSurface {
             multi_select: false,
             duplicate_from: None,
             pattern_bank: 0,
+            pattern_pinned: false,
             scene_bank: 0,
             step_page: 0,
             erase_sounds: HashMap::new(),
             erase_groups: HashSet::new(),
             pads: HashSet::new(),
         }
+    }
+
+    /// Adapt the pinned script's PATTERN/SHIFT+PATTERN mapping without changing
+    /// its step sequencer, pin button, display or STEP follow implementation.
+    fn input(
+        &mut self,
+        bytes: &[u8],
+        view: &deckard_surface::View,
+        now: Instant,
+    ) -> Vec<deckard_surface::device::Out> {
+        if bytes.len() != 3 || bytes[0] & 0xf0 != 0xb0 || bytes[1] != 26 {
+            return self.device.midi("controls", bytes, view, now);
+        }
+        let shift = self.held.contains(&49);
+        let mut events = Vec::new();
+        if bytes[2] > 0 {
+            self.pattern_pinned = false;
+            events.extend(self.device.midi(
+                "controls",
+                &[0xb0, 49, if shift { 0 } else { 127 }],
+                view,
+                now,
+            ));
+        }
+        events.extend(self.device.midi("controls", bytes, view, now));
+        if bytes[2] > 0 {
+            events.extend(self.device.midi(
+                "controls",
+                &[0xb0, 49, if shift { 127 } else { 0 }],
+                view,
+                now,
+            ));
+            if !shift && self.mode != 2 {
+                // Explicitly choose the unpinned state by toggling twice.
+                // This disables the script's short-tap auto-pin on release.
+                for _ in 0..2 {
+                    events.extend(self.device.midi("controls", &[0xb0, 39, 127], view, now));
+                    events.extend(self.device.midi("controls", &[0xb0, 39, 0], view, now));
+                }
+            }
+        }
+        events
+    }
+
+    fn pattern_state(&self, view: &deckard_surface::View) -> Option<serde_json::Value> {
+        (self.mode == 2).then(|| {
+            let group = view.groups.get(view.group);
+            let assigned = group.and_then(|g| g.scene_pattern);
+            serde_json::json!({
+                "group": view.group,
+                "pinned": self.pattern_pinned,
+                "assigned": assigned,
+                "assigned_name": group.and_then(|g| assigned.and_then(|p| g.patterns.get(p))).map(|p| p.name.as_str()),
+                "editor": view.pattern,
+                "editor_name": group.and_then(|g| g.patterns.get(view.pattern)).map(|p| p.name.as_str()),
+                "playing": view.playing,
+                "playing_scene": view.playing_scene,
+                "queued_scene": view.queued_scene,
+                "scene": view.scene,
+                "button": if assigned.is_some() { "STOP GROUP" } else { "PLAY GROUP" },
+            })
+        })
     }
 
     /// Add MK2 secondary gestures around the existing DECKARD device script.
@@ -318,6 +382,26 @@ impl MaschineSurface {
             if key == 48 || key == 45 {
                 *bank = bank.saturating_sub(1);
             }
+        }
+        let pattern_picker = self.mode == 2
+            && ![4, 10, 27, 30, 31, 33]
+                .iter()
+                .any(|key| self.held.contains(key));
+        if pattern_picker && key == 40 {
+            let pattern = view.groups.get(view.group).and_then(|g| {
+                if g.scene_pattern.is_some() {
+                    None
+                } else {
+                    g.patterns.get(view.pattern).map(|_| view.pattern)
+                }
+            });
+            return Some(vec![A::ScenePattern {
+                group: view.group,
+                pattern,
+            }]);
+        }
+        if pattern_picker && key == 39 {
+            self.pattern_pinned = !self.pattern_pinned;
         }
         if key == 39 {
             if let Some(mode) = [10, 4, 27, 30, 31, 33]
@@ -1087,7 +1171,7 @@ impl Host {
                 {
                     Vec::new()
                 } else {
-                    let mut events = surface.device.midi("controls", bytes, &view, now);
+                    let mut events = surface.input(bytes, &view, now);
                     for mode in [10, 4, 27, 30, 31, 33] {
                         if surface.held.contains(&mode)
                             && !surface.pinned.contains(&mode)
@@ -1208,6 +1292,7 @@ impl Host {
         let error = surface.device.error().or_else(|| source.error(deck));
         let owned_repeat = surface.held.contains(&10);
         let overlay = surface.overlay(&view, keyboard, quantize);
+        let pattern_state = surface.pattern_state(&view);
         if keyboard && surface.mode == 0 && !surface.sampling {
             if let Some(sound) = view
                 .groups
@@ -1283,7 +1368,7 @@ impl Host {
         if !actions.is_empty() {
             source.dispatch(deck, actions);
         }
-        serde_json::json!({"available":true, "midi":output, "error":error,"overlay":overlay})
+        serde_json::json!({"available":true, "midi":output, "error":error,"overlay":overlay,"pattern_state":pattern_state})
             .to_string()
     }
 

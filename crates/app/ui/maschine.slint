@@ -59,6 +59,8 @@ export global MaschineUi {
     in property <[MaschineGroup]> groups;
     in property <[MaschineSound]> sounds;
     in property <[MaschinePattern]> patterns;
+    in property <int> assigned-pattern: -1;
+    in property <string> assigned-pattern-name;
     in property <[MaschineScene]> scenes;
     in property <[MaschineNote]> notes;
     in property <[MaschineParam]> parameters;
@@ -100,6 +102,8 @@ export global MaschineUi {
     callback open-project();
     callback save-project();
     callback pick-pattern(pattern: int);
+    callback edit-pattern(pattern: int);
+    callback toggle-group-pattern();
     callback add-pattern();
     callback add-scene();
     callback add-note(sound: int, pitch: int, start: float, length: float);
@@ -654,6 +658,8 @@ export component MaschinePanel inherits Rectangle {
     property <int> sound: Controls.value(Controls.resolve(group, "sound"), Controls.tick);
     property <int> pattern: Controls.value(Controls.resolve(group, "pattern"), Controls.tick);
     property <int> scene: Controls.value(Controls.resolve(group, "scene"), Controls.tick);
+    property <int> playing-scene: Controls.value(Controls.resolve(group, "playing_scene"), Controls.tick);
+    property <int> queued-scene: Controls.value(Controls.resolve(group, "queued_scene"), Controls.tick);
     property <int> pitch-low: 48;
     background: Theme.panel;
     VerticalLayout {
@@ -764,13 +770,30 @@ export component MaschinePanel inherits Rectangle {
                             background: i == pattern ? tint.with-alpha(0.12) : transparent;
                             VerticalLayout { padding: 5px; spacing: 2px;
                                 Text { text: item.name; color: Theme.text; font-size: 11px; }
-                                Text { text: item.detail; color: Theme.text-dim; font-size: 9px; }
+                                Text { text: (i == MaschineUi.assigned-pattern ? "ASSIGNED · " : "") + item.detail; color: Theme.text-dim; font-size: 9px; }
                             }
-                            TouchArea { mouse-cursor: pointer; clicked => { MaschineUi.pick-pattern(i); patterns.close(); } }
+                            TouchArea { width: parent.width - 45px; mouse-cursor: pointer; clicked => { MaschineUi.pick-pattern(i); patterns.close(); } }
+                            MaschineButton { x: parent.width - 44px; y: 5px; width: 40px; text: "Edit"; clicked => { MaschineUi.edit-pattern(i); patterns.close(); } }
                         }
                     }
                     MaschineButton { x: 5px; y: parent.height - 31px; width: parent.width - 10px; text: "+ Pattern"; clicked => { MaschineUi.add-pattern(); } }
                 }
+            }
+        }
+        HorizontalLayout {
+            height: 24px;
+            spacing: 5px;
+            MaschineButton {
+                text: MaschineUi.assigned-pattern >= 0 ? "STOP GROUP" : "PLAY GROUP";
+                clicked => { MaschineUi.toggle-group-pattern(); }
+            }
+            Text {
+                text: MaschineUi.assigned-pattern-name + (MaschineUi.assigned-pattern < 0 ? " · Group stopped" :
+                    (Controls.value(Controls.resolve(channel, "play"), Controls.tick) > 0 ? " · Assigned" : " · Transport stopped")) +
+                    (queued-scene >= 0 ? " · Pending scene " + (queued-scene + 1) : "") +
+                    (playing-scene >= 0 && playing-scene != scene ? " · Playing scene " + (playing-scene + 1) : "");
+                color: Theme.text-dim; font-size: 10px; vertical-alignment: center;
+                horizontal-stretch: 1; overflow: elide;
             }
         }
         HorizontalLayout {

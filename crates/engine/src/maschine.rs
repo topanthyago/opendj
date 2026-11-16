@@ -1948,23 +1948,15 @@ impl Maschine {
                         }
                     }
                     if pattern_changed {
-                        let scene = worker_controls.scene.get().round() as usize;
                         let group = worker_controls.group.get().round() as usize;
                         let pattern = worker_controls.pattern.get().round() as usize;
                         if group < GROUPS {
                             selected_patterns[group] = pattern;
                         }
-                        let result = editor
-                            .document
-                            .as_mut()
-                            .ok_or_else(|| "project not ready".to_string())
-                            .and_then(|d| d.assign_pattern(scene, group, Some(pattern)))
-                            .and_then(|()| editor.publish_snapshot(true))
-                            .and_then(|()| editor.shared.prepare());
-                        if let Err(error) = result {
-                            editor.shared.set_error(error);
-                        }
-                    } else if scene_changed {
+                        // Editor focus is independent of the scene's playback assignment.
+                        // Launches use SelectPattern or an explicit document assignment.
+                    }
+                    if scene_changed {
                         if let Err(error) = editor.shared.prepare() {
                             editor.shared.set_error(error);
                         }

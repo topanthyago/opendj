@@ -288,3 +288,19 @@ new-recording length and output level. Its numbered layer buttons show armed,
 recording, playing and overdubbing states, loop position and recorded bar count.
 Layer level, mute, clear, capture, undo/redo and then-overdub retain their existing
 controls in both four-deck arrangements.
+
+### Group Pattern playback
+
+Hold **PATTERN** to select one of the focused Group's Patterns on the 16 pads.
+Release it to return to the previous view. Softkey 1 pins or unpins this picker.
+**SHIFT + PATTERN** opens or closes the step editor. **STEP** toggles playhead
+following, including while editing steps.
+
+Selecting a Pattern assigns it to the focused Group in the selected Scene.
+Softkey 2 in the Pattern picker stops or resumes that Group by removing or
+restoring its Scene assignment. Other Groups keep their assignments. The global
+transport remains the master playback control.
+
+The GUI shows the Scene's assigned Pattern and offers **STOP GROUP / PLAY GROUP**.
+The Pattern menu launches a Pattern. Its **Edit** button changes only the editor
+focus, allowing another Pattern to remain assigned for playback.

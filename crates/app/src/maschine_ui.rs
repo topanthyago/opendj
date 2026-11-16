@@ -383,6 +383,29 @@ pub fn install(
         });
     }
     {
+        let selection = selection.clone();
+        ui.on_edit_pattern(move |pattern| {
+            if pattern >= 0 {
+                selection.pattern.set(f64::from(pattern));
+            }
+        });
+    }
+    {
+        let editor = editor.clone();
+        let selection = selection.clone();
+        ui.on_toggle_group_pattern(move || {
+            let (group, _, pattern, scene) = selection.indices();
+            editor.edit(move |doc| {
+                let assigned = doc
+                    .project()
+                    .scenes
+                    .get(scene)
+                    .is_some_and(|s| s.patterns.iter().any(|(g, _)| *g == group));
+                doc.assign_pattern(scene, group, if assigned { None } else { Some(pattern) })
+            });
+        });
+    }
+    {
         let editor = editor.clone();
         let selection = selection.clone();
         ui.on_add_pattern(move || {
@@ -827,7 +850,7 @@ fn save_project(
 fn show(
     app: &AppWindow,
     project: &Project,
-    (group, sound, pattern, _): (usize, usize, usize, usize),
+    (group, sound, pattern, scene): (usize, usize, usize, usize),
 ) {
     let ui = app.global::<MaschineUi>();
     let launch_sound = project.groups.get(group).and_then(|g| g.sounds.get(sound));
@@ -887,6 +910,19 @@ fn show(
             .map(|s| s.instrument.as_str())
             .filter(|s| !s.is_empty())
             .unwrap_or("Instrument")
+            .into(),
+    );
+    let assigned = project.scenes.get(scene).and_then(|s| {
+        s.patterns
+            .iter()
+            .find(|(g, _)| *g == group)
+            .map(|(_, p)| *p)
+    });
+    ui.set_assigned_pattern(assigned.map_or(-1, |p| p as i32));
+    ui.set_assigned_pattern_name(
+        assigned
+            .and_then(|p| selected?.patterns.get(p))
+            .map_or("No pattern", |p| p.name.as_str())
             .into(),
     );
     ui.set_patterns(model(
