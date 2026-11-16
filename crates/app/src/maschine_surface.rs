@@ -1456,17 +1456,11 @@ impl Deck {
                 self.selected.clear();
             }
             "undo_step" => {
-                self.edit(|d| {
-                    d.undo_step();
-                    Ok(())
-                })?;
+                self.handle.undo_step()?;
                 self.selected.clear();
             }
             "redo_step" => {
-                self.edit(|d| {
-                    d.redo_step();
-                    Ok(())
-                })?;
+                self.handle.redo_step()?;
                 self.selected.clear();
             }
             "copy" => self.clipboard = self.focused_notes()?.1,
