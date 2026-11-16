@@ -6,7 +6,7 @@
 import { TrackDrag } from "library.slint";
 import { SamplerPanel } from "sampler.slint";
 import { MaschinePanel } from "maschine.slint";
-import { GrooveMenuItem, GrooveMenuBackground, GrooveTempo, GrooveFillBar, PerformanceStatus } from "performance.slint";
+import { GrooveMenuItem, GrooveMenuBackground, GrooveTempo, GrooveFillBar, PerformanceStatus, GrooveDice, GrooveDiceItems, GrooveLibraryBar, GrooveSlots, PresetTagger, PresetNamer, GrooveUi, GrooveKit, GrooveGenre, GrooveName } from "performance.slint";
 import { Theme, KeyNotation, EdgeLine, EdgeVLine, CloseIcon } from "theme.slint";
 import { Caption, ControlButton, ControlFader, ControlKnob, Controls, HoverTip, MasterBadge, PitchReset, Switch, SyncButton, VuMeter } from "controls.slint";
 import { TourMark } from "tourmark.slint";
@@ -812,99 +812,8 @@ component TimeKey inherits HorizontalLayout {
 
 // The Groove Box's kits and its library of grooves by genre, set once by
 // the app.
-export struct GrooveKit {
-    name: string,
-    about: string,
-    sounds: [string],
-}
-
-export struct GrooveName {
-    name: string,
-    about: string,
-}
-
-export struct GrooveGenre {
-    name: string,
-    grooves: [GrooveName],
-}
-
-export global GrooveUi {
-    in property <[GrooveKit]> kits;
-    in property <[GrooveGenre]> genres;
-}
-
 // A preset's tags, for the browser's chips: what it is (TYPE) and how it
 // sounds (CHARACTER), switched on and off.
-component PresetTagger inherits PopupWindow {
-    in property <int> deck;
-    width: 300px;
-    height: 2 * 18px + 4 * 28px + 16px;
-    close-policy: close-on-click-outside;
-    GrooveMenuBackground { }
-    VerticalLayout {
-        padding: 8px;
-        spacing: 0px;
-        for group[g] in ["TYPE", "CHARACTER"]: VerticalLayout {
-            property <int> from: g == 0 ? 0 : PresetUi.type-count;
-            property <int> to: g == 0 ? PresetUi.type-count : PresetUi.tag-names.length;
-            Text { text: group; color: Theme.text-dim; font-size: 10px; height: 18px; vertical-alignment: center; }
-            for row in 2: HorizontalLayout {
-                spacing: 4px;
-                padding-top: 3px;
-                padding-bottom: 3px;
-                height: 28px;
-                alignment: start;
-                for k in max(0, min(5, to - from - row * 5)): TagChip {
-                    property <int> tag: from + row * 5 + k;
-                    text: PresetUi.tag-names[tag];
-                    on: PresetUi.has-tag(deck, tag);
-                    clicked => { PresetUi.toggle-tag(deck, tag); }
-                }
-            }
-        }
-    }
-}
-
-// Asks a name for a new preset (`asking` 0) or a new name for preset
-// `name` (1), then saves or renames.
-component PresetNamer inherits PopupWindow {
-    in property <int> deck;
-    in property <int> asking;
-    in property <string> name;
-    width: 280px;
-    close-policy: close-on-click-outside;
-    GrooveMenuBackground { }
-    VerticalLayout {
-        padding: 10px;
-        spacing: 8px;
-        Text { text: asking == 0 ? "Name the new preset" : "Rename “" + name + "”"; color: Theme.text; font-size: 12px; }
-        HorizontalLayout {
-            spacing: 6px;
-            field := LineEdit {
-                text: asking == 1 ? name : "";
-                placeholder-text: "Preset name";
-                init => { self.focus(); }
-                accepted => { done(); }
-            }
-            Rectangle {
-                width: 60px;
-                border-radius: 4px;
-                background: ota.pressed ? Theme.control-pressed : Theme.accent;
-                Text { text: "Save"; color: #000000; font-size: 12px; font-weight: 600; }
-                ota := TouchArea { mouse-cursor: pointer; clicked => { done(); } }
-            }
-        }
-    }
-    function done() {
-        if asking == 0 {
-            PresetUi.save-as(deck, field.text);
-        } else {
-            PresetUi.rename(deck, field.text);
-        }
-        root.close();
-    }
-}
-
 // ‹ and › beside a deck's preset name.
 component PresetStep inherits Rectangle {
     in property <string> text;
@@ -1165,78 +1074,6 @@ component FormatChip inherits Rectangle {
 
 // The Groove Box's preset, in its top bar: the name, with a menu to step
 // through its presets, pick one, and save.
-component GroovePreset inherits GrooveButton {
-    in property <int> deck;
-    property <string> name: PresetUi.name(deck);
-    property <int> asking;
-    text: (name != "" ? name : "Preset") + " ▾";
-    clicked => { menu.show(); }
-    menu := PopupWindow {
-        y: root.height + 2px;
-        width: 230px;
-        // Previous, Next, the presets, then Save as new (and Save, Rename
-        // and Tags with a preset playing), with their lines between.
-        height: min(PresetUi.groove.length * 24px + (name != "" ? 206px : 110px), 440px);
-        GrooveMenuBackground { }
-        ScrollView {
-            x: 4px;
-            y: 4px;
-            width: parent.width - 8px;
-            height: parent.height - 8px;
-            VerticalLayout {
-                if deck == 2: GrooveMenuItem {
-                    text: "Deckard · 16 Sounds";
-                    clicked => { Controls.set-value(Controls.resolve("[Groove" + (deck + 1) + "]", "backend"), 1); menu.close(); }
-                }
-                GrooveMenuItem { text: "‹ Previous preset"; clicked => { PresetUi.step(deck, -1); } }
-                GrooveMenuItem { text: "› Next preset"; clicked => { PresetUi.step(deck, 1); } }
-                Rectangle { height: 1px; background: Theme.border; }
-                for p in PresetUi.groove: GrooveMenuItem {
-                    text: p.name;
-                    checked: p.name == name;
-                    clicked => { PresetUi.load(deck, p.index); }
-                }
-                if PresetUi.groove.length > 0: Rectangle { height: 1px; background: Theme.border; }
-                if name != "": GrooveMenuItem {
-                    text: "Save";
-                    detail: "Over “" + name + "”";
-                    clicked => { PresetUi.save(deck); }
-                }
-                GrooveMenuItem {
-                    text: "Save as new…";
-                    clicked => {
-                        asking = 0;
-                        namer.show();
-                    }
-                }
-                if name != "": GrooveMenuItem {
-                    text: "Rename…";
-                    clicked => {
-                        asking = 1;
-                        namer.show();
-                    }
-                }
-                if name != "": GrooveMenuItem {
-                    text: "Tags…";
-                    detail: "What it is and how it sounds";
-                    clicked => { tagger.show(); }
-                }
-            }
-        }
-    }
-    tagger := PresetTagger {
-        y: root.height + 2px;
-        deck: deck;
-    }
-    namer := PresetNamer {
-        y: root.height + 2px;
-        deck: deck;
-        asking: asking;
-        name: name;
-    }
-}
-
-
 // Deck header: big artwork on the outer edge, title and artist, the remaining
 // time and key, and the overview waveform underneath.
 export component Header inherits Rectangle {
@@ -3321,67 +3158,6 @@ component GrooveToggle inherits Rectangle {
 
 // Variations: what the Dice menu offers, for every unlocked track or for
 // one (`row` 1-8). Each waits for the next bar while the groove plays.
-component GrooveDiceItems inherits VerticalLayout {
-    in property <string> g;
-    in property <int> track;
-    callback picked();
-    property <int> dice-index: Controls.resolve(g, "dice");
-    property <int> row-index: Controls.resolve(g, "dice_row");
-    for item[i] in [
-        { name: "New groove", detail: "Fresh hits in the genre's style" },
-        { name: "Mutate", detail: "Move a hit or two, keep the feel" },
-        { name: "Busier", detail: "One more hit, on the strongest free step" },
-        { name: "Calmer", detail: "One hit fewer, the weakest goes" },
-        { name: "Even out", detail: "Same hits, spread evenly (Euclid)" },
-        { name: "Shift later", detail: "Every hit a step later" },
-        { name: "Shift earlier", detail: "Every hit a step earlier" },
-    ]: GrooveMenuItem {
-        text: track > 0 && i == 0 ? "New track" : item.name;
-        detail: item.detail;
-        clicked => {
-            Controls.set-value(row-index, track);
-            Controls.set-value(dice-index, i + 1);
-            root.picked();
-        }
-    }
-}
-
-// The top bar's Dice: varies every unlocked track on the next bar, with
-// Undo. It blinks while a variation waits for the bar.
-component GrooveDice inherits GrooveButton {
-    in property <string> g;
-    property <bool> pending: Controls.value(Controls.resolve(g, "dice_pending"), Controls.tick) > 0;
-    property <bool> can-undo: Controls.value(Controls.resolve(g, "can_undo"), Controls.tick) > 0;
-    property <bool> varying: Controls.value(Controls.resolve(g, "vary"), Controls.tick) > 0.01;
-    text: "⚄";
-    lit: varying;
-    font-size: 16px;
-    blink: pending && Controls.blink;
-    clicked => { dice-menu.show(); }
-    dice-menu := PopupWindow {
-        y: root.height + 2px;
-        width: 250px;
-        GrooveMenuBackground { }
-        VerticalLayout {
-            padding: 4px;
-            HorizontalLayout {
-                padding: 4px;
-                spacing: 8px;
-                ControlKnob { group: g; key: "vary"; label: "VARY"; size: 26px; }
-                Text { text: "Lets the groove change by itself:\nweak hits drop out, ghost notes\ncome in, hits waver in loudness."; color: Theme.text-dim; font-size: 10px; vertical-alignment: center; }
-            }
-            Rectangle { height: 1px; background: Theme.border; }
-            Text { x: 8px; height: 22px; text: "Every unlocked track, on the next bar"; color: Theme.text-dim; font-size: 10px; vertical-alignment: center; }
-            GrooveDiceItems { g: g; track: 0; }
-            Rectangle { height: 1px; background: Theme.border; }
-            GrooveMenuItem {
-                text: can-undo ? "Undo" : "Nothing to undo";
-                clicked => { Controls.set-value(Controls.resolve(g, "dice_undo"), 1); }
-            }
-        }
-    }
-}
-
 // One track in the Sequencer: its sound's icon (click to hear it) with M
 // and S, then 16 steps in the track's color. A track with no steps sits
 // dimmed; one with steps is brighter, its hits lit and the icon glowing as
@@ -3861,136 +3637,12 @@ component GrooveBox inherits Rectangle {
             height: 30px;
             spacing: 4px;
             PlayButton { group: group; tint: tint; width: root.width < 600px ? 38px : 42px; }
-            GrooveButton {
-                width: root.width < 600px ? 64px : 76px;
-                height: 30px;
-                text: GrooveUi.kits[kit].name + " ▾";
-                clicked => { kit-menu.show(); }
-                kit-menu := PopupWindow {
-                    y: parent.height + 2px;
-                    width: 260px;
-                    GrooveMenuBackground { }
-                    VerticalLayout {
-                        padding: 4px;
-                        for k[i] in GrooveUi.kits: GrooveMenuItem {
-                            text: k.name;
-                            detail: k.about;
-                            checked: i == kit;
-                            clicked => { Controls.set-value(kit-index, i); }
-                        }
-                    }
-                }
-            }
-            GrooveButton {
-                width: root.width < 600px ? 54px : 60px;
-                height: 30px;
-                text: GrooveUi.genres[genre].name + " ▾";
-                clicked => { genre-menu.show(); }
-                genre-menu := PopupWindow {
-                    y: parent.height + 2px;
-                    width: 190px;
-                    height: min(GrooveUi.genres.length * 24px + 8px, 340px);
-                    GrooveMenuBackground { }
-                    ListView {
-                        x: 4px;
-                        y: 4px;
-                        width: parent.width - 8px;
-                        height: parent.height - 8px;
-                        for item[i] in GrooveUi.genres: GrooveMenuItem {
-                            text: item.name;
-                            checked: i == genre;
-                            // A new genre starts on its first groove, unchained.
-                            clicked => {
-                                Controls.set-value(genre-index, i);
-                                Controls.set-value(pattern-index, 1);
-                                Controls.set-value(chain-index, 0);
-                                Controls.set-value(Controls.resolve(g, "load"), 1);
-                            }
-                        }
-                    }
-                }
-            }
-            // The groove's name takes the room left over.
-            GrooveButton {
-                min-width: 34px;
-                horizontal-stretch: 1;
-                height: 30px;
-                text: (pattern > 0 && pattern <= grooves.length ? grooves[pattern - 1].name : "Groove") + " ▾";
-                clicked => { pattern-menu.show(); }
-                pattern-menu := PopupWindow {
-                    y: parent.height + 2px;
-                    width: 300px;
-                    height: min(grooves.length * 36px + 8px, 380px);
-                    GrooveMenuBackground { }
-                    ListView {
-                        x: 4px;
-                        y: 4px;
-                        width: parent.width - 8px;
-                        height: parent.height - 8px;
-                        for item[i] in grooves: GrooveMenuItem {
-                            text: item.name;
-                            detail: item.about;
-                            checked: i + 1 == pattern;
-                            clicked => {
-                                Controls.set-value(pattern-index, i + 1);
-                                Controls.set-value(Controls.resolve(g, "load"), 1);
-                            }
-                        }
-                    }
-                }
-            }
-            GrooveButton {
-                width: root.width < 600px ? 48px : 52px;
-                height: 30px;
-                text: "Chain ▾";
-                lit: chain > 0;
-                tint: tint;
-                clicked => { chain-menu.show(); }
-                chain-menu := PopupWindow {
-                    y: parent.height + 2px;
-                    width: 220px;
-                    height: min((grooves.length + 1) * 24px + 8px, 340px);
-                    GrooveMenuBackground { }
-                    ScrollView {
-                        x: 4px;
-                        y: 4px;
-                        width: parent.width - 8px;
-                        height: parent.height - 8px;
-                        VerticalLayout {
-                            GrooveMenuItem {
-                                text: "Off";
-                                checked: chain == 0;
-                                clicked => { Controls.set-value(chain-index, 0); }
-                            }
-                            // The groove picked and this one take turns, a bar each.
-                            for item[i] in grooves: GrooveMenuItem {
-                                text: item.name;
-                                checked: i + 1 == chain;
-                                clicked => {
-                                    Controls.set-value(chain-index, i + 1);
-                                    Controls.set-value(Controls.resolve(g, "load_chain"), 1);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            // The preset shares the room left over with the groove's name.
-            GroovePreset { deck: deck; min-width: 34px; horizontal-stretch: 1; height: 30px; tint: tint; }
+            GrooveLibraryBar { deck: deck; compact: root.width < 600px; g: g; tint: tint; horizontal-stretch: 1; height: 30px; }
         }
         HorizontalLayout {
             height: 30px;
             spacing: 4px;
-            for letter[i] in ["A", "B", "C", "D"]: GrooveButton {
-                width: 22px;
-                height: 30px;
-                text: letter;
-                tint: tint;
-                // The one sounding is lit; one picked blinks until the bar line.
-                lit: i == sounding;
-                blink: i == queued && queued != sounding && blink;
-                clicked => { Controls.set-value(Controls.resolve(g, "groove"), i); }
-            }
+            GrooveSlots { g: g; tint: tint; }
             GrooveDice { g: g; width: 30px; height: 30px; tint: tint; }
             GrooveTempo { g: g; width: 60px; height: 30px; tint: tint; }
             Rectangle { horizontal-stretch: 1; }
@@ -6004,3 +5656,5 @@ export component Deck inherits Rectangle {
     // The tour points here to load a track: the header, where its title shows.
     TourMark { id: group + ",load"; x: header.x; y: header.y; width: header.width; height: header.height; }
 }
+
+export { GrooveUi, GrooveKit, GrooveGenre, GrooveName } from "performance.slint";
