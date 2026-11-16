@@ -1,6 +1,6 @@
 import { Theme } from "theme.slint";
 import { Controls, ControlButton } from "controls.slint";
-import { GrooveTempo, GrooveFillBar, PerformanceStatus } from "performance.slint";
+import { GrooveTempo, GrooveFillBar, PerformanceStatus, GrooveDice, GrooveLibraryBar, GrooveSlots, GrooveMenuBackground, GrooveMenuItem } from "performance.slint";
 import { ListView, ScrollView } from "scroll.slint";
 
 export struct MaschineGroup {
@@ -59,6 +59,19 @@ export struct MaschineBrowserFilter { options: [string], current: int }
 
 // Views come from the embedded DECKARD document. Edits return to that document.
 export global MaschineUi {
+    in-out property <bool> show-pads: true;
+    in-out property <bool> show-editor: true;
+    in-out property <bool> show-parameters: true;
+    in-out property <bool> show-browser: false;
+    in-out property <bool> show-performance: true;
+    callback view-change(panel: string);
+    in property <[int]> rhythm-roles;
+    in property <bool> rhythm-map-valid;
+    in property <bool> rhythm-map-changed;
+    in property <int> rhythm-edit-group: -1;
+    callback rhythm-edit(group: int);
+    callback rhythm-role(role: int, sound: int);
+    callback rhythm-apply(group: int);
     in property <string> project-name;
     in property <string> status;
     in property <[MaschineGroup]> groups;
@@ -930,6 +943,10 @@ export component MaschinePanel inherits Rectangle {
     property <int> playing-scene: Controls.value(Controls.resolve(group, "playing_scene"), Controls.tick);
     property <int> queued-scene: Controls.value(Controls.resolve(group, "queued_scene"), Controls.tick);
     property <int> pitch-low: 48;
+    property <string> groove-group: "[Groove" + (deck + 1) + "]";
+    property <string> rhythm-prefix: "group" + (group-index + 1) + "_rhythm_";
+    property <bool> rhythm-profile: Controls.value(Controls.resolve(group, rhythm-prefix + "has_profile"), Controls.tick) > 0;
+    property <bool> rhythm-ready: rhythm-profile && Controls.value(Controls.resolve(group, rhythm-prefix + "has_pattern"), Controls.tick) > 0;
     background: Theme.panel;
     VerticalLayout {
         padding: 6px;
@@ -959,6 +976,32 @@ export component MaschinePanel inherits Rectangle {
                             spacing: 6px;
                             MaschineButton { text: MaschineUi.content-import-busy ? "IMPORTING…" : "CHOOSE CONTENT JSON"; horizontal-stretch: 1; enabled: !MaschineUi.content-import-busy; clicked => { MaschineUi.import-content(); } }
                             MaschineButton { text: "CLOSE"; width: 52px; clicked => { content-import.close(); } }
+                        }
+                    }
+                }
+            }
+            MaschineButton {
+                text: "VIEW ▾"; width: 58px; clicked => { view-menu.show(); }
+                view-menu := PopupWindow {
+                    x: -150px; y: 30px; width: 240px;
+                    GrooveMenuBackground { }
+                    VerticalLayout { padding: 6px; spacing: 4px;
+                        HorizontalLayout { spacing: 3px;
+                            for name in ["Perform", "Edit", "Compact"]: MaschineButton {
+                                text: name; horizontal-stretch: 1;
+                                clicked => { MaschineUi.view-change(name); }
+                            }
+                        }
+                        MaschineButton { text: "Sampling"; clicked => { MaschineUi.context = 2; if !MaschineUi.show-editor { MaschineUi.view-change("Steps / piano"); } MaschineUi.view-change("context"); view-menu.close(); } }
+                        for item in [
+                            { name: "Pads", on: MaschineUi.show-pads },
+                            { name: "Steps / piano", on: MaschineUi.show-editor },
+                            { name: "Parameters", on: MaschineUi.show-parameters },
+                            { name: "Browser", on: MaschineUi.show-browser },
+                            { name: "Performance", on: MaschineUi.show-performance }
+                        ]: GrooveMenuItem {
+                            text: item.name; checked: item.on;
+                            clicked => { MaschineUi.view-change(item.name); }
                         }
                     }
                 }
@@ -994,9 +1037,11 @@ export component MaschinePanel inherits Rectangle {
                 }
             }
         }
+        if MaschineUi.show-performance: GrooveLibraryBar { deck: deck; compact: root.width < 600px; control-height: 26px; native-group: group; target-name: "Group " + ["A", "B", "C", "D", "E", "F", "G", "H"][group-index]; g: groove-group; tint: tint; height: 26px; }
         HorizontalLayout {
             height: 26px;
             spacing: 4px;
+            if MaschineUi.show-performance: GrooveSlots { g: groove-group; tint: tint; control-height: 26px; }
             GrooveTempo { g: "[Groove" + (deck + 1) + "]"; tint: tint; width: 74px; height: 26px; menu-right-aligned: false; }
             MaschineButton {
                 text: "REC QUANT ▾";
@@ -1136,7 +1181,7 @@ export component MaschinePanel inherits Rectangle {
         HorizontalLayout {
             vertical-stretch: 1;
             spacing: 8px;
-            VerticalLayout {
+            if MaschineUi.show-pads: VerticalLayout {
                 width: clamp(root.width * 0.24, 128px, 208px);
                 spacing: 3px;
                 HorizontalLayout {
@@ -1149,17 +1194,17 @@ export component MaschinePanel inherits Rectangle {
                 MaschinePads { group: group; selected-group: group-index; sound: sound; tint: tint; vertical-stretch: 1; }
                 MaschineButton { text: MaschineUi.selected-sound-name + " · " + MaschineUi.selected-instrument-name + " ▾"; height: 24px; clicked => { MaschineUi.instrument-menu-open = true; } }
             }
-            VerticalLayout {
+            if MaschineUi.show-editor: VerticalLayout {
                 spacing: 4px;
                 HorizontalLayout {
                     height: 24px;
                     spacing: 3px;
-                    for name[i] in ["PATTERN", root.width < 600px ? "PIANO" : "PIANO ROLL", "SAMPLING", "BROWSE"]: MaschineButton {
+                    for name[i] in ["PATTERN", root.width < 600px ? "PIANO" : "PIANO ROLL", "SAMPLING"]: MaschineButton {
                         text: name;
                         on: MaschineUi.context == i;
                         tint: tint;
                         horizontal-stretch: 1;
-                        clicked => { MaschineUi.context = i; }
+                        clicked => { MaschineUi.context = i; MaschineUi.view-change("context"); }
                     }
                     if MaschineUi.context == 1: MaschineButton { text: "−"; width: 24px; clicked => { pitch-low = max(0, pitch-low - 12); } }
                     if MaschineUi.context == 1: MaschineButton { text: "+"; width: 24px; clicked => { pitch-low = min(104, pitch-low + 12); } }
@@ -1174,10 +1219,12 @@ export component MaschinePanel inherits Rectangle {
                     playing: Controls.value(Controls.resolve(group, "playing"), Controls.tick) > 0;
                 }
                 if MaschineUi.context == 2: MaschineSampling { vertical-stretch: 1; tint: tint; }
-                if MaschineUi.context == 3: MaschineBrowser { vertical-stretch: 1; tint: tint; }
+
             }
+            if MaschineUi.show-browser: MaschineBrowser { width: !MaschineUi.show-pads && !MaschineUi.show-editor ? root.width - 12px : max(180px, root.width * 0.35); vertical-stretch: 1; tint: tint; }
+            if !MaschineUi.show-pads && !MaschineUi.show-editor && !MaschineUi.show-browser: Rectangle { vertical-stretch: 1; }
         }
-        HorizontalLayout {
+        if MaschineUi.show-parameters: HorizontalLayout {
             height: 56px;
             spacing: 4px;
             VerticalLayout {
@@ -1191,7 +1238,60 @@ export component MaschinePanel inherits Rectangle {
             }
             for parameter[i] in MaschineUi.parameters: MaschineKnob { horizontal-stretch: 1; min-width: 0px; parameter: parameter; tint: tint; changed(value) => { MaschineUi.set-parameter(i, value); } }
         }
-        GrooveFillBar { g: "[Groove" + (deck + 1) + "]"; tint: tint; show-four: false; }
+        if MaschineUi.show-performance: HorizontalLayout {
+            height: 26px; spacing: 4px;
+            GrooveDice { g: groove-group; enabled: rhythm-ready; tint: tint; width: 30px; height: 26px; }
+            GrooveFillBar { g: groove-group; tint: tint; show-four: false; compact: true; enabled: rhythm-ready; horizontal-stretch: 1; min-width: 0px; }
+            MaschineButton {
+                text: rhythm-profile ? "ROLES ▾" : "MAP DRUMS ▾";
+                width: 92px; on: rhythm-profile;
+                clicked => { MaschineUi.rhythm-edit(group-index); rhythm-map.show(); }
+                rhythm-map := PopupWindow {
+                    y: -340px; x: -270px; width: 360px; height: 336px;
+                    GrooveMenuBackground { }
+                    VerticalLayout { padding: 8px; spacing: 4px;
+                        Text { text: "Percussion roles · Group " + ["A", "B", "C", "D", "E", "F", "G", "H"][MaschineUi.rhythm-edit-group]; color: Theme.text; font-size: 12px; height: 20px; }
+                        for name[r] in ["Kick", "Snare", "Closed hat", "Open hat", "Clap", "Rim", "Cowbell", "Cymbal"]: HorizontalLayout {
+                            height: 25px; spacing: 4px;
+                            Text { text: name; color: Theme.text-dim; width: 72px; font-size: 10px; vertical-alignment: center; }
+                            MaschineButton {
+                                horizontal-stretch: 1;
+                                enabled: MaschineUi.rhythm-edit-group == group-index;
+                                text: (MaschineUi.rhythm-roles[r] < 0 ? "Unmapped" : (MaschineUi.rhythm-roles[r] + 1) + " · " + MaschineUi.sounds[MaschineUi.rhythm-roles[r]].name) + " ▾";
+                                clicked => { sound-choice.show(); }
+                                sound-choice := PopupWindow {
+                                    x: -60px; y: 26px; width: 240px; height: 300px;
+                                    GrooveMenuBackground { }
+                                    ScrollView { x: 4px; y: 4px; width: parent.width - 8px; height: parent.height - 8px;
+                                      VerticalLayout {
+                                        GrooveMenuItem { text: "Unmapped"; checked: MaschineUi.rhythm-roles[r] < 0; clicked => { MaschineUi.rhythm-role(r, -1); sound-choice.close(); } }
+                                        for sound[s] in MaschineUi.sounds: GrooveMenuItem {
+                                            text: (s + 1) + " · " + sound.name; checked: MaschineUi.rhythm-roles[r] == s;
+                                            clicked => { MaschineUi.rhythm-role(r, s); sound-choice.close(); }
+                                        }
+                                      }
+                                    }
+                                }
+                            }
+                            MaschineButton {
+                                text: "LOCK"; width: 40px; height: 25px; tint: tint;
+                                enabled: rhythm-ready && !MaschineUi.rhythm-map-changed && MaschineUi.rhythm-edit-group == group-index;
+                                on: Controls.value(Controls.resolve(groove-group, "row" + (r + 1) + "_lock"), Controls.tick) > 0;
+                                clicked => { let index = Controls.resolve(groove-group, "row" + (r + 1) + "_lock"); Controls.set-value(index, Controls.value(index, Controls.tick) > 0 ? 0 : 1); }
+                            }
+                            GrooveDice { g: groove-group; track: r + 1; enabled: rhythm-ready && !MaschineUi.rhythm-map-changed && MaschineUi.rhythm-edit-group == group-index && MaschineUi.rhythm-roles[r] >= 0; width: 26px; height: 25px; tint: tint; }
+                        }
+                        Text { text: MaschineUi.rhythm-edit-group != group-index ? "Group changed · reopen this mapping." : !MaschineUi.rhythm-map-valid ? "Choose a different Sound for each role." : MaschineUi.rhythm-map-changed ? "Apply mapping to use these roles." : "Each role uses a different Sound."; color: MaschineUi.rhythm-map-valid ? Theme.text-dim : Theme.c-ff9f0a; font-size: 10px; height: 20px; }
+                        HorizontalLayout { spacing: 4px;
+                            MaschineButton { text: "Disable"; enabled: MaschineUi.rhythm-edit-group == group-index; clicked => { Controls.set-value(Controls.resolve(group, rhythm-prefix + "profile"), 0); rhythm-map.close(); } }
+                            MaschineButton { text: "Legacy 1–8"; enabled: MaschineUi.rhythm-edit-group == group-index; clicked => { Controls.set-value(Controls.resolve(group, rhythm-prefix + "profile"), 1); rhythm-map.close(); } }
+                            MaschineButton { text: "Apply mapping"; enabled: MaschineUi.rhythm-map-valid && MaschineUi.rhythm-edit-group == group-index; clicked => { MaschineUi.rhythm-apply(group-index); rhythm-map.close(); } }
+                        }
+                    }
+                }
+            }
+        }
+        if MaschineUi.show-performance && !rhythm-ready: Text { text: rhythm-profile ? "Select a Group pattern for Fill / Remix / Dice." : "Map percussion roles for Fill / Remix / Dice."; color: Theme.text-dim; font-size: 10px; height: 14px; }
         if MaschineUi.status != "": Text { text: MaschineUi.status; color: Theme.c-ff9f0a; font-size: 10px; overflow: elide; height: 14px; }
     }
     if MaschineUi.instrument-menu-open: Rectangle {

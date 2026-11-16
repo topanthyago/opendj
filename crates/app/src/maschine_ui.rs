@@ -32,6 +32,9 @@ mod encoders;
 
 #[path = "maschine_calibration.rs"]
 mod calibration;
+#[path = "maschine_layout.rs"]
+mod layout;
+
 #[path = "maschine_launch.rs"]
 mod launch;
 
@@ -268,6 +271,7 @@ pub fn install(
     handle: MaschineHandle,
     surface: Arc<MaschineSurfaceProvider>,
 ) -> slint::Timer {
+    layout::install(app, registry.clone());
     calibration::install(app, registry.clone());
     encoders::install(app, registry.clone());
     content::install(app);
@@ -802,7 +806,14 @@ fn show_panel(app: &AppWindow, context: i32) {
         app.invoke_layout_changed(2);
     }
     app.set_library_expanded(false);
-    app.global::<MaschineUi>().set_context(context);
+    let ui = app.global::<MaschineUi>();
+    if context == 3 {
+        ui.set_show_browser(true);
+    } else {
+        ui.set_show_editor(true);
+        ui.set_context(context);
+    }
+    ui.invoke_view_change("context".into());
 }
 
 fn file_request(
