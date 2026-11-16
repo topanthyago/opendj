@@ -303,17 +303,533 @@ fn install(recipe: &Path, root: &Path, output: &Path) -> Result<Value, Box<dyn s
         json!({"banks":banks.len(),"presets":banks.len()*4,"created":created,"existing_preserved":preserved,"sources":verified,"output":output}),
     )
 }
+fn publish_new(path: &Path, bytes: &[u8]) -> Result<bool, Box<dyn std::error::Error>> {
+    if path.exists() {
+        return Ok(false);
+    }
+    let parent = path.parent().ok_or("output needs a parent")?;
+    std::fs::create_dir_all(parent)?;
+    let temporary = parent.join(format!(
+        ".content-{}-{}.pending",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    let result = (|| -> Result<bool, Box<dyn std::error::Error>> {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        match std::fs::hard_link(&temporary, path) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    })();
+    std::fs::remove_file(temporary)?;
+    result
+}
+
+fn safe_name(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .map(|c| {
+            if c.is_control() || r#"/\:*?"<>|"#.contains(c) {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let clean = clean.trim_matches(['.', ' ']);
+    if clean.is_empty() {
+        "Imported content".into()
+    } else {
+        clean.chars().take(150).collect()
+    }
+}
+
+fn content_sample(
+    path: &Path,
+    output: &Path,
+) -> Result<(PathBuf, Sample), Box<dyn std::error::Error>> {
+    match Sample::load(path) {
+        Ok(audio) => Ok((path.to_path_buf(), audio)),
+        Err(error) if error.starts_with("unsupported sample format") => {
+            let folder = output.join("Converted audio");
+            std::fs::create_dir_all(&folder)?;
+            let temporary = folder.join(format!(
+                ".decode-{}-{}.wav",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_nanos()
+            ));
+            let status = std::process::Command::new("ffmpeg")
+                .args(["-nostdin", "-v", "error", "-n", "-i"])
+                .arg(path)
+                .args(["-map", "0:a:0", "-c:a", "pcm_s24le"])
+                .arg(&temporary)
+                .output()?;
+            if !status.status.success() {
+                let _ = std::fs::remove_file(&temporary);
+                return Err(format!(
+                    "source audio decode failed: {}",
+                    String::from_utf8_lossy(&status.stderr).trim()
+                )
+                .into());
+            }
+            let bytes = std::fs::read(&temporary)?;
+            let hash: String = Sha256::digest(&bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            let destination = folder.join(format!("{hash}.wav"));
+            let result = publish_new(&destination, &bytes);
+            std::fs::remove_file(&temporary)?;
+            result?;
+            if std::fs::read(&destination)? != bytes {
+                return Err("converted audio hash collision or modified file".into());
+            }
+            let audio = Sample::load(&destination)?;
+            Ok((destination, audio))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn content_project(
+    project: &Value,
+    parent: &Path,
+    output: &Path,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let name = project["name"].as_str().ok_or("project name missing")?;
+    let ppq = project["ppq"]
+        .as_i64()
+        .filter(|v| *v > 0 && *v <= 1_000_000)
+        .ok_or("invalid source PPQ")?;
+    let tempo = project["tempo"]
+        .as_f64()
+        .filter(|v| v.is_finite() && *v >= 10.0 && *v <= 1000.0)
+        .ok_or("invalid source tempo")?;
+    let sounds = project["sounds"]
+        .as_array()
+        .filter(|a| !a.is_empty() && a.len() <= 128)
+        .ok_or("content needs 1..128 sounds")?;
+    let patterns = project["patterns"]
+        .as_array()
+        .filter(|a| !a.is_empty())
+        .ok_or("content needs patterns")?;
+    let velocity_max = project["velocity_max"].as_f64().unwrap_or(128.0);
+    if !velocity_max.is_finite() || velocity_max <= 0.0 {
+        return Err("invalid source velocity_max".into());
+    }
+    let groups = sounds.len().div_ceil(16);
+    let mut doc = Document::new_project()?;
+    for _ in 1..groups {
+        doc.add_group()?;
+    }
+    doc.set_tempo(tempo)?;
+    let mut warnings = Vec::new();
+    if let Some(values) = project["warnings"].as_array() {
+        warnings.extend(values.iter().map(|v| {
+            v.as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| v.to_string())
+        }));
+    }
+    if project["unresolved_channels"]
+        .as_array()
+        .is_some_and(|a| !a.is_empty())
+    {
+        warnings.push("Unresolved sample/plugin channels remain opaque in source_content and the original project metadata".into());
+    }
+    warnings.push("Native conversion retains resolved sample notes. Source plugin, mixer, sampler-envelope and arrangement behavior require review".into());
+    let mut loaded = vec![false; sounds.len()];
+    for (index, sound) in sounds.iter().enumerate() {
+        let group = index / 16;
+        let slot = index % 16;
+        let Some(relative) = sound["path"].as_str().filter(|s| !s.is_empty()) else {
+            warnings.push(format!(
+                "Sound {index} has no resolved sample and remains silent"
+            ));
+            continue;
+        };
+        let supplied = Path::new(relative);
+        let path = if supplied.is_absolute() {
+            supplied.to_path_buf()
+        } else {
+            parent.join(supplied)
+        }
+        .canonicalize()?;
+        let expected = sound["sha256"].as_str().ok_or("sample SHA-256 missing")?;
+        let mut hash = Sha256::new();
+        let mut file = std::fs::File::open(&path)?;
+        let mut block = [0u8; 65536];
+        loop {
+            let n = file.read(&mut block)?;
+            if n == 0 {
+                break;
+            }
+            hash.update(&block[..n]);
+        }
+        let digest: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        if !digest.eq_ignore_ascii_case(expected) {
+            return Err(format!("sample SHA-256 mismatch: {}", path.display()).into());
+        }
+        let (selected_path, audio) = content_sample(&path, output)?;
+        if selected_path != path {
+            warnings.push(format!(
+                "Sound {index} decoded to a private 24-bit WAV; original retained at {}",
+                path.display()
+            ));
+        }
+        if audio.rate == 0
+            || audio.frames.is_empty()
+            || audio
+                .frames
+                .iter()
+                .flat_map(|f| f.iter())
+                .any(|v| !v.is_finite())
+        {
+            return Err("invalid source audio".into());
+        }
+        let root = sound["root_note"].as_i64().unwrap_or(60);
+        if !(0..=127).contains(&root) {
+            return Err("invalid sample root note".into());
+        }
+        let cents = sound["fine_tune"].as_f64().unwrap_or(0.0)
+            + sound["channel_pitch_shift"].as_f64().unwrap_or(0.0);
+        if !cents.is_finite() || cents.abs() > 9600.0 {
+            return Err("invalid source sample tuning".into());
+        }
+        if sound["stretching_pitch_cents"]
+            .as_f64()
+            .is_some_and(|v| v != 0.0)
+        {
+            warnings.push(format!(
+                "Sound {index} stretching pitch remains opaque in source_content"
+            ));
+        }
+        doc.add_slot(group, slot, 0, &NewModule::Sampler)?;
+        let last = audio.frames.len().saturating_sub(1) as f64;
+        doc.set_zones(
+            group,
+            slot,
+            &[ZoneSpec {
+                from: ZoneFrom::Template,
+                file: Some(selected_path),
+                set: vec![
+                    ("play_range/low", 0.0),
+                    ("play_range/high", last),
+                    ("root_key", root as f64),
+                    ("tune", cents / 100.0),
+                ],
+            }],
+            "Import source sample",
+        )?;
+        doc.rename(
+            Target::Sound(group, slot),
+            sound["name"].as_str().unwrap_or("Source sample"),
+        )?;
+        // Keep chord voices available. Source envelopes and synths remain documented limitations.
+        doc.set(
+            "Import sample",
+            Target::Sampler(group, slot),
+            "envelope_type",
+            Parameter::Int(0),
+        )?;
+        doc.set(
+            "Import sample",
+            Target::Sampler(group, slot),
+            "polyphony",
+            Parameter::Int(4),
+        )?;
+        doc.set_mute(
+            Target::Sound(group, slot),
+            sound["enabled"].as_bool() == Some(false),
+        )?;
+        loaded[index] = true;
+    }
+    let ticks = |value: i64| -> Result<i64, Box<dyn std::error::Error>> {
+        let scaled = i128::from(value) * i128::from(PPQ);
+        Ok(i64::try_from(
+            (scaled + i128::from(ppq) / 2) / i128::from(ppq),
+        )?)
+    };
+    let mut note_count = 0;
+    let mut skipped = 0;
+    let mut non_exact = 0;
+    let mut zero_lengths = 0;
+    for group in 0..groups {
+        doc.rename(
+            Target::Group(group),
+            &format!("{name} · Part {}", group + 1),
+        )?;
+        // Fixed output headroom leaves the source sample dynamics unchanged.
+        doc.set_level(Target::Group(group), level_from_db(-12.0))?;
+    }
+    for (p, pattern) in patterns.iter().enumerate() {
+        let scene = if p == 0 { 0 } else { doc.add_scene()? };
+        let pattern_name = pattern["name"].as_str().unwrap_or("Source pattern");
+        doc.rename(Target::Scene(scene), pattern_name)?;
+        let length = ticks(
+            pattern["length"]
+                .as_i64()
+                .filter(|v| *v > 0)
+                .ok_or("invalid pattern length")?,
+        )?;
+        let mut by_group = vec![Vec::new(); groups];
+        for note in pattern["notes"].as_array().ok_or("pattern notes missing")? {
+            let index = note["sound"]
+                .as_u64()
+                .and_then(|v| usize::try_from(v).ok())
+                .filter(|v| *v < sounds.len())
+                .ok_or("note references an unknown Sound index")?;
+            if !loaded[index] {
+                skipped += 1;
+                continue;
+            }
+            let key = note["key"].as_i64().ok_or("note key missing")?;
+            if !(0..=127).contains(&key) {
+                skipped += 1;
+                warnings.push(format!(
+                    "Note key {key} is outside MIDI range and remains in source_content"
+                ));
+                continue;
+            }
+            let position = note["position"]
+                .as_i64()
+                .filter(|v| *v >= 0)
+                .ok_or("invalid note position")?;
+            let duration = note["length"]
+                .as_i64()
+                .filter(|v| *v >= 0)
+                .ok_or("invalid note length")?;
+            if position as i128 * PPQ as i128 % ppq as i128 != 0
+                || duration as i128 * PPQ as i128 % ppq as i128 != 0
+            {
+                non_exact += 1;
+            }
+            if note["slide"].as_bool() == Some(true)
+                || note["fine_pitch"].as_i64().is_some_and(|v| v != 120)
+                || note["pan"].as_i64().is_some_and(|v| v != 64)
+            {
+                warnings.push(
+                    "Per-note slide, fine pitch or pan remains opaque in source_content".into(),
+                );
+            }
+            let velocity = note["velocity"]
+                .as_f64()
+                .filter(|v| v.is_finite() && *v >= 0.0 && *v <= velocity_max)
+                .ok_or("invalid note velocity")?;
+            let note_length = ticks(duration)?;
+            if note_length == 0 {
+                zero_lengths += 1;
+            }
+            by_group[index / 16].push(Note {
+                sound: index % 16,
+                position: ticks(position)?,
+                length: note_length.max(1),
+                pitch: key,
+                velocity: (velocity * 127.0 / velocity_max).round() as i64,
+                probability: 100,
+                expr: None,
+            });
+            note_count += 1;
+        }
+        for (group, notes) in by_group.into_iter().enumerate() {
+            let index = doc.add_pattern_in_slot(group, 0, p, pattern_name)?;
+            doc.set_pattern_length(group, index, length.max(1))?;
+            doc.edit_notes("Import original source notes", group, index, &[], &notes)?;
+            doc.assign_pattern(scene, group, Some(index))?;
+        }
+    }
+    if note_count == 0 {
+        return Err("no resolved source notes to import".into());
+    }
+    if non_exact > 0 {
+        warnings.push(format!(
+            "{non_exact} notes required nearest-tick PPQ conversion"
+        ));
+    }
+    if zero_lengths > 0 {
+        warnings.push(format!("{zero_lengths} zero-length source triggers use the native minimum one tick; original lengths remain in source_content"));
+    }
+    warnings.sort();
+    warnings.dedup();
+    let source_bytes = serde_json::to_vec(project)?;
+    let id: String = Sha256::digest(&source_bytes)
+        .iter()
+        .take(6)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let basename = safe_name(&format!("Imported · {name} · {id}"));
+    let mut created = 0;
+    let mut preserved = 0;
+    let bytes = doc.to_bytes()?;
+    let converted = output
+        .join("Converted projects")
+        .join(format!("{basename}.mxprj"));
+    if publish_new(&converted, &bytes)? {
+        created += 1;
+    } else {
+        preserved += 1;
+    }
+    let probe = Document::from_bytes(bytes.clone(), None)?;
+    assert_eq!(
+        probe
+            .project()
+            .groups
+            .iter()
+            .flat_map(|g| g.patterns.iter())
+            .map(|p| p.notes.len())
+            .sum::<usize>(),
+        note_count
+    );
+    for group in 0..groups {
+        let group_file = doc.file_bytes(FileItem::Group(group), &SoundInfo::default())?;
+        let mut isolated = Document::from_bytes(bytes.clone(), None)?;
+        for other in (0..groups).rev() {
+            if other != group {
+                isolated.delete_group(other)?;
+            }
+        }
+        let preset_name = format!("{basename} · Part {} · {tempo} BPM", group + 1);
+        let body = json!({"format":1,"instrument":"groove","instrument_name":"Groove Box","name":preset_name,"tags":["Imported"],"controls":{},"native_groove":{"group":base64::engine::general_purpose::STANDARD.encode(group_file),"project":base64::engine::general_purpose::STANDARD.encode(isolated.to_bytes()?),"origin":null,"scene":0},"source_content":project,"import_warnings":warnings,"converted_project":converted});
+        if publish_new(
+            &output.join(format!(
+                "Imported-{id}-{:02}-{}.json",
+                group + 1,
+                safe_name(name)
+            )),
+            &serde_json::to_vec_pretty(&body)?,
+        )? {
+            created += 1;
+        } else {
+            preserved += 1;
+        }
+    }
+    Ok(
+        json!({"name":name,"tempo":tempo,"groups":groups,"notes":note_count,"skipped_notes":skipped,"presets":groups,"created":created,"existing_preserved":preserved,"converted_project":converted,"warnings":warnings}),
+    )
+}
+
+fn install_content(recipe: &Path, output: &Path) -> Result<Value, Box<dyn std::error::Error>> {
+    let root: Value = serde_json::from_slice(&std::fs::read(recipe)?)?;
+    if root["format"] != 1 {
+        return Err("unsupported content recipe format".into());
+    }
+    let projects = root["projects"]
+        .as_array()
+        .ok_or("content recipe needs projects")?;
+    let parent = recipe
+        .parent()
+        .ok_or("recipe needs parent")?
+        .canonicalize()?;
+    let mut imported = Vec::new();
+    let mut errors = Vec::new();
+    for project in projects {
+        match content_project(project, &parent, output) {
+            Ok(value) => imported.push(value),
+            Err(e) => errors.push(json!({"name":project["name"],"error":e.to_string()})),
+        }
+    }
+    Ok(
+        json!({"format":1,"imported_projects":imported.len(),"notes":imported.iter().filter_map(|p|p["notes"].as_u64()).sum::<u64>(),"presets":imported.iter().filter_map(|p|p["presets"].as_u64()).sum::<u64>(),"created":imported.iter().filter_map(|p|p["created"].as_u64()).sum::<u64>(),"existing_preserved":imported.iter().filter_map(|p|p["existing_preserved"].as_u64()).sum::<u64>(),"projects":imported,"errors":errors}),
+    )
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
-    if args.len() != 3 {
-        return Err(
-            "usage: install-brazilian-presets RECIPE_JSON SAMPLE_COLLECTION PRESET_OUTPUT_DIR"
-                .into(),
-        );
-    }
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&install(&args[0], &args[1], &args[2])?)?
-    );
+    let report = if args.len() == 3 && args[0] == Path::new("--content") {
+        install_content(&args[1], &args[2])?
+    } else if args.len() == 3 {
+        install(&args[0], &args[1], &args[2])?
+    } else {
+        return Err("usage: opendj-install-brazilian-presets RECIPE_JSON SAMPLE_COLLECTION PRESET_OUTPUT_DIR | --content CONTENT_RECIPE_JSON PRESET_OUTPUT_DIR".into());
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_keeps_source_notes_tuning_groups_and_existing_files() {
+        let root = std::env::temp_dir().join(format!(
+            "opendj-content-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let sample = root.join("source.wav");
+        sample_edit::write_wav(
+            &sample,
+            &Sample {
+                rate: 8000,
+                frames: vec![[0.1; 2]; 800],
+            },
+        )
+        .unwrap();
+        let digest: String = Sha256::digest(std::fs::read(sample).unwrap())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let mut sounds:Vec<_>=(0..17).map(|i|json!({"name":format!("Original Sound {i}"),"path":"source.wav","sha256":digest,"root_note":57,"fine_tune":12,"channel_pitch_shift":100})).collect();
+        sounds.push(json!({"name":"Opaque source plugin","plugin":"Original synth state"}));
+        let recipe = root.join("recipe.json");
+        std::fs::write(&recipe,serde_json::to_vec(&json!({"format":1,"projects":[{"name":"Original pattern","ppq":96,"tempo":134,"velocity_max":128,"sounds":sounds,"patterns":[{"name":"Original notes","length":384,"notes":[{"sound":0,"position":24,"length":48,"key":62,"velocity":128},{"sound":16,"position":96,"length":0,"key":65,"velocity":64},{"sound":17,"position":192,"length":48,"key":60,"velocity":100}]}]}]})).unwrap()).unwrap();
+        let output = root.join("presets");
+        let first = install_content(&recipe, &output).unwrap();
+        assert_eq!(first["imported_projects"], 1);
+        assert_eq!(first["presets"], 2);
+        assert_eq!(first["notes"], 2);
+        assert_eq!(first["created"], 3);
+        let converted = first["projects"][0]["converted_project"].as_str().unwrap();
+        let doc = Document::from_bytes(std::fs::read(converted).unwrap(), None).unwrap();
+        assert_eq!(doc.project().groups.len(), 2);
+        assert!(doc.project().groups.iter().all(|g| g.sounds.len() == 16));
+        assert_eq!(doc.project().tempo, 134.0);
+        let note = &doc.project().groups[1].patterns[0].notes[0];
+        assert_eq!(
+            (
+                note.sound,
+                note.position,
+                note.length,
+                note.pitch,
+                note.velocity
+            ),
+            (0, PPQ, 1, 65, 64)
+        );
+        let zone = &doc.project().groups[1].sounds[0]
+            .sampler
+            .as_ref()
+            .unwrap()
+            .zones[0];
+        assert_eq!(zone.root_key, 57);
+        assert!((zone.tune - 1.12).abs() < 1e-6);
+        assert!(doc.project().groups[1].sounds[1].sampler.is_none());
+        let preset = std::fs::read_dir(&output)
+            .unwrap()
+            .map(|v| v.unwrap().path())
+            .find(|p| p.extension().is_some_and(|e| e == "json"))
+            .unwrap();
+        let mut custom = std::fs::read(&preset).unwrap();
+        custom.extend_from_slice(b"\n \n");
+        std::fs::write(&preset, &custom).unwrap();
+        let again = install_content(&recipe, &output).unwrap();
+        assert_eq!(again["created"], 0);
+        assert_eq!(again["existing_preserved"], 3);
+        assert_eq!(std::fs::read(&preset).unwrap(), custom);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
