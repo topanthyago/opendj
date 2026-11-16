@@ -271,6 +271,9 @@ pub(super) fn query_for(t: &Track, key: &str, token: &str) -> Option<QueryFor> {
         discogs_token: token.to_string(),
         ..Default::default()
     };
+    if let Some(path) = file_path(t) {
+        (q.artist, q.title) = opendj_engine::filename::lookup_names(path, &q.artist, &q.title);
+    }
     let mut name = None;
     if let Some((artist, title)) = name_from_file(t) {
         if q.artist.is_empty() {

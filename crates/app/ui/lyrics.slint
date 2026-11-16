@@ -55,6 +55,7 @@ export global LyricsUi {
     in property <bool> can-find;
     in property <bool> finding;
     in property <string> find-note;
+    in property <string> find-track;
     in property <[LyricMatch]> found;
     callback find();
     in-out property <string> query-artist;
@@ -257,6 +258,7 @@ component FindList inherits VerticalLayout {
         Text { text: "Find lyrics"; color: Theme.text; font-size: 13px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
         SmallButton { text: "Close"; clicked => { LyricsUi.close-found(); } }
     }
+    Text { text: "Import to " + LyricsUi.find-track; color: Theme.text-dim; font-size: 11px; overflow: elide; }
     HorizontalLayout {
         height: 28px;
         spacing: 5px;
@@ -331,13 +333,14 @@ component FindList inherits VerticalLayout {
         spacing: 5px;
         Text { text: LyricsUi.preview-title; color: Theme.text; font-size: 12px; font-weight: 600; overflow: elide; }
         Text { text: LyricsUi.preview-note; color: Theme.text-dim; font-size: 11px; wrap: word-wrap; }
+        if LyricsUi.preview == "": Text { text: "Paste the original lyrics in the editor below."; color: Theme.label; font-size: 11px; wrap: word-wrap; }
         TextEdit { text <=> LyricsUi.preview; min-height: 75px; vertical-stretch: 1; wrap: word-wrap; }
         Text { text: LyricsUi.preview-url; color: Theme.label; font-size: 10px; overflow: elide; }
         HorizontalLayout {
             alignment: start;
             spacing: 6px;
-            SmallButton { text: "Abrir no site"; clicked => { LyricsUi.open-found(); } }
-            if LyricsUi.preview != "": SmallButton {
+            SmallButton { text: "Open on site"; clicked => { LyricsUi.open-found(); } }
+            SmallButton {
                 text: "Import selection";
                 primary: true;
                 clicked => { LyricsUi.use-found(LyricsUi.selected); }

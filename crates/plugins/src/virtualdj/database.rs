@@ -203,7 +203,15 @@ fn song_track(id: usize, path: PathBuf, song: roxmltree::Node) -> Track {
     let scan = child("Scan");
 
     let mut title = attr(tags, "Title");
-    let remix = attr(tags, "Remix");
+    let mut remix = attr(tags, "Remix");
+    // VDJ can mistake a downloader id for Remix. Appending that to an
+    // empty Title creates "(id)" and suppresses the basename fallback.
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    if opendj_engine::filename::youtube_suffix(&stem)
+        .is_some_and(|(_, id)| remix == id || remix == id.replace('_', " "))
+    {
+        remix.clear();
+    }
     if !remix.is_empty() && !title.to_lowercase().contains(&remix.to_lowercase()) {
         title = format!("{title} ({remix})");
     }
@@ -213,6 +221,9 @@ fn song_track(id: usize, path: PathBuf, song: roxmltree::Node) -> Track {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
     }
+
+    let (artist, title) =
+        opendj_engine::filename::lookup_names(&path, &attr(tags, "Author"), &title);
 
     // Scan's Bpm is seconds per beat; a Bpm typed into the tags is too.
     let seconds_per_beat = number(scan, "Bpm").or_else(|| number(tags, "Bpm"));
@@ -315,7 +326,7 @@ fn song_track(id: usize, path: PathBuf, song: roxmltree::Node) -> Track {
     }
     let mut track = Track {
         id,
-        artist: attr(tags, "Author"),
+        artist,
         title,
         album: attr(tags, "Album"),
         genre: attr(tags, "Genre"),
@@ -415,6 +426,25 @@ mod tests {
  <Song FilePath="/Users/x/Library/Application Support/VirtualDJ/Cache/c.vdjcache" FileSize="1"><Tags Title="Cached" /></Song>
  <Song FilePath="/music/gone.mp3" FileSize="1"><Tags Title="Gone" /></Song>
 </VirtualDJ_Database>"##;
+
+    #[test]
+    fn downloader_id_is_not_a_remix_or_a_song_title() {
+        let db = r#"<VirtualDJ_Database>
+          <Song FilePath="/music/Counting Stars - OneRepublic - (2013-05-31) - [hT_nvWreIhg].mp3">
+            <Tags Author="Counting Stars" Remix="hT nvWreIhg" />
+          </Song>
+          <Song FilePath="/music/OneRepublic - Song [hT_nvWreIhg].mp3">
+            <Tags Author="OneRepublic" Title="Song" Remix="Club Mix" />
+          </Song>
+        </VirtualDJ_Database>"#;
+        let out = parse(db, 0, |_| true, |_| None).unwrap();
+        assert_eq!(out.tracks[0].artist, "OneRepublic");
+        assert_eq!(out.tracks[0].title, "Counting Stars");
+        assert!(out.tracks[0].info.remix.is_empty());
+        assert_eq!(out.tracks[1].artist, "OneRepublic");
+        assert_eq!(out.tracks[1].title, "Song (Club Mix)");
+        assert_eq!(out.tracks[1].info.remix, "Club Mix");
+    }
 
     #[test]
     fn reads_a_song_with_an_attribute_written_twice() {

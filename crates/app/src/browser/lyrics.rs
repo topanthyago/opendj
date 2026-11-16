@@ -68,6 +68,8 @@ pub(super) struct LyricsState {
     finding: Option<(u64, Receiver<Looked>)>,
     found: Vec<Found>,
     query: Query,
+    /// File and track generation that own the search and its editable preview.
+    lookup_target: Option<(u64, std::path::PathBuf)>,
     preview: Option<(usize, Receiver<Result<String, letras::Error>>)>,
     selected: Option<usize>,
     karaoke: karaoke::Karaoke,
@@ -103,6 +105,7 @@ impl LyricsState {
             finding: None,
             found: Vec::new(),
             query: Query::default(),
+            lookup_target: None,
             preview: None,
             selected: None,
             karaoke: karaoke::Karaoke::new(registry),
@@ -110,6 +113,15 @@ impl LyricsState {
             timing: None,
         }
     }
+}
+
+fn lookup_target_matches(
+    target_generation: u64,
+    target: &std::path::Path,
+    generation: u64,
+    current: Option<&std::path::Path>,
+) -> bool {
+    target_generation == generation && current == Some(target)
 }
 
 /// m:ss for a line's time.
@@ -376,7 +388,9 @@ impl Browser {
         let (index, deck) = self.lyrics_subject(app);
         let now = index.map(|i| (i, self.library[i].clone()));
         let other = match (&now, &self.lyrics.shown) {
-            (Some((i, t)), Some((j, u))) => i != j || t.id != u.id,
+            (Some((_, t)), Some((_, u))) => {
+                t.id != u.id || super::file_path(t) != super::file_path(u)
+            }
             (None, None) => false,
             _ => true,
         };
@@ -421,6 +435,8 @@ impl Browser {
                 }
             }
         }
+        // Library refreshes can move a track without changing its identity.
+        self.lyrics.shown = now;
         if deck != self.lyrics.deck {
             self.lyrics.deck = deck;
         }
@@ -475,12 +491,16 @@ impl Browser {
         let Some(app) = self.app.upgrade() else {
             return;
         };
+        self.poll_lyrics(&app, LYRICS_TAB);
         let Some((_, track)) = &self.lyrics.shown else {
             return;
         };
+        let (artist, title) = super::file_path(track)
+            .map(|path| opendj_engine::filename::lookup_names(path, &track.artist, &track.title))
+            .unwrap_or_else(|| (track.artist.clone(), track.title.clone()));
         let ui = app.global::<LyricsUi>();
-        ui.set_query_artist(track.artist.as_str().into());
-        ui.set_query_title(track.title.as_str().into());
+        ui.set_query_artist(artist.into());
+        ui.set_query_title(title.into());
         self.find_lyrics();
     }
 
@@ -489,6 +509,7 @@ impl Browser {
         let Some(app) = self.app.upgrade() else {
             return;
         };
+        self.poll_lyrics(&app, LYRICS_TAB);
         let ui = app.global::<LyricsUi>();
         self.close_found_ui(&ui);
         ui.set_finding(true);
@@ -516,6 +537,12 @@ impl Browser {
             ui.set_find_note("Enter a song title to search.".into());
             return;
         }
+        let Some(path) = super::file_path(t) else {
+            ui.set_find_note("Select a local audio file to import lyrics.".into());
+            return;
+        };
+        self.lyrics.lookup_target = Some((self.lyrics.generation, path.to_path_buf()));
+        ui.set_find_track(ui.get_title());
         self.lyrics.query = q.clone();
         let source = ui.get_find_source().clamp(0, 2);
         ui.set_find_note("Searching…".into());
@@ -569,7 +596,7 @@ impl Browser {
             if f.instrumental {
                 "Instrumental — no lyrics to import."
             } else if f.source == "Letras" {
-                "Original plain text. Timing is unavailable."
+                "Select the original lyrics below, or open the site and paste its lyrics here."
             } else if f.is_synced() {
                 "Synced lyrics. Review timing and track version before importing."
             } else {
@@ -621,7 +648,7 @@ impl Browser {
             }
             Err(e) => ui.set_preview_note(
                 format!(
-                    "{} Copy the original lyrics from the site and paste them below to import.",
+                    "{} Click Open on site, copy the original lyrics, paste them in the editor, then click Import selection.",
                     e.message()
                 )
                 .into(),
@@ -662,11 +689,26 @@ impl Browser {
         else {
             return;
         };
-        let Some(Source::File(path)) = self.lyrics.shown.as_ref().map(|(_, t)| t.source.clone())
-        else {
+        // A click can arrive before the next frame observes a new selection.
+        // Compare the live subject and the captured path before any file write.
+        let (current, _) = self.lyrics_subject(&app);
+        let current_path = current
+            .and_then(|i| self.library.get(i))
+            .and_then(|t| super::file_path(t));
+        let Some((generation, path)) = self.lyrics.lookup_target.as_ref() else {
+            ui.set_preview_note("Select the track and search again before importing.".into());
             return;
         };
+        if !lookup_target_matches(*generation, path, self.lyrics.generation, current_path) {
+            ui.set_preview_note(
+                "The track changed. Select the intended track and search again before importing."
+                    .into(),
+            );
+            return;
+        }
+        let path = path.clone();
         if self.lyrics.selected != usize::try_from(i).ok() {
+            ui.set_preview_note("Preview the result you want to import first.".into());
             return;
         }
         if self.lyrics.timing.is_some() {
@@ -679,7 +721,9 @@ impl Browser {
             return;
         }
         if lyrics::parse(&text).is_none() {
-            ui.set_preview_note("The preview has no lyric words to import.".into());
+            ui.set_preview_note(
+                "Paste the original lyrics in the editor, then click Import selection.".into(),
+            );
             return;
         }
         let store = store();
@@ -704,7 +748,7 @@ impl Browser {
                 self.lyrics.shown = None;
                 self.poll_lyrics(&app, LYRICS_TAB);
             }
-            Err(e) => ui.set_find_note(format!("Couldn't save the lyrics: {e}").into()),
+            Err(e) => ui.set_preview_note(format!("Couldn't save the lyrics: {e}").into()),
         }
     }
 
@@ -719,6 +763,8 @@ impl Browser {
         self.lyrics.found.clear();
         self.lyrics.preview = None;
         self.lyrics.selected = None;
+        self.lyrics.lookup_target = None;
+        ui.set_find_track(SharedString::new());
         ui.set_selected(-1);
         ui.set_preview(SharedString::new());
         ui.set_preview_url(SharedString::new());
@@ -779,6 +825,16 @@ impl Browser {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn import_requires_the_search_track_even_before_the_next_frame() {
+        let a = std::path::Path::new("/music/a.mp3");
+        let b = std::path::Path::new("/music/b.mp3");
+        assert!(lookup_target_matches(3, a, 3, Some(a)));
+        assert!(!lookup_target_matches(3, a, 3, Some(b)));
+        assert!(!lookup_target_matches(3, a, 4, Some(a)));
+        assert!(!lookup_target_matches(3, a, 3, None));
+    }
 
     #[test]
     fn clock_reads_as_minutes() {

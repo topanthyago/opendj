@@ -23,6 +23,7 @@ mod controls;
 pub mod cover;
 pub mod decode;
 pub mod dsp;
+pub mod filename;
 mod effects;
 pub mod engine;
 mod gridfit;

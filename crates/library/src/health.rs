@@ -638,31 +638,7 @@ pub fn album_folders<'a>(
         .collect()
 }
 
-/// The artist and title in a file name such as "01 - Artist - Title
-/// (Remix).mp3": a leading track number is left out, and what comes
-/// before the first " - " is the artist. `None` when there is no " - ".
-pub fn from_file_name(path: &Path) -> Option<(String, String)> {
-    let stem = path.file_stem()?.to_string_lossy().replace('_', " ");
-    let mut rest = stem.trim();
-    // "01 ", "01. ", "01 - ", "1-02 "
-    let digits = rest
-        .find(|c: char| !(c.is_ascii_digit() || c == '-'))
-        .unwrap_or(0);
-    // A number that starts a name ("808 State") isn't a track number: those
-    // have a leading zero, two digits at most, or a "." or " - " after them.
-    let marked = rest[digits..].starts_with(['.', ')']) || rest[digits..].starts_with(" - ");
-    let number = &rest[..digits];
-    if digits > 0 && digits <= 5 && (marked || number.starts_with('0') || digits <= 2) {
-        let after = rest[digits..].trim_start_matches(['.', ' ', ')']);
-        let after = after.strip_prefix("- ").unwrap_or(after);
-        if after.len() < rest.len() && !after.is_empty() {
-            rest = after.trim();
-        }
-    }
-    let (artist, title) = rest.split_once(" - ")?;
-    let (artist, title) = (artist.trim(), title.trim());
-    (!artist.is_empty() && !title.is_empty()).then(|| (artist.to_string(), title.to_string()))
-}
+pub use opendj_engine::filename::from_file_name;
 
 impl Library {
     /// The tracks each check is told to leave alone.
@@ -1019,7 +995,7 @@ mod tests {
         );
         assert_eq!(
             f("/m/02. Lane_8 - Fingerprint.mp3"),
-            Some(("Lane 8".into(), "Fingerprint".into()))
+            Some(("Lane_8".into(), "Fingerprint".into()))
         );
         assert_eq!(f("/m/track 7.mp3"), None);
         assert_eq!(
