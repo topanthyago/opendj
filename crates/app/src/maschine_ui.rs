@@ -273,7 +273,7 @@ pub fn install(
     content::install(app);
     let harmony = harmonic::Harmony::install(app, registry.clone());
     let selection = Selection::new(&registry);
-    let shown = Rc::new(RefCell::new(None));
+    let shown: Rc<RefCell<Option<ShownPattern>>> = Rc::new(RefCell::new(None));
     let editor = Editor::new(app, handle.clone(), surface.clone());
     let projects = surface.projects();
     let ui = app.global::<MaschineUi>();

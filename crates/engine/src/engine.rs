@@ -3590,10 +3590,13 @@ impl Engine {
                 let reach = from.abs().max(target.abs()) * ratio * frames as f64
                     + if shifting { sr } else { 2.0 };
                 let mut start = (d.pos - reach).max(0.0) as usize;
-                let mut end = ((d.pos + reach).max(0.0) as usize).min(audio.len().saturating_sub(1));
+                let mut end =
+                    ((d.pos + reach).max(0.0) as usize).min(audio.len().saturating_sub(1));
                 if let Some((a, b)) = loop_frames {
                     start = start.min(a.max(0.0) as usize);
-                    end = end.max(b.max(0.0) as usize).min(audio.len().saturating_sub(1));
+                    end = end
+                        .max(b.max(0.0) as usize)
+                        .min(audio.len().saturating_sub(1));
                 }
                 let ready = moving
                     && weights.iter().any(|&w| w > 0.0)
@@ -8200,9 +8203,12 @@ mod tests {
         let normal = Stems::from_frames(crate::stems::default_info(), SR as u32, &frames);
         assert_eq!(looper_stem_selection(&normal, 1), [1.0, 0.0, 0.0, 0.0, 0.0]);
         assert_eq!(looper_stem_selection(&normal, 4), [0.0, 0.0, 0.0, 1.0, 0.0]);
-        let info = ["Kick", "HiHat", "Bass", "Instru", "Vocal"].map(|name| crate::stems::StemInfo {
-            name: name.into(), color: 0,
-        }).to_vec();
+        let info = ["Kick", "HiHat", "Bass", "Instru", "Vocal"]
+            .map(|name| crate::stems::StemInfo {
+                name: name.into(),
+                color: 0,
+            })
+            .to_vec();
         let split = Stems::from_frames(info, SR as u32, &frames);
         assert_eq!(looper_stem_selection(&split, 1), [1.0, 1.0, 0.0, 0.0, 0.0]);
         assert_eq!(looper_stem_selection(&split, 3), [0.0, 0.0, 0.0, 1.0, 0.0]);
@@ -8214,20 +8220,29 @@ mod tests {
     fn looper_stem_source_uses_keylock_quantizes_and_rejects_a_changed_unprepared_track() {
         let (reg, mut engine, mut input) = setup();
         let track = long_tone_track(220.0, "Am", 8.0);
-        let frames: Vec<_> = (0..(SR * 8.0) as usize).map(|i| {
-            let mut frame = [[0.0; 2]; MAX_STEMS];
-            let voice = (std::f64::consts::TAU * 600.0 * i as f64 / SR).sin() as f32 * 0.2;
-            frame[3] = [voice; 2];
-            frame
-        }).collect();
+        let frames: Vec<_> = (0..(SR * 8.0) as usize)
+            .map(|i| {
+                let mut frame = [[0.0; 2]; MAX_STEMS];
+                let voice = (std::f64::consts::TAU * 600.0 * i as f64 / SR).sin() as f32 * 0.2;
+                frame[3] = [voice; 2];
+                frame
+            })
+            .collect();
         track.audio.as_ref().unwrap().set_stems(Stems::from_frames(
-            crate::stems::default_info(), SR as u32, &frames));
+            crate::stems::default_info(),
+            SR as u32,
+            &frames,
+        ));
         load(&mut input, 0, track);
         run(&mut engine, 0.02);
         let lp = |key: &str| reg.get("[Looper2]", key).unwrap();
         lp("enabled").set_bool(true);
         let mut supply = engine.take_looper_supply().unwrap();
-        supply.to_engine.push((1, crate::looper::LooperMemory::new(SR))).ok().unwrap();
+        supply
+            .to_engine
+            .push((1, crate::looper::LooperMemory::new(SR)))
+            .ok()
+            .unwrap();
         lp("source_deck").set(1.0);
         lp("source_stem").set(4.0);
         lp("length").set(1.0);

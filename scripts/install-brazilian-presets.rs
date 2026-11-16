@@ -1,8 +1,8 @@
 //! Run against the same DECKARD SDK dependencies as OpenDJ. No host audio or GUI.
 use base64::Engine as _;
 use opendj_engine::maschine::{
-    instrument_defaults, level_from_db, sample_edit, Document, FileItem, NewModule, Note, Sample, SoundInfo, Target,
-    Value as Parameter, ZoneFrom, ZoneSpec, PPQ,
+    instrument_defaults, level_from_db, sample_edit, Document, FileItem, NewModule, Note, Sample,
+    SoundInfo, Target, Value as Parameter, ZoneFrom, ZoneSpec, PPQ,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -454,7 +454,10 @@ fn content_project(
     {
         warnings.push("Unresolved sample/plugin channels remain opaque in source_content and the original project metadata".into());
     }
-    if sounds.iter().any(|sound| sound["native_instrument"].is_null()) {
+    if sounds
+        .iter()
+        .any(|sound| sound["native_instrument"].is_null())
+    {
         warnings.push("Native conversion retains resolved sample notes. Source plugin, mixer, sampler-envelope and arrangement behavior require review".into());
     }
     let mut loaded = vec![false; sounds.len()];
@@ -469,12 +472,34 @@ fn content_project(
             if !(0..=127).contains(&root) {
                 return Err("invalid native instrument root note".into());
             }
-            let params = instrument_defaults(class).ok_or("native instrument defaults unavailable")?
-                .into_iter().map(|(field, value)| (field.into(), value)).collect();
-            doc.add_slot(group, slot, 0, &NewModule::Instrument { class: class.into(), params })?;
-            doc.rename(Target::Sound(group, slot), sound["name"].as_str().unwrap_or(class))?;
-            doc.set("Native instrument base note", Target::Sound(group, slot), "base_key", Parameter::Int(root))?;
-            doc.set_mute(Target::Sound(group, slot), sound["enabled"].as_bool() == Some(false))?;
+            let params = instrument_defaults(class)
+                .ok_or("native instrument defaults unavailable")?
+                .into_iter()
+                .map(|(field, value)| (field.into(), value))
+                .collect();
+            doc.add_slot(
+                group,
+                slot,
+                0,
+                &NewModule::Instrument {
+                    class: class.into(),
+                    params,
+                },
+            )?;
+            doc.rename(
+                Target::Sound(group, slot),
+                sound["name"].as_str().unwrap_or(class),
+            )?;
+            doc.set(
+                "Native instrument base note",
+                Target::Sound(group, slot),
+                "base_key",
+                Parameter::Int(root),
+            )?;
+            doc.set_mute(
+                Target::Sound(group, slot),
+                sound["enabled"].as_bool() == Some(false),
+            )?;
             loaded[index] = true;
             continue;
         }
@@ -715,7 +740,14 @@ fn content_project(
         .take(6)
         .map(|b| format!("{b:02x}"))
         .collect();
-    let kind = if sounds.iter().any(|sound| sound["native_instrument"].is_string()) { "Native" } else { "Imported" };
+    let kind = if sounds
+        .iter()
+        .any(|sound| sound["native_instrument"].is_string())
+    {
+        "Native"
+    } else {
+        "Imported"
+    };
     let basename = safe_name(&format!("{kind} · {name} · {id}"));
     let mut created = 0;
     let mut preserved = 0;
@@ -748,8 +780,15 @@ fn content_project(
             }
         }
         let preset_name = format!("{basename} · Part {} · {tempo} BPM", group + 1);
-        let mut tags: Vec<_> = project["tags"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-        if !tags.contains(&kind) { tags.push(kind); }
+        let mut tags: Vec<_> = project["tags"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        if !tags.contains(&kind) {
+            tags.push(kind);
+        }
         let body = json!({"format":1,"instrument":"groove","instrument_name":"Groove Box","name":preset_name,"tags":tags,"controls":{},"native_groove":{"group":base64::engine::general_purpose::STANDARD.encode(group_file),"project":base64::engine::general_purpose::STANDARD.encode(isolated.to_bytes()?),"origin":null,"scene":0},"source_content":project,"harmonic":project["harmonic"],"import_warnings":warnings,"converted_project":converted});
         if publish_new(
             &output.join(format!(
@@ -832,11 +871,21 @@ mod tests {
     #[test]
     fn native_melodic_recipes_keep_all_keys_notes_synths_and_metadata() {
         use opendj_engine::maschine::{Mode, OfflineEngine, SampleCache};
-        let root = std::env::temp_dir().join(format!("opendj-native-harmonic-test-{}-{}",
-            std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let root = std::env::temp_dir().join(format!(
+            "opendj-native-harmonic-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let recipe = root.join("harmonic-native-recipes.json");
-        std::fs::write(&recipe, include_bytes!("../res/presets/harmonic-native-recipes.json")).unwrap();
+        std::fs::write(
+            &recipe,
+            include_bytes!("../res/presets/harmonic-native-recipes.json"),
+        )
+        .unwrap();
         let output = root.join("presets");
         let report = install_content(&recipe, &output).unwrap();
         assert_eq!(report["imported_projects"], 24);
@@ -844,7 +893,10 @@ mod tests {
         assert_eq!(report["notes"], 4128);
         assert_eq!(report["created"], 48);
         assert_eq!(report["errors"], json!([]));
-        let source: Value = serde_json::from_slice(include_bytes!("../res/presets/harmonic-native-recipes.json")).unwrap();
+        let source: Value = serde_json::from_slice(include_bytes!(
+            "../res/presets/harmonic-native-recipes.json"
+        ))
+        .unwrap();
         for (index, project) in report["projects"].as_array().unwrap().iter().enumerate() {
             let path = project["converted_project"].as_str().unwrap();
             let doc = Document::from_bytes(std::fs::read(path).unwrap(), None).unwrap();
@@ -854,34 +906,65 @@ mod tests {
             assert_eq!(group.sounds[0].instrument, "BassSynth");
             assert_eq!(group.sounds[1].instrument, "PolySynth");
             assert_eq!(group.sounds[0].channel.base_key, 60 + index as i64 % 12);
-            for (pattern, original) in group.patterns.iter().zip(source["projects"][index]["patterns"].as_array().unwrap()) {
-                let mut native: Vec<_> = pattern.notes.iter().map(|n| (n.sound, n.position, n.length, n.pitch, n.velocity)).collect();
-                let mut expected: Vec<_> = original["notes"].as_array().unwrap().iter().map(|n| (
-                    n["sound"].as_u64().unwrap() as usize,
-                    n["position"].as_i64().unwrap() * PPQ / 96,
-                    n["length"].as_i64().unwrap() * PPQ / 96,
-                    n["key"].as_i64().unwrap(),
-                    n["velocity"].as_i64().unwrap(),
-                )).collect();
-                native.sort(); expected.sort();
+            for (pattern, original) in group
+                .patterns
+                .iter()
+                .zip(source["projects"][index]["patterns"].as_array().unwrap())
+            {
+                let mut native: Vec<_> = pattern
+                    .notes
+                    .iter()
+                    .map(|n| (n.sound, n.position, n.length, n.pitch, n.velocity))
+                    .collect();
+                let mut expected: Vec<_> = original["notes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|n| {
+                        (
+                            n["sound"].as_u64().unwrap() as usize,
+                            n["position"].as_i64().unwrap() * PPQ / 96,
+                            n["length"].as_i64().unwrap() * PPQ / 96,
+                            n["key"].as_i64().unwrap(),
+                            n["velocity"].as_i64().unwrap(),
+                        )
+                    })
+                    .collect();
+                native.sort();
+                expected.sort();
                 assert_eq!(native, expected);
             }
             if index == 0 || index == 12 {
                 for scene in [0, 5, 6] {
-                    let (mut engine, loaded) = OfflineEngine::new(doc.project(), None, 22050, Mode::Scene(scene), &mut SampleCache::default());
+                    let (mut engine, loaded) = OfflineEngine::new(
+                        doc.project(),
+                        None,
+                        22050,
+                        Mode::Scene(scene),
+                        &mut SampleCache::default(),
+                    );
                     assert!(loaded.missing.is_empty());
                     let mut audio = vec![0.0f32; 22050];
                     engine.process(&mut audio);
                     assert!(audio.iter().all(|v| v.is_finite()));
-                    assert!(audio.iter().any(|v| v.abs() > 0.0001), "silent native scene {scene}");
+                    assert!(
+                        audio.iter().any(|v| v.abs() > 0.0001),
+                        "silent native scene {scene}"
+                    );
                 }
             }
         }
-        let preset = std::fs::read_dir(&output).unwrap().map(|f| f.unwrap().path())
-            .find(|p| p.extension().is_some_and(|e| e == "json")).unwrap();
+        let preset = std::fs::read_dir(&output)
+            .unwrap()
+            .map(|f| f.unwrap().path())
+            .find(|p| p.extension().is_some_and(|e| e == "json"))
+            .unwrap();
         let saved: Value = serde_json::from_slice(&std::fs::read(preset).unwrap()).unwrap();
         assert_eq!(saved["harmonic"], saved["source_content"]["harmonic"]);
-        assert!(saved["tags"].as_array().unwrap().contains(&json!("Original")));
+        assert!(saved["tags"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("Original")));
         let again = install_content(&recipe, &output).unwrap();
         assert_eq!(again["created"], 0);
         assert_eq!(again["existing_preserved"], 48);
