@@ -250,6 +250,21 @@ Prepared audio is stored separately from its source file.
 The embedded document is saved automatically and restored when openDJ
 starts. **OPEN** chooses a `.mxprj` project. **SAVE** asks for a folder and
 writes a new `.mxprj` copy, adding a number when the name already exists.
+The 20 most recent projects opened or saved successfully appear by filename
+in the controller's **FILE → RECENT** list, newest first. Turn the wheel or
+knob 8 to select one and press **LOAD** or the wheel to open it. The list is
+kept between runs.
+A missing file reports its path and keeps the current project available.
+
+On the controller, **SAVE** writes to the current project's file. A new
+project is saved in `maschine/projects` inside openDJ's configuration folder
+with a safe filename and a number when needed. **SAVE COPY** creates another
+file beside the current project, keeping relative sample paths usable. A
+project without a file uses the private projects folder. These project
+commands work directly from the controller.
+**NEW** and **LOAD** preserve the current document through its automatic save
+and backup before switching projects.
+
 The controller's FILE page also saves the focused Group or Sound as
-`.mxgrp` or `.mxsnd`. **Export Audio** renders the selected Scene to a
-new WAV file at the current Maschine tempo.
+`.mxgrp` or `.mxsnd` after choosing a folder on the computer. **Export Audio**
+renders the selected Scene to a new WAV file at the current Maschine tempo.

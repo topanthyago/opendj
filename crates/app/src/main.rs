@@ -74,6 +74,7 @@ mod macro_lanes;
 mod map_mode;
 mod maschine_browser;
 mod maschine_export;
+mod maschine_projects;
 mod maschine_sampling;
 mod maschine_surface;
 mod maschine_ui;

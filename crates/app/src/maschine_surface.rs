@@ -2,7 +2,10 @@
 //! MIDI and LCD work keep running on their existing controller thread. Document
 //! edits are serialized here, independently of Slint rendering.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
 use opendj_control::ControlRegistry;
@@ -13,18 +16,21 @@ use opendj_engine::maschine::{
 };
 use surface::{Action, ControlView, KnobView, View};
 
-/// Requests that need the app's existing panel or a native dialog.
+use crate::maschine_projects::{recent_name, recent_path, Projects};
+
+/// Requests that need the app's editor, an existing panel or a native dialog.
 #[derive(Clone, Debug)]
 pub enum UiRequest {
     Instrument(usize),
     Sampling(usize),
     Browse(usize),
     PluginEditor(usize, Chain, usize),
-    File(usize, &'static str, usize),
+    File(usize, &'static str),
+    LoadProject(usize, PathBuf),
 }
 
 enum Command {
-    Actions(usize, Vec<Action>),
+    Actions(usize, Vec<Action>, Vec<PathBuf>),
     Parameter(usize, usize, f64),
     Page(usize, i32),
     BrowserFocus(usize, usize, bool),
@@ -48,6 +54,9 @@ pub struct MaschineSurfaceProvider {
     errors: Arc<RwLock<[Option<String>; 4]>>,
     ui: Arc<Mutex<Vec<UiRequest>>>,
     registry: Arc<ControlRegistry>,
+    projects: Arc<Projects>,
+    // The GUI's polling must not replace a controller thread's displayed order.
+    shown_projects: Mutex<HashMap<(ThreadId, usize), Vec<PathBuf>>>,
 }
 
 impl MaschineSurfaceProvider {
@@ -62,6 +71,8 @@ impl MaschineSurfaceProvider {
             errors: errors.clone(),
             ui: ui.clone(),
             registry: registry.clone(),
+            projects: Arc::new(Projects::new()),
+            shown_projects: Mutex::new(HashMap::new()),
         });
         std::thread::Builder::new()
             .name("maschine-surface".into())
@@ -95,7 +106,7 @@ impl MaschineSurfaceProvider {
 
     fn send(&self, command: Command) {
         let deck = match &command {
-            Command::Actions(d, _)
+            Command::Actions(d, _, _)
             | Command::Parameter(d, _, _)
             | Command::Page(d, _)
             | Command::BrowserFocus(d, _, _) => *d,
@@ -131,7 +142,23 @@ impl MaschineSurfaceProvider {
     }
 
     pub fn last_error(&self, deck: usize) -> Option<String> {
-        self.errors.read().ok()?.get(deck.checked_sub(1)?)?.clone()
+        self.errors
+            .read()
+            .ok()?
+            .get(deck.checked_sub(1)?)?
+            .clone()
+            .or_else(|| self.projects.error())
+    }
+
+    pub fn report_result(&self, deck: usize, result: &Result<(), String>) {
+        let mut errors = self.errors.write().unwrap();
+        if let Some(error) = deck.checked_sub(1).and_then(|i| errors.get_mut(i)) {
+            *error = result.as_ref().err().cloned();
+        }
+    }
+
+    pub fn projects(&self) -> Arc<Projects> {
+        self.projects.clone()
     }
 
     pub fn take_ui_requests(&self) -> Vec<UiRequest> {
@@ -141,13 +168,26 @@ impl MaschineSurfaceProvider {
 
 impl MaschineProvider for MaschineSurfaceProvider {
     fn view(&self, deck: usize) -> Option<View> {
-        let mut view = self.views.read().ok()?.get(deck.checked_sub(1)?)?.clone()?;
+        let index = deck.checked_sub(1)?;
+        let mut view = self.views.read().ok()?.get(index)?.clone()?;
+        let recent = self.projects.recent();
+        view.recent = recent.iter().map(|p| recent_name(p)).collect();
+        self.shown_projects
+            .lock()
+            .ok()?
+            .insert((std::thread::current().id(), deck), recent);
         update_meters(&mut view, &self.registry, deck);
         Some(view)
     }
 
     fn dispatch(&self, deck: usize, actions: Vec<Action>) {
-        self.send(Command::Actions(deck, actions));
+        let recent = self
+            .shown_projects
+            .lock()
+            .ok()
+            .and_then(|shown| shown.get(&(std::thread::current().id(), deck)).cloned())
+            .unwrap_or_default();
+        self.send(Command::Actions(deck, actions, recent));
     }
 
     fn contextual_wheel(
@@ -200,7 +240,7 @@ impl MaschineProvider for MaschineSurfaceProvider {
 fn process(queued: Queued, decks: &mut [Deck; 4], errors: &RwLock<[Option<String>; 4]>) {
     let Queued { command, focus } = queued;
     let deck = match &command {
-        Command::Actions(d, _)
+        Command::Actions(d, _, _)
         | Command::Parameter(d, _, _)
         | Command::Page(d, _)
         | Command::BrowserFocus(d, _, _) => *d,
@@ -210,7 +250,7 @@ fn process(queued: Queued, decks: &mut [Deck; 4], errors: &RwLock<[Option<String
     };
     state.focus = Some(focus);
     let result = match command {
-        Command::Actions(_, actions) => state.actions(actions),
+        Command::Actions(_, actions, recent) => state.actions(actions, &recent),
         Command::Parameter(_, index, value) => state.set_parameter(index, value),
         Command::Page(_, by) => {
             state.page = (state.page as i32 + by).max(0) as usize;
@@ -275,7 +315,7 @@ struct Deck {
 }
 
 impl Deck {
-    fn actions(&mut self, actions: Vec<Action>) -> Result<(), String> {
+    fn actions(&mut self, actions: Vec<Action>, recent: &[PathBuf]) -> Result<(), String> {
         if let [Action::NewPatternAt { group, slot }, Action::CopyPattern {
             group: copy_group,
             from,
@@ -301,9 +341,17 @@ impl Deck {
                 return Ok(());
             }
         }
-        actions
-            .into_iter()
-            .try_for_each(|action| self.action(action))
+        actions.into_iter().try_for_each(|action| {
+            if let Action::File("load", index) = action {
+                self.ui.lock().unwrap().push(UiRequest::LoadProject(
+                    self.deck,
+                    recent_path(recent, index)?,
+                ));
+                Ok(())
+            } else {
+                self.action(action)
+            }
+        })
     }
 
     fn new(
@@ -1272,11 +1320,11 @@ impl Deck {
                 }
             }
             Action::Browse(action) => self.browser.action(action, &self.handle, group, sound)?,
-            Action::File(command, index) => self
+            Action::File(command, _) => self
                 .ui
                 .lock()
                 .unwrap()
-                .push(UiRequest::File(self.deck, command, index)),
+                .push(UiRequest::File(self.deck, command)),
             Action::SlotEdit("edit") => {
                 let project = self.project().ok_or("Maschine document unavailable")?;
                 let (chain, _) = self.chain(&project);

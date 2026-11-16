@@ -2,8 +2,7 @@
 //! pass through its document, including the document's undo history.
 
 use std::cell::{Cell, RefCell};
-use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
@@ -19,6 +18,8 @@ use opendj_engine::maschine::{
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
+pub(crate) use crate::maschine_projects::write_new;
+use crate::maschine_projects::{fresh_path, NewProject, Projects};
 use crate::maschine_surface::{MaschineSurfaceProvider, UiRequest};
 use crate::{
     prefs, AppWindow, MaschineBrowserFilter, MaschineBrowserItem, MaschineGroup,
@@ -170,12 +171,13 @@ struct Editor {
 }
 
 impl Editor {
-    fn new(app: &AppWindow, handle: MaschineHandle) -> Self {
+    fn new(app: &AppWindow, handle: MaschineHandle, surface: Arc<MaschineSurfaceProvider>) -> Self {
         let (commands, rx) = mpsc::channel::<Command>();
         let weak = app.as_weak();
         std::thread::spawn(move || {
             while let Ok(command) = rx.recv() {
                 let result = command(&handle);
+                surface.report_result(DECK + 1, &result);
                 let weak = weak.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(app) = weak.upgrade() {
@@ -255,7 +257,8 @@ pub fn install(
 ) -> slint::Timer {
     let selection = Selection::new(&registry);
     let shown = Rc::new(RefCell::new(None));
-    let editor = Editor::new(app, handle.clone());
+    let editor = Editor::new(app, handle.clone(), surface.clone());
+    let projects = surface.projects();
     let ui = app.global::<MaschineUi>();
     let parameters = Rc::new(VecModel::from(vec![MaschineParam::default(); 8]));
     ui.set_parameters(ModelRc::from(parameters.clone()));
@@ -304,19 +307,23 @@ pub fn install(
 
     {
         let editor = editor.clone();
+        let projects = projects.clone();
         ui.on_open_project(move || {
             let editor = editor.clone();
+            let projects = projects.clone();
             prefs::choose_file("Open Maschine project", move |path| {
-                editor.command(move |handle| handle.open(&path));
+                editor.command(move |handle| open_project(handle, &projects, &path));
             });
         });
     }
     {
         let editor = editor.clone();
+        let projects = projects.clone();
         ui.on_save_project(move || {
             let editor = editor.clone();
+            let projects = projects.clone();
             prefs::choose_folder("Save Maschine project in folder", move |folder| {
-                editor.command(move |handle| handle.save_as(&project_path(&folder)));
+                editor.command(move |handle| save_project(handle, &projects, Some(folder)));
             });
         });
     }
@@ -540,8 +547,17 @@ pub fn install(
                             report(&app, Err("Hosted plug-in windows are unavailable in the embedded instrument".into()));
                         }
                     }
-                    UiRequest::File(deck, command, _) if deck == DECK + 1 => {
-                        file_request(&app, &editor, &selection, command);
+                    UiRequest::File(deck, command) if deck == DECK + 1 => {
+                        file_request(&app, &editor, &selection, &projects, command);
+                    }
+                    UiRequest::LoadProject(deck, path) if deck == DECK + 1 => {
+                        let projects = projects.clone();
+                        editor.command(move |handle| {
+                            if !path.is_file() {
+                                return Err(format!("Recent Maschine project is missing or unavailable: {}", path.display()));
+                            }
+                            open_project(handle, &projects, &path)
+                        });
                     }
                     _ => report(
                         &app,
@@ -673,11 +689,31 @@ fn show_panel(app: &AppWindow, context: i32) {
     app.global::<MaschineUi>().set_context(context);
 }
 
-fn file_request(app: &AppWindow, editor: &Editor, selection: &Selection, command: &str) {
+fn file_request(
+    app: &AppWindow,
+    editor: &Editor,
+    selection: &Selection,
+    projects: &Arc<Projects>,
+    command: &str,
+) {
     match command {
         "new" => editor.command(MaschineHandle::new_project),
-        "load" | "open" => app.global::<MaschineUi>().invoke_open_project(),
-        "save" | "save_copy" => app.global::<MaschineUi>().invoke_save_project(),
+        "open" => app.global::<MaschineUi>().invoke_open_project(),
+        "save" => {
+            let projects = projects.clone();
+            editor.command(move |handle| save_project(handle, &projects, None));
+        }
+        "save_copy" => {
+            let projects = projects.clone();
+            editor.command(move |handle| {
+                let (_, current) = handle.snapshot_with_path()?;
+                let folder = match current.and_then(|p| p.parent().map(Path::to_path_buf)) {
+                    Some(folder) => folder,
+                    None => projects.folder()?,
+                };
+                save_project(handle, &projects, Some(folder))
+            });
+        }
         "save_group" | "save_sound" => {
             let (group, sound, _, _) = selection.indices();
             let sound_file = command == "save_sound";
@@ -713,59 +749,35 @@ fn file_request(app: &AppWindow, editor: &Editor, selection: &Selection, command
     }
 }
 
-fn fresh_path(folder: &std::path::Path, name: &str, extension: &str) -> PathBuf {
-    let stem: String = name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || " -_".contains(c) {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let stem = if stem.trim().is_empty() {
-        "Maschine"
-    } else {
-        stem.trim()
-    };
-    for index in 1.. {
-        let name = if index == 1 {
-            format!("{stem}.{extension}")
-        } else {
-            format!("{stem} {index}.{extension}")
-        };
-        let path = folder.join(name);
-        if !path.exists() {
-            return path;
+fn open_project(handle: &MaschineHandle, projects: &Projects, path: &Path) -> Result<(), String> {
+    handle.open(path)?;
+    projects
+        .remember(path)
+        .map_err(|e| format!("Project opened, but recent history could not be saved: {e}"))
+}
+
+fn save_project(
+    handle: &MaschineHandle,
+    projects: &Projects,
+    copy_to: Option<PathBuf>,
+) -> Result<(), String> {
+    let (project, current) = handle.snapshot_with_path()?;
+    let reservation;
+    let path = match (copy_to, current) {
+        (None, Some(path)) => path,
+        (folder, _) => {
+            let folder = match folder {
+                Some(folder) => folder,
+                None => projects.folder()?,
+            };
+            reservation = NewProject::reserve(&folder, &project.name)?;
+            reservation.path.clone()
         }
-    }
-    unreachable!()
-}
-
-pub(crate) fn write_new(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let temp = path.with_extension(format!("saving-{}-{nonce}", std::process::id()));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .map_err(|error| format!("{}: {error}", path.display()))?;
-    let result = (|| {
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        std::fs::hard_link(&temp, path)
-    })();
-    drop(file);
-    let _ = std::fs::remove_file(&temp);
-    result.map_err(|error| format!("{}: {error}", path.display()))
-}
-
-fn project_path(folder: &std::path::Path) -> PathBuf {
-    fresh_path(folder, "OpenDJ Maschine", "mxprj")
+    };
+    handle.save_as(&path)?;
+    projects
+        .remember(&path)
+        .map_err(|e| format!("Project saved, but recent history could not be saved: {e}"))
 }
 
 fn show(
