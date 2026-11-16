@@ -31,6 +31,7 @@ pub mod groove_dice;
 pub mod groove_fills;
 pub mod groove_pads;
 pub mod growing;
+pub mod harmony;
 pub mod import;
 pub mod inputs;
 pub mod key;

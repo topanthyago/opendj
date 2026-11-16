@@ -171,6 +171,16 @@ pub struct MaschineControls {
     pub keyboard: ControlHandle,
     pub octave: ControlHandle,
     pub semitone: ControlHandle,
+    pub harmony_mode: ControlHandle,
+    pub harmony_leader: ControlHandle,
+    pub harmony_root: ControlHandle,
+    pub harmony_scale: ControlHandle,
+    pub harmony_samples: ControlHandle,
+    pub harmony_key: ControlHandle,
+    pub harmony_mask: ControlHandle,
+    pub harmony_source: ControlHandle,
+    pub harmony_deck: ControlHandle,
+    pub harmony_playing: ControlHandle,
     pub record: ControlHandle,
     pub count_in: ControlHandle,
     pub quantize: ControlHandle,
@@ -211,6 +221,16 @@ impl MaschineControls {
             keyboard: registry.toggle(&group, "keyboard"),
             octave: create("octave", 0.0, -5.0, 5.0),
             semitone: create("semitone", 0.0, -12.0, 12.0),
+            harmony_mode: create("harmony_mode", 0.0, 0.0, 3.0),
+            harmony_leader: create("harmony_leader", 0.0, 0.0, 4.0),
+            harmony_root: create("harmony_root", 0.0, 0.0, 11.0),
+            harmony_scale: create("harmony_scale", 0.0, 0.0, 3.0),
+            harmony_samples: registry.toggle(&group, "harmony_samples"),
+            harmony_key: registry.indicator(&group, "harmony_key", 24.0),
+            harmony_mask: registry.indicator(&group, "harmony_mask", 4095.0),
+            harmony_source: registry.indicator(&group, "harmony_source", 4.0),
+            harmony_deck: registry.indicator(&group, "harmony_deck", 4.0),
+            harmony_playing: registry.indicator(&group, "harmony_playing", 1.0),
             record: registry.toggle(&group, "record"),
             count_in: registry.push(&group, "count_in"),
             quantize: registry.toggle(&group, "quantize"),
@@ -2041,6 +2061,32 @@ impl Maschine {
         self.leader_key = key;
     }
 
+    pub fn update_harmony(
+        &mut self,
+        own_deck: usize,
+        decks: &[crate::harmony::DeckKey],
+        leader: Option<usize>,
+    ) {
+        let context = crate::harmony::resolve(
+            self.controls.harmony_mode.get().round() as u8,
+            self.controls.harmony_leader.get().round() as usize,
+            self.controls.harmony_root.get().round() as u8,
+            self.controls.harmony_scale.get().round() as usize,
+            own_deck,
+            decks,
+            leader,
+        );
+        self.controls
+            .harmony_key
+            .set(context.key.map_or(0.0, crate::key::Key::mixxx_number));
+        self.controls.harmony_mask.set(f64::from(context.mask));
+        self.controls.harmony_source.set(f64::from(context.source));
+        self.controls
+            .harmony_deck
+            .set(context.deck.map_or(0.0, |d| d as f64 + 1.0));
+        self.controls.harmony_playing.set_bool(context.playing);
+    }
+
     pub fn observe_inactive_groove(&mut self, controls: &GrooveControls) {
         self.groove_set_seen = controls.load_set.version();
         self.groove_swing_seen = controls.swing.version();
@@ -2266,6 +2312,7 @@ impl Maschine {
         if self.controls.choke.get_bool() {
             self.controls.choke.set_bool(false);
             self.engine.schedule(0, Live::ChokeAll);
+            self.held.fill(None);
         }
         let repeat = (
             self.controls.note_repeat.get_bool(),
@@ -2412,27 +2459,43 @@ impl Maschine {
                             0
                         }
                 };
-                let pitch = pitch.clamp(0, 127);
+                let pitch = if keyboard {
+                    let instrument = self
+                        .project
+                        .as_ref()
+                        .and_then(|p| p.groups.get(group))
+                        .and_then(|g| g.sounds.get(sound))
+                        .map_or("", |s| s.instrument.as_str());
+                    crate::harmony::note(
+                        pitch,
+                        instrument,
+                        self.controls.harmony_samples.get_bool(),
+                        self.controls.harmony_mask.get() as u16,
+                    )
+                } else {
+                    pitch.clamp(0, 127)
+                };
                 let level = if value > 0.0 {
                     value
                 } else {
                     self.controls.pad_velocity[pad].get()
                 };
                 let velocity = (level * 127.0).round().clamp(1.0, 127.0) as i64;
-                self.engine.schedule(
-                    0,
-                    Live::NoteOn {
-                        group,
-                        sound,
-                        pitch,
-                        velocity,
-                        length: i64::MAX,
-                    },
-                );
-                self.held[pad] = Some((group, sound, pitch));
+                if crate::harmony::hold(&mut self.held, pad, (group, sound, pitch)) {
+                    self.engine.schedule(
+                        0,
+                        Live::NoteOn {
+                            group,
+                            sound,
+                            pitch,
+                            velocity,
+                            length: i64::MAX,
+                        },
+                    );
+                }
             }
             if value <= 0.0 && (down || changed) {
-                if let Some((group, sound, pitch)) = self.held[pad].take() {
+                if let Some((group, sound, pitch)) = crate::harmony::release(&mut self.held, pad) {
                     self.engine.schedule(
                         0,
                         Live::NoteRelease {

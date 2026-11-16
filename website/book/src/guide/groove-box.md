@@ -318,3 +318,51 @@ transport remains the master playback control.
 The GUI shows the Scene's assigned Pattern and offers **STOP GROUP / PLAY GROUP**.
 The Pattern menu launches a Pattern. Its **Edit** button changes only the editor
 focus, allowing another Pattern to remain assigned for playback.
+
+### Harmonic keyboard and transitions
+
+Select a pitched Sound and enable **KEYBOARD** above the GUI pads. The 16 pads
+play the selected Sound, with **−8 / +8** changing octave. Their labels show the
+notes they play. Open **KEY** to choose the melodic mapping.
+
+- **CHROMATIC** provides all 12 pitch classes.
+- **AUTO** follows the playing SYNC leader, then the first playing track. The
+  **DECK 1 / 2 / 4** buttons pin a reference deck, including a stopped track
+  being prepared in headphones.
+- **MANUAL** selects a tonic with major, natural minor, major pentatonic or
+  minor pentatonic scale.
+- **COMMON** uses the pitch classes shared by the scales of decks 1 and 2.
+
+The reference line identifies OpenDJ key analysis or tags/imported metadata and
+the reference deck's transport state. Its key comes from the engine's sounding
+key calculation, which includes transposition, playback speed and key lock.
+An unavailable key shows **KEY UNAVAILABLE**. Choose a manual tonic and scale
+when the track's key requires your own assessment.
+
+Mapping covers Bass Synth and Poly Synth. **MAP SAMPLES** explicitly enables it
+for pitched Sampler and Audio Sounds. It applies to played keyboard notes, new
+Piano Roll notes and deliberate pitch edits. Scale notes are highlighted in the
+Piano Roll. Pads that map to the same note hold that note until the last pad is
+released. Each release uses the group, Sound and pitch captured by its press.
+
+The transition panel compares decks 1 and 2 with the Camelot wheel and lists
+their shared scale notes. **ADOPT KEY 1 / 2** copies a deck's current sounding
+key into the manual mapping. A displayed semitone option describes a wheel
+relationship that can be explored using the deck's normal pitch controls.
+
+For an overlap, audition the shared-note mapping with a sparse bass or melody.
+Reduce the outgoing bass before introducing the target's root. Adopt the target
+key at the chosen phrase boundary and develop the new phrase. Chord progression,
+tuning, phrasing and vocals determine each overlap, so audition sustained bass
+and upper voices in headphones. Wheel relationships provide a musical heuristic.
+
+The separate `res/presets/harmonic-native-recipes.json` bank is available through
+**IMPORT → CHOOSE CONTENT JSON**. It contains 24 major/minor keys, with seven
+original four-bar patterns per key and native BassSynth/PolySynth Sounds. The
+patterns cover foundation and syncopated bass, bass with chords in two
+variations, a tonic/fifth pivot, sustained harmony and a melodic response.
+Choose the preset with the intended key in **Instruments → Presets → Groove
+Box**, then use its Scenes or Patterns to launch the variations. Key, scale,
+root-note and original procedural-composition metadata accompany the recipes
+and installed presets. Run `scripts/generate-harmonic-presets.py OUTPUT_JSON`
+to reproduce the data bank.

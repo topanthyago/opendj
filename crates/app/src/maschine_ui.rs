@@ -34,6 +34,8 @@ mod launch;
 
 #[path = "maschine_content.rs"]
 mod content;
+#[path = "maschine_harmony.rs"]
+mod harmonic;
 
 const DECK: usize = 2;
 
@@ -265,6 +267,7 @@ pub fn install(
 ) -> slint::Timer {
     calibration::install(app, registry.clone());
     content::install(app);
+    let harmony = harmonic::Harmony::install(app, registry.clone());
     let selection = Selection::new(&registry);
     let shown = Rc::new(RefCell::new(None));
     let editor = Editor::new(app, handle.clone(), surface.clone());
@@ -450,7 +453,13 @@ pub fn install(
     {
         let editor = editor.clone();
         let selection = selection.clone();
+        let harmony = harmony.clone();
+        let weak = app.as_weak();
         ui.on_add_note(move |sound, pitch, start, length| {
+            let piano = weak
+                .upgrade()
+                .is_some_and(|app| app.global::<MaschineUi>().get_context() == 1);
+            let mapping = harmony.mapping();
             let (group, _, pattern, _) = selection.indices();
             if !(0..16).contains(&sound) || !start.is_finite() || !length.is_finite() {
                 return;
@@ -472,10 +481,14 @@ pub fn install(
                     .and_then(|g| g.patterns.get(pattern))
                     .map(|p| p.start)
                     .ok_or("No pattern selected")?;
-                let note = Note {
+                let mut note = Note {
                     position: note.position + start,
                     ..note
                 };
+                if piano {
+                    note.pitch =
+                        harmonic::map_pitch(doc.project(), group, note.sound, note.pitch, mapping);
+                }
                 doc.add_note(group, pattern, note)
             });
         });
@@ -484,15 +497,34 @@ pub fn install(
         let editor = editor.clone();
         let shown = shown.clone();
         let weak = app.as_weak();
+        let harmony = harmony.clone();
         ui.on_edit_note(move |index, start, length, pitch, sound| {
             if !start.is_finite() || !length.is_finite() {
                 return;
             }
+            let piano = weak
+                .upgrade()
+                .is_some_and(|app| app.global::<MaschineUi>().get_context() == 1);
+            let mapping = harmony.mapping();
+            let instrument = shown
+                .borrow()
+                .as_ref()
+                .and_then(|shown| shown.project.groups.get(shown.group))
+                .and_then(|g| g.sounds.get(sound.clamp(0, 15) as usize))
+                .map(|s| s.instrument.clone())
+                .unwrap_or_default();
             let result = note_edit(&editor, &shown, index, move |mut note, pattern_start| {
                 note.position =
                     pattern_start + (f64::from(start.max(0.0)) * PPQ as f64).round() as i64;
                 note.length = (f64::from(length.max(0.25)) * PPQ as f64).round() as i64;
-                note.pitch = i64::from(pitch.clamp(0, 127));
+                let requested = i64::from(pitch.clamp(0, 127));
+                if requested != note.pitch {
+                    note.pitch = if piano {
+                        opendj_engine::harmony::note(requested, &instrument, mapping.1, mapping.0)
+                    } else {
+                        requested
+                    };
+                }
                 note.sound = sound.clamp(0, 15) as usize;
                 Some(note)
             });
@@ -598,6 +630,8 @@ pub fn install(
         Duration::from_millis(50),
         move || {
             let Some(app) = weak.upgrade() else { return };
+            let (group, sound, _, _) = selection.indices();
+            harmony.update(&app, handle.snapshot_cached().as_deref(), group, sound);
             for request in surface.take_ui_requests() {
                 match request {
                     UiRequest::Instrument(deck) if deck == DECK + 1 => {

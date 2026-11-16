@@ -3550,8 +3550,23 @@ impl Engine {
         let groove_on: [bool; NUM_DECKS] = std::array::from_fn(|i| {
             (self.grooves[i].enabled() || groove_strip == Some(i)) && self.decks[i].track.is_none()
         });
+        let harmonic_decks: [crate::harmony::DeckKey; NUM_DECKS] = std::array::from_fn(|i| {
+            let deck = &self.decks[i];
+            crate::harmony::DeckKey {
+                key: deck
+                    .track
+                    .as_ref()
+                    .and_then(|_| Key::from_mixxx_number(deck.c.key.get())),
+                playing: deck.c.play.get_bool() && deck.track.is_some(),
+                detected: deck
+                    .track
+                    .as_ref()
+                    .is_some_and(|t| t.key_detected == Some(true)),
+            }
+        });
         for (i, on) in groove_on.iter().enumerate() {
             self.maschines[i].poll();
+            self.maschines[i].update_harmony(i, &harmonic_decks, self.sync_leader);
             if !*on || !self.grooves[i].c.backend.get_bool() {
                 self.maschines[i].suspend();
             }
