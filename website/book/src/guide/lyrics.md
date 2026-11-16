@@ -131,17 +131,29 @@ when a track loads, and the slider works once they are ready.
 
 ## Find lyrics online
 
-openDJ can look a track up on [LRCLIB](https://lrclib.net), a free
-community database of synced lyrics. Press **Find…** in the Lyrics tab. openDJ asks LRCLIB for the track by
-its artist, title, album and length, and lists what it has, best first:
-synced lyrics of the same length at the top. **Other length** marks lyrics
-for another version of the track (a radio edit, say), whose timing won't
-fit. **Use** saves the lyrics as an `.lrc` file beside the track, where
-other apps find them too. If the track's folder can't be written, openDJ
-keeps them in its own settings folder instead.
+Press **Find…** in the Lyrics tab, choose **All**, **LRCLIB** or **Letras**,
+and edit the artist and song title before pressing **Search**. Each result
+shows its artist, title, source, timing status and match information.
+LRCLIB results with synced lyrics and a matching length appear first.
+Letras provides original plain text, with its length marked unavailable.
+[LRCLIB](https://lrclib.net), [Letras](https://www.letras.mus.br/).
 
-![Find lyrics](../images/find-lyrics.png)
+Choose **Preview** to inspect a result. Selecting a Letras result requests
+its song page. The preview keeps line breaks and decodes HTML entities.
+Use **Abrir no site** to open the selected source page. If Letras refuses
+access or its page format changes, open the site, copy the original lyrics
+and paste them into the preview. The preview is editable for review.
 
-Only the track's names and length are sent to LRCLIB, and only when you
-press Find. To stop openDJ asking LRCLIB at all, turn off **Find lyrics
-online** in Settings › Collection › Health.
+**Import selection** saves the reviewed text as an `.lrc` file beside the
+track. If the track's folder cannot be written, openDJ uses its own settings
+folder. Imports include the source, public page URL, artist and title.
+Existing lyric files receive timestamped `.opendj-backup-…` copies before
+saving, including their original enhanced LRC word times. Importing plain
+text preserves its untimed status. The active lyrics change when the
+selection is imported.
+
+
+LRCLIB receives artist, title, album and track length. Letras receives the
+title and orders the results using the entered artist. Selecting a Letras result requests
+its public song URL. Turn off **Find lyrics online** in Settings ›
+Collection › Health to disable online searches.

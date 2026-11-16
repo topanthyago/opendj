@@ -98,14 +98,21 @@ The menu at the top left of the window switches layouts:
   large waveforms and the FX bar are hidden in Player.
 - **2-Deck** shows the full decks, with pads and loops, and the mixer between
   them (see [Decks and mixer](decks.md)).
-- **4-Deck** shows four decks side by side, in the order 3, 1, 2, 4, as djay Pro
-  does. Each deck is a strip with its own EQ, filter, gain and channel fader,
-  PLAY and CUE, loop, pads and effects. A bar under the strips holds each
+- **4-Deck** shows four complete deck editors. **2×2** puts decks 1 and 2
+  above decks 3 and 4. Click the **2×2** button beside the layout menu for
+  **1×4**, with decks 3, 1, 2 and 4 across the window. The choice is kept
+  when you quit. Each channel has its EQ, filter, gain, headphone cue and
+  fader. Track decks keep their jog, transport, loops and pads, with the pads
+  below the other controls when the deck is narrow. **PADS** shows or hides
+  those track pads.
+  A bar under the editors holds each
   deck's crossfader side, **SYNC** and tempo, either side of the crossfader;
   click a deck's tempo there for key lock, quantize and a tempo reset. With
   **WAVEFORMS** lit in the top bar, the four large waveforms are stacked above
-  the decks in the same order.
-  A [Groove Box](groove-box.md) deck shows its step grid only in 2-Deck.
+  the decks in the order 3, 1, 2, 4. The FX bar stays underneath.
+  Groove Box and Looper keep their complete editors in both arrangements.
+  Deck 3 also offers the embedded Maschine with 16 Sounds per Group.
+  [Groove Box and Maschine](groove-box.md#maschine-with-deckard)
 - **Prep** shows deck 1 alone, for getting tracks ready (see [Prep](#prep)).
   It isn't in the menu at first: add it in **Settings › Layouts**.
 

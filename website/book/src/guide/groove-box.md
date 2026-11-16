@@ -181,5 +181,75 @@ channel fader and crossfader work on it as they do on a track.
 
 ## In 4-Deck
 
-In the 4-Deck layout a Groove Box deck shows its name, kit and tempo, and its
-PLAY works, but the step grid is only in the 2-Deck layout for now.
+Both arrangements of the 4-Deck layout show the complete Groove Box,
+including its Sequencer, Synth, Mixer and fill controls. **2×2** places the
+DJ decks above decks 3 and 4. **1×4** puts all four editors across the
+window. The Looper's four layers and recording controls stay available in
+both arrangements. [Layouts](layouts.md)
+
+## Maschine with Deckard
+
+Deck 3 can run the embedded Deckard instrument. Load a Groove Box onto
+deck 3, open its **Preset ▾** menu and choose **Deckard · 16 Sounds**.
+The **DECKARD ▾** menu returns to **Original Groove Box**. The original
+kits, eight-row grooves and their saved settings are kept.
+
+**A** through **H** choose a Group. Each Group has 16 Sound slots, shown as
+four rows of four pads, with Sound 1 at the lower left. Click a pad to
+select and play its Sound. Its level meter shows the audio from that
+Sound. Click the selected Sound's name below the pads to choose its
+instrument.
+
+The instrument menu offers Sampler, Audio, Kick, Snare, Hi-Hat, Tom,
+Percussion, Cymbal, Bass Synth and Poly Synth. These load Deckard's native
+modules. The eight knobs below the editor show the focused channel or
+module's parameters. **‹** and **›** move through their pages. A hosted
+VST's separate editor window is currently unavailable in the embedded
+instrument.
+
+The Scene menu lists each Scene's Group-to-Pattern references. The Pattern
+menu chooses the focused Group's Pattern in that Scene. **+ Scene** and
+**+ Pattern** create entries in the project.
+
+- **PATTERN** shows the 16 Sounds' events. Double-click an empty place to
+  add a sixteenth note at that Sound's base key. Drag a note to move its
+  time or Sound, and drag its right edge to change its length.
+- **PIANO ROLL** shows the selected Sound's pitches. Drag a note vertically
+  to change its pitch. **−** and **+** move the keyboard view by an octave.
+- Scroll over a note to change its velocity. Right-click it to remove it.
+  **↶** and **↷** use the document's Undo and Redo history.
+- **●** records played pads into the Pattern. The playhead follows the
+  instrument's playing position.
+
+### Browse sounds and instruments
+
+**BROWSE** shows the indexed library shared with the controller. Pick the
+content kind, switch **FACTORY** or **USER**, and use the product, type,
+sub-type and character menus to narrow the results. The top **★** filters
+favorites. Select a row, press **PREHEAR** to hear it, or **LOAD** to load
+it. Double-clicking a row loads it too. The lower **★** changes the
+focused result's favorite status.
+
+### Sampling
+
+Open **SAMPLING** for the selected Sound. **LOAD** picks an audio file.
+Under **CAPTURE**, choose the source deck, Mix or a stem, the number of
+bars, and a single Sound or 16 slices. **CAPTURE** prepares the sample and
+assigns it to the selected Group. **×** cancels a pending capture.
+
+Under **EDIT**, drag across the waveform to select a range. **TRIM** sets
+the play range, **NORMALIZE** prepares a normalized copy, and **REVERSE**
+changes playback direction. Gain, pitch, fades and the loop switch edit
+the selected sample's settings. **Grid** and **Detect** prepare 16 slices.
+For **Manual**, click the waveform to add cut markers, then press
+**SLICE** with 17 boundaries for 16 Sounds. **CLEAR** resets the markers.
+Prepared audio is stored separately from its source file.
+
+### Keep and export a project
+
+The embedded document is saved automatically and restored when openDJ
+starts. **OPEN** chooses a `.mxprj` project. **SAVE** asks for a folder and
+writes a new `.mxprj` copy, adding a number when the name already exists.
+The controller's FILE page also saves the focused Group or Sound as
+`.mxgrp` or `.mxsnd`. **Export Audio** renders the selected Scene to a
+new WAV file at the current Maschine tempo.

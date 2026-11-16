@@ -1,0 +1,760 @@
+import { Theme } from "theme.slint";
+import { Controls, ControlButton } from "controls.slint";
+import { ListView } from "scroll.slint";
+
+export struct MaschineGroup {
+    name: string,
+    color: color,
+}
+
+export struct MaschineSound {
+    name: string,
+    instrument: string,
+    color: color,
+    loaded: bool,
+    muted: bool,
+    base-key: int,
+}
+
+export struct MaschinePattern {
+    name: string,
+    detail: string,
+}
+
+export struct MaschineScene {
+    name: string,
+    references: string,
+}
+
+export struct MaschineNote {
+    index: int,
+    sound: int,
+    pitch: int,
+    start: float,
+    length: float,
+    velocity: int,
+    probability: int,
+}
+
+export struct MaschineParam {
+    name: string,
+    display: string,
+    value: float,
+    enabled: bool,
+}
+
+export struct MaschineInstrument {
+    name: string,
+    detail: string,
+}
+
+export struct MaschineBrowserItem { name: string, favorite: bool }
+export struct MaschineBrowserFilter { options: [string], current: int }
+
+// Views come from the embedded DECKARD document. Edits return to that document.
+export global MaschineUi {
+    in property <string> project-name;
+    in property <string> status;
+    in property <[MaschineGroup]> groups;
+    in property <[MaschineSound]> sounds;
+    in property <[MaschinePattern]> patterns;
+    in property <[MaschineScene]> scenes;
+    in property <[MaschineNote]> notes;
+    in property <[MaschineParam]> parameters;
+    in property <[MaschineInstrument]> instruments;
+    in property <string> selected-instrument-name;
+    in property <[MaschineBrowserItem]> browser-results;
+    in property <[MaschineBrowserFilter]> browser-filters;
+    in property <int> browser-focus;
+    in property <int> browser-kind;
+    in property <bool> browser-favorites;
+    in property <bool> browser-busy;
+    in property <bool> browser-user;
+    in property <float> pattern-beats: 4;
+    in property <string> selected-sound-name;
+    in property <string> parameter-page;
+    in property <string> sample-name;
+    in property <image> sample-waveform;
+    in property <float> sample-start;
+    in property <float> sample-end: 1;
+    in property <float> sample-loop-start;
+    in property <float> sample-loop-end: 1;
+    in property <bool> sample-loop;
+    in property <bool> sample-loaded;
+    in property <float> sample-gain: 1;
+    in property <float> sample-pitch;
+    in property <float> sample-fade-in;
+    in property <float> sample-fade-out;
+    in-out property <int> sample-slice-mode: 0;
+    in property <[float]> sample-markers;
+    in-out property <int> context: 0;
+    in-out property <bool> editing-note;
+    in-out property <bool> instrument-menu-open;
+    callback open-project();
+    callback save-project();
+    callback pick-pattern(pattern: int);
+    callback add-pattern();
+    callback add-scene();
+    callback add-note(sound: int, pitch: int, start: float, length: float);
+    callback edit-note(index: int, start: float, length: float, pitch: int, sound: int);
+    callback delete-note(index: int);
+    callback note-velocity(index: int, velocity: int);
+    callback set-parameter(knob: int, value: float);
+    callback parameter-page-step(by: int);
+    callback sample-action(action: string);
+    callback sample-range(start: float, end: float);
+    callback sample-capture(source-deck: int, stem: int, bars: int, slice: int);
+    callback sample-edit(field: string, value: float);
+    callback sample-cancel();
+    callback sample-marker(position: float);
+    callback load-instrument(index: int);
+    callback browser-kind-pick(kind: int);
+    callback browser-filter(which: int, index: int);
+    callback browser-focus-result(index: int, load: bool);
+    callback browser-action(action: string);
+}
+
+component MaschineButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> on;
+    in property <bool> enabled: true;
+    in property <color> tint: Theme.deck3;
+    callback clicked();
+    min-width: 26px;
+    height: 26px;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: on ? tint : Theme.border;
+    background: on ? tint.with-alpha(0.18) : ta.pressed ? Theme.control-pressed : ta.has-hover ? Theme.panel-raised.brighter(0.2) : Theme.control;
+    opacity: enabled ? 1 : 0.35;
+    Text {
+        x: 5px;
+        width: parent.width - 10px;
+        text: root.text;
+        color: on ? tint : Theme.text;
+        font-size: 10px;
+        font-weight: 600;
+        overflow: elide;
+    }
+    ta := TouchArea { enabled: root.enabled; mouse-cursor: root.enabled ? pointer : default; clicked => { root.clicked(); } }
+}
+
+component MaschineKnob inherits Rectangle {
+    in property <MaschineParam> parameter;
+    in property <color> tint;
+    callback changed(value: float);
+    property <float> drag-start;
+    property <angle> at: (-135 + parameter.value * 270) * 1deg;
+    opacity: parameter.enabled ? 1 : 0.35;
+    VerticalLayout {
+        spacing: 1px;
+        Text { text: parameter.name; color: Theme.text-dim; font-size: 9px; horizontal-alignment: center; overflow: elide; height: 12px; }
+        Rectangle {
+            width: 26px;
+            height: 26px;
+            x: (parent.width - self.width) / 2;
+            border-radius: 13px;
+            border-width: 1px;
+            border-color: Theme.border;
+            background: ta.has-hover ? #44464b : #2b2d31;
+            Path {
+                width: 26px;
+                height: 26px;
+                viewbox-width: 26;
+                viewbox-height: 26;
+                stroke: tint;
+                stroke-width: 2px;
+                stroke-line-cap: round;
+                MoveTo { x: 13 + 3 * sin(at); y: 13 - 3 * cos(at); }
+                LineTo { x: 13 + 10 * sin(at); y: 13 - 10 * cos(at); }
+            }
+        }
+        Text { text: parameter.display; color: Theme.text; font-size: 9px; horizontal-alignment: center; overflow: elide; height: 12px; }
+    }
+    ta := TouchArea {
+        enabled: parameter.enabled;
+        mouse-cursor: ns-resize;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left { drag-start = parameter.value; }
+        }
+        moved => {
+            if self.pressed { root.changed(clamp(drag-start + (self.pressed-y - self.mouse-y) / 160px, 0, 1)); }
+        }
+        scroll-event(e) => {
+            root.changed(clamp(parameter.value + (e.delta-y > 0 ? 0.01 : -0.01), 0, 1));
+            accept
+        }
+    }
+}
+
+component MaschinePads inherits Rectangle {
+    in property <string> group;
+    in property <int> selected-group;
+    in property <int> sound;
+    in property <color> tint;
+    for slot in 16: Rectangle {
+        // Maschine's pad 1 starts at the lower left.
+        property <int> pad: (3 - floor(slot / 4)) * 4 + Math.mod(slot, 4);
+        property <MaschineSound> item: MaschineUi.sounds[pad];
+        property <int> pad-index: Controls.resolve(group, "pad" + (pad + 1));
+        property <bool> held: Controls.value(pad-index, Controls.tick) > 0;
+        property <float> level: Controls.value(Controls.resolve(group, "group" + (selected-group + 1) + "_sound" + (pad + 1) + "_meter"), Controls.tick);
+        x: Math.mod(slot, 4) * parent.width / 4;
+        y: floor(slot / 4) * parent.height / 4;
+        width: parent.width / 4 - 4px;
+        height: parent.height / 4 - 4px;
+        border-radius: 5px;
+        border-width: pad == sound || held ? 2px : 1px;
+        border-color: held ? Theme.text : pad == sound ? tint : item.color.with-alpha(0.7);
+        background: held ? item.color.with-alpha(0.5) : pad == sound ? tint.with-alpha(0.16) : Theme.well;
+        VerticalLayout {
+            padding: 4px;
+            spacing: 2px;
+            HorizontalLayout {
+                height: 12px;
+                Text { text: pad + 1; color: item.loaded ? item.color : Theme.text-dim; font-size: 9px; font-weight: 600; }
+                Rectangle { horizontal-stretch: 1; }
+                if item.muted: Text { text: "M"; color: #ff9f0a; font-size: 9px; }
+            }
+            Text { text: item.name; color: item.loaded ? Theme.text : Theme.text-dim; font-size: 9px; overflow: elide; vertical-stretch: 1; vertical-alignment: bottom; }
+        }
+        Rectangle { x: 3px; y: parent.height - 4px; width: clamp(level, 0, 1) * (parent.width - 6px); height: 2px; background: item.color; }
+        TouchArea {
+            mouse-cursor: pointer;
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                    Controls.set-value(Controls.resolve(group, "sound"), pad);
+                    Controls.set-value(pad-index, 1);
+                } else if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel {
+                    Controls.set-value(pad-index, 0);
+                }
+            }
+        }
+    }
+}
+
+component MaschineNotes inherits Rectangle {
+    in property <bool> piano;
+    in property <int> sound;
+    in property <color> tint;
+    in property <float> position;
+    in property <bool> playing;
+    in-out property <int> pitch-low: 48;
+    property <int> rows: piano ? 24 : 16;
+    property <float> beats: max(1, MaschineUi.pattern-beats);
+    property <int> selected-note: -1;
+    background: Theme.well;
+    clip: true;
+    Rectangle {
+        x: 0;
+        y: 18px;
+        width: 49px;
+        height: parent.height - 18px;
+        for row in root.rows: Rectangle {
+            y: row * parent.height / root.rows;
+            height: parent.height / root.rows;
+            width: parent.width;
+            property <int> pitch: root.pitch-low + root.rows - 1 - row;
+            property <int> key: Math.mod(pitch, 12);
+            background: piano && (key == 1 || key == 3 || key == 6 || key == 8 || key == 10) ? #292b30 : row == sound && !piano ? tint.with-alpha(0.15) : Theme.panel;
+            border-width: 0.5px;
+            border-color: Theme.separator;
+            Text {
+                x: 3px;
+                width: parent.width - 6px;
+                text: piano ? ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"][key] + (floor(pitch / 12) - 2) : (row + 1) + " " + MaschineUi.sounds[row].name;
+                color: piano && key == 0 ? tint : Theme.text-dim;
+                font-size: min(10px, parent.height - 1px);
+                overflow: elide;
+            }
+        }
+    }
+    grid := Rectangle {
+        x: 50px;
+        y: 18px;
+        width: parent.width - 50px;
+        height: parent.height - 18px;
+        for step in ceil(beats * 4) + 1: Rectangle {
+            x: step / (beats * 4) * parent.width;
+            width: 1px;
+            height: parent.height;
+            background: Math.mod(step, 16) == 0 ? #ffffff26 : Math.mod(step, 4) == 0 ? #ffffff16 : #ffffff08;
+        }
+        for row in root.rows + 1: Rectangle {
+            y: row * parent.height / root.rows;
+            height: 1px;
+            background: #ffffff0c;
+        }
+        TouchArea {
+            mouse-cursor: crosshair;
+            double-clicked => {
+                let row = clamp(floor(self.mouse-y / self.height * root.rows), 0, root.rows - 1);
+                let at = floor(self.mouse-x / self.width * beats * 4) / 4;
+                MaschineUi.add-note(piano ? sound : row, piano ? pitch-low + root.rows - 1 - row : MaschineUi.sounds[row].base-key, at, 0.25);
+            }
+        }
+        for note in MaschineUi.notes: Rectangle {
+            visible: (!piano || note.sound == sound) && (!piano || (note.pitch >= pitch-low && note.pitch < pitch-low + root.rows));
+            x: (ta.pressed ? moved-start : note.start) / beats * parent.width;
+            y: (piano ? root.rows - 1 - ((ta.pressed ? moved-pitch : note.pitch) - pitch-low) : (ta.pressed ? moved-sound : note.sound)) * parent.height / root.rows + 1px;
+            width: max(3px, (ta.pressed ? moved-length : note.length) / beats * parent.width - 1px);
+            height: max(2px, parent.height / root.rows - 2px);
+            border-radius: 2px;
+            border-width: note.index == selected-note ? 1px : 0px;
+            border-color: Theme.text;
+            background: (piano ? tint : MaschineUi.sounds[note.sound].color).with-alpha(0.3 + note.velocity / 127 * 0.7);
+            property <float> moved-start;
+            property <float> moved-length;
+            property <int> moved-pitch;
+            property <int> moved-sound;
+            property <length> press-grid-x;
+            property <length> press-grid-y;
+            property <bool> resize;
+            ta := TouchArea {
+                mouse-cursor: self.mouse-x > self.width - 6px ? ew-resize : move;
+                pointer-event(e) => {
+                    if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                        MaschineUi.delete-note(note.index);
+                    } else if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                        MaschineUi.editing-note = true;
+                        selected-note = note.index;
+                        resize = self.mouse-x > self.width - 6px;
+                        moved-start = note.start;
+                        moved-length = note.length;
+                        moved-pitch = note.pitch;
+                        moved-sound = note.sound;
+                        press-grid-x = self.absolute-position.x + self.mouse-x - grid.absolute-position.x;
+                        press-grid-y = self.absolute-position.y + self.mouse-y - grid.absolute-position.y;
+                    } else if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
+                        MaschineUi.edit-note(note.index, moved-start, moved-length, moved-pitch, moved-sound);
+                        MaschineUi.editing-note = false;
+                    } else if e.kind == PointerEventKind.cancel {
+                        MaschineUi.editing-note = false;
+                    }
+                }
+                moved => {
+                    if self.pressed {
+                        let delta-x = self.absolute-position.x + self.mouse-x - grid.absolute-position.x - press-grid-x;
+                        let delta-y = self.absolute-position.y + self.mouse-y - grid.absolute-position.y - press-grid-y;
+                        let delta = round(delta-x / grid.width * beats * 4) / 4;
+                        if resize { moved-length = max(0.25, note.length + delta); }
+                        else {
+                            moved-start = clamp(note.start + delta, 0, max(0, beats - note.length));
+                            moved-pitch = piano ? clamp(note.pitch - round(delta-y / grid.height * root.rows), 0, 127) : note.pitch;
+                            moved-sound = piano ? note.sound : clamp(note.sound + round(delta-y / grid.height * root.rows), 0, 15);
+                        }
+                    }
+                }
+                scroll-event(e) => {
+                    MaschineUi.note-velocity(note.index, clamp(note.velocity + (e.delta-y > 0 ? 1 : -1), 1, 127));
+                    accept
+                }
+            }
+            if note.probability < 100: Rectangle { y: parent.height - 2px; height: 2px; width: parent.width * note.probability / 100; background: Theme.text.with-alpha(0.7); }
+        }
+        if playing: Rectangle { x: Math.mod(position / 960, beats) / beats * parent.width; width: 1px; height: parent.height; background: Theme.text; }
+    }
+    for beat in ceil(beats): Text {
+        x: 50px + beat / beats * grid.width + 3px;
+        height: 16px;
+        text: Math.mod(beat, 4) == 0 ? floor(beat / 4) + 1 : "·";
+        color: Theme.text-dim;
+        font-size: 9px;
+    }
+}
+
+component MaschineSampling inherits Rectangle {
+    in property <color> tint;
+    property <int> source-deck: 0;
+    property <int> stem: 0;
+    property <int> bars-index: 2;
+    property <int> slice: 0;
+    property <bool> edit-mode;
+    background: Theme.well;
+    VerticalLayout {
+        padding: 6px;
+        spacing: 5px;
+        HorizontalLayout {
+            height: 24px;
+            Text { text: MaschineUi.sample-name; color: Theme.text; font-size: 11px; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+            MaschineButton { text: "LOAD"; width: 46px; clicked => { MaschineUi.sample-action("load"); } }
+            MaschineButton { text: "CAPTURE"; width: 56px; on: !edit-mode; clicked => { edit-mode = false; } }
+            MaschineButton { text: "EDIT"; width: 38px; on: edit-mode; clicked => { edit-mode = true; } }
+        }
+        if !edit-mode: HorizontalLayout {
+            height: 24px;
+            spacing: 4px;
+            MaschineButton { text: "Deck " + (source-deck + 1); horizontal-stretch: 1; clicked => { source-deck = Math.mod(source-deck + 1, 4); } }
+            MaschineButton { text: ["Mix", "Drums", "Bass", "Melody", "Voice"][stem]; horizontal-stretch: 1; clicked => { stem = Math.mod(stem + 1, 5); } }
+            MaschineButton { text: [1, 2, 4, 8, 16][bars-index] + " bars"; horizontal-stretch: 1; clicked => { bars-index = Math.mod(bars-index + 1, 5); } }
+        }
+        if !edit-mode: HorizontalLayout {
+            height: 24px;
+            spacing: 4px;
+            MaschineButton { text: ["Selected Sound", "Grid · 16 Sounds", "Detect · 16 Sounds"][slice]; horizontal-stretch: 1; clicked => { slice = Math.mod(slice + 1, 3); } }
+            MaschineButton { text: "CAPTURE"; width: 68px; clicked => { MaschineUi.sample-capture(source-deck, stem, [1, 2, 4, 8, 16][bars-index], slice); } }
+            MaschineButton { text: "×"; width: 26px; clicked => { MaschineUi.sample-cancel(); } }
+        }
+        if edit-mode: HorizontalLayout {
+            height: 54px;
+            spacing: 4px;
+            MaschineKnob {
+                horizontal-stretch: 1; min-width: 0px; tint: tint;
+                parameter: { name: "GAIN", display: round(MaschineUi.sample-gain * 100) + "%", value: MaschineUi.sample-gain / 2, enabled: MaschineUi.sample-loaded };
+                changed(value) => { MaschineUi.sample-edit("gain", value * 2); }
+            }
+            MaschineKnob {
+                horizontal-stretch: 1; min-width: 0px; tint: tint;
+                parameter: { name: "PITCH", display: round(MaschineUi.sample-pitch) + " st", value: (MaschineUi.sample-pitch + 24) / 48, enabled: MaschineUi.sample-loaded };
+                changed(value) => { MaschineUi.sample-edit("pitch", round(value * 48 - 24)); }
+            }
+            MaschineKnob {
+                horizontal-stretch: 1; min-width: 0px; tint: tint;
+                parameter: { name: "FADE IN", display: round(MaschineUi.sample-fade-in * 100) + "%", value: MaschineUi.sample-fade-in, enabled: MaschineUi.sample-loaded };
+                changed(value) => { MaschineUi.sample-edit("fade-in", value); }
+            }
+            MaschineKnob {
+                horizontal-stretch: 1; min-width: 0px; tint: tint;
+                parameter: { name: "FADE OUT", display: round(MaschineUi.sample-fade-out * 100) + "%", value: MaschineUi.sample-fade-out, enabled: MaschineUi.sample-loaded };
+                changed(value) => { MaschineUi.sample-edit("fade-out", value); }
+            }
+        }
+        if edit-mode: HorizontalLayout {
+            height: 24px;
+            spacing: 4px;
+            MaschineButton {
+                text: ["Grid · 16 Sounds", "Detect · 16 Sounds", "Manual · " + MaschineUi.sample-markers.length + "/17"][MaschineUi.sample-slice-mode];
+                horizontal-stretch: 1;
+                clicked => { MaschineUi.sample-slice-mode = Math.mod(MaschineUi.sample-slice-mode + 1, 3); }
+            }
+            if MaschineUi.sample-slice-mode == 2: MaschineButton { text: "CLEAR"; width: 44px; clicked => { MaschineUi.sample-action("clear-markers"); } }
+            MaschineButton {
+                text: MaschineUi.sample-loop ? "LOOP ON" : "LOOP OFF";
+                width: 64px;
+                on: MaschineUi.sample-loop;
+                clicked => { MaschineUi.sample-edit("loop", MaschineUi.sample-loop ? 0 : 1); }
+            }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+            Image { width: parent.width; height: parent.height; source: MaschineUi.sample-waveform; image-fit: fill; }
+            if MaschineUi.sample-loaded: Rectangle {
+                x: MaschineUi.sample-start * parent.width;
+                width: max(1px, (MaschineUi.sample-end - MaschineUi.sample-start) * parent.width);
+                height: parent.height;
+                background: tint.with-alpha(0.12);
+                border-width: 1px;
+                border-color: tint;
+            }
+            if !MaschineUi.sample-loaded: Text { text: "Load a sample into the selected Sound"; color: Theme.text-dim; font-size: 11px; }
+            for marker in MaschineUi.sample-markers: Rectangle { x: marker * parent.width; width: 1px; height: parent.height; background: #ffd60a; }
+            property <float> range-start;
+            TouchArea {
+                enabled: MaschineUi.sample-loaded;
+                mouse-cursor: crosshair;
+                pointer-event(e) => {
+                    if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                        if edit-mode && MaschineUi.sample-slice-mode == 2 { MaschineUi.sample-marker(clamp(self.mouse-x / self.width, 0, 1)); }
+                        else { range-start = clamp(self.mouse-x / self.width, 0, 1); }
+                    }
+                    else if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
+                        if edit-mode && MaschineUi.sample-slice-mode == 2 { return; }
+                        let end = clamp(self.mouse-x / self.width, 0, 1);
+                        MaschineUi.sample-range(min(range-start, end), max(range-start, end));
+                    }
+                }
+            }
+        }
+        Rectangle {
+            property <int> columns: root.width < 350px ? 2 : 4;
+            height: root.width < 350px ? 56px : 26px;
+            for action[i] in ["TRIM", "NORMALIZE", "REVERSE", "SLICE"]: MaschineButton {
+                x: Math.mod(i, parent.columns) * parent.width / parent.columns;
+                y: floor(i / parent.columns) * 30px;
+                width: parent.width / parent.columns - 4px;
+                text: action;
+                enabled: MaschineUi.sample-loaded;
+                clicked => { MaschineUi.sample-action(action); }
+            }
+        }
+    }
+}
+
+component MaschineBrowser inherits Rectangle {
+    in property <color> tint;
+    property <int> focused-result: MaschineUi.browser-focus;
+    changed focused-result => {
+        let top = focused-result * 24px;
+        if top < -results.content-y { results.content-y = -top; }
+        else if top + 24px > -results.content-y + results.height { results.content-y = min(0px, results.height - top - 24px); }
+    }
+    background: Theme.well;
+    VerticalLayout {
+        padding: 5px;
+        spacing: 4px;
+        HorizontalLayout {
+            height: 24px;
+            spacing: 4px;
+            MaschineButton {
+                text: ["Projects", "Groups", "Sounds", "Instruments", "Effects", "Loops", "One-shots"][MaschineUi.browser-kind] + " ▾";
+                horizontal-stretch: 1;
+                clicked => { kinds.show(); }
+                kinds := PopupWindow {
+                    y: 26px;
+                    width: 150px;
+                    Rectangle { background: Theme.panel-raised; border-radius: 5px; border-width: 1px; border-color: Theme.border; }
+                    VerticalLayout { padding: 5px; spacing: 3px;
+                        for name[i] in ["Projects", "Groups", "Sounds", "Instruments", "Effects", "Loops", "One-shots"]: MaschineButton {
+                            text: name; on: i == MaschineUi.browser-kind;
+                            clicked => { MaschineUi.browser-kind-pick(i); kinds.close(); }
+                        }
+                    }
+                }
+            }
+            MaschineButton { text: MaschineUi.browser-user ? "USER" : "FACTORY"; width: 62px; on: MaschineUi.browser-user; clicked => { MaschineUi.browser-action("source"); } }
+            MaschineButton { text: "★"; width: 28px; on: MaschineUi.browser-favorites; clicked => { MaschineUi.browser-action("favorites"); } }
+        }
+        HorizontalLayout {
+            height: 24px;
+            spacing: 3px;
+            for filter[i] in MaschineUi.browser-filters: MaschineButton {
+                text: filter.options[filter.current] + " ▾";
+                horizontal-stretch: 1;
+                clicked => { options.show(); }
+                options := PopupWindow {
+                    y: 26px;
+                    width: 210px;
+                    height: min(300px, filter.options.length * 27px + 10px);
+                    Rectangle { background: Theme.panel-raised; border-radius: 5px; border-width: 1px; border-color: Theme.border; }
+                    ListView {
+                        x: 5px; y: 5px; width: parent.width - 10px; height: parent.height - 10px;
+                        for name[j] in filter.options: MaschineButton {
+                            text: name; on: j == filter.current;
+                            clicked => { MaschineUi.browser-filter(i, j); options.close(); }
+                        }
+                    }
+                }
+            }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+            results := ListView {
+                for result[i] in MaschineUi.browser-results: Rectangle {
+                    height: 24px;
+                    background: i == MaschineUi.browser-focus ? tint.with-alpha(0.18) : ta.has-hover ? Theme.panel-raised : transparent;
+                    HorizontalLayout {
+                        padding-left: 5px;
+                        padding-right: 5px;
+                        spacing: 4px;
+                        Text { text: result.name; color: Theme.text; font-size: 11px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                        Text { text: result.favorite ? "★" : ""; color: tint; font-size: 11px; vertical-alignment: center; width: 15px; }
+                    }
+                    ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { MaschineUi.browser-focus-result(i, false); }
+                        double-clicked => { MaschineUi.browser-focus-result(i, true); }
+                    }
+                }
+            }
+            if MaschineUi.browser-results.length == 0: Text { text: MaschineUi.browser-busy ? "Searching…" : "No results"; color: Theme.text-dim; font-size: 11px; }
+        }
+        HorizontalLayout {
+            height: 24px;
+            spacing: 4px;
+            MaschineButton { text: "PREHEAR"; horizontal-stretch: 1; enabled: MaschineUi.browser-results.length > 0; clicked => { MaschineUi.browser-action("prehear"); } }
+            MaschineButton { text: "★"; width: 28px; enabled: MaschineUi.browser-results.length > 0; clicked => { MaschineUi.browser-action("favorite"); } }
+            MaschineButton { text: "LOAD"; horizontal-stretch: 1; enabled: MaschineUi.browser-results.length > 0; clicked => { MaschineUi.browser-action("load"); } }
+        }
+    }
+}
+
+export component MaschinePanel inherits Rectangle {
+    in property <int> deck;
+    in property <string> channel;
+    in property <color> tint;
+    property <string> group: "[Maschine" + (deck + 1) + "]";
+    property <int> group-index: Controls.value(Controls.resolve(group, "group"), Controls.tick);
+    property <int> sound: Controls.value(Controls.resolve(group, "sound"), Controls.tick);
+    property <int> pattern: Controls.value(Controls.resolve(group, "pattern"), Controls.tick);
+    property <int> scene: Controls.value(Controls.resolve(group, "scene"), Controls.tick);
+    property <int> pitch-low: 48;
+    background: Theme.panel;
+    VerticalLayout {
+        padding: 6px;
+        spacing: 5px;
+        HorizontalLayout {
+            height: 28px;
+            spacing: 4px;
+            ControlButton { group: channel; key: "play"; text: "▶"; width: 34px; height: 28px; tint: tint; fill-when-lit: true; }
+            ControlButton { group: group; key: "record"; text: "●"; width: 28px; height: 28px; tint: #ff453a; fill-when-lit: true; }
+            Text { text: MaschineUi.project-name; color: Theme.text; font-size: 12px; font-weight: 600; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; min-width: 0px; }
+            MaschineButton { text: "OPEN"; width: 42px; clicked => { MaschineUi.open-project(); } }
+            MaschineButton { text: "SAVE"; width: 42px; clicked => { MaschineUi.save-project(); } }
+            ControlButton { group: group; key: "undo"; text: "↶"; momentary: true; width: 26px; height: 26px; }
+            ControlButton { group: group; key: "redo"; text: "↷"; momentary: true; width: 26px; height: 26px; }
+            MaschineButton { text: "DECKARD ▾"; width: 84px; on: true; clicked => { backend.show(); }
+                backend := PopupWindow {
+                    y: 30px;
+                    width: 168px;
+                    Rectangle { background: Theme.panel-raised; border-radius: 5px; border-width: 1px; border-color: Theme.border; }
+                    VerticalLayout { padding: 5px; spacing: 4px;
+                        MaschineButton { text: "Deckard · 16 Sounds"; on: true; clicked => { backend.close(); } }
+                        MaschineButton { text: "Original Groove Box"; clicked => { Controls.set-value(Controls.resolve("[Groove" + (deck + 1) + "]", "backend"), 0); backend.close(); } }
+                    }
+                }
+            }
+        }
+        HorizontalLayout {
+            height: 26px;
+            spacing: 4px;
+            for letter[i] in ["A", "B", "C", "D", "E", "F", "G", "H"]: MaschineButton {
+                text: letter;
+                width: 26px;
+                tint: MaschineUi.groups[i].color;
+                on: i == group-index;
+                clicked => { Controls.set-value(Controls.resolve(group, "group"), i); }
+            }
+            MaschineButton {
+                text: (scene < MaschineUi.scenes.length ? MaschineUi.scenes[scene].name : "Scene " + (scene + 1)) + " ▾";
+                horizontal-stretch: 1;
+                min-width: 58px;
+                clicked => { scenes.show(); }
+                scenes := PopupWindow {
+                    y: 28px;
+                    width: 260px;
+                    height: min(300px, MaschineUi.scenes.length * 44px + 42px);
+                    Rectangle { background: Theme.panel-raised; border-radius: 5px; border-width: 1px; border-color: Theme.border; }
+                    ListView {
+                        x: 5px; y: 5px; width: parent.width - 10px; height: parent.height - 42px;
+                        for item[i] in MaschineUi.scenes: Rectangle {
+                            height: 44px;
+                            background: i == scene ? tint.with-alpha(0.12) : transparent;
+                            VerticalLayout { padding: 5px; spacing: 2px;
+                                Text { text: item.name; color: Theme.text; font-size: 11px; }
+                                Text { text: item.references; color: Theme.text-dim; font-size: 9px; overflow: elide; }
+                            }
+                            TouchArea { mouse-cursor: pointer; clicked => { Controls.set-value(Controls.resolve(group, "scene"), i); scenes.close(); } }
+                        }
+                    }
+                    MaschineButton { x: 5px; y: parent.height - 31px; width: parent.width - 10px; text: "+ Scene"; clicked => { MaschineUi.add-scene(); } }
+                }
+            }
+            MaschineButton {
+                text: (pattern < MaschineUi.patterns.length ? MaschineUi.patterns[pattern].name : "Pattern " + (pattern + 1)) + " ▾";
+                horizontal-stretch: 1;
+                min-width: 64px;
+                clicked => { patterns.show(); }
+                patterns := PopupWindow {
+                    y: 28px;
+                    width: 220px;
+                    height: min(300px, MaschineUi.patterns.length * 38px + 42px);
+                    Rectangle { background: Theme.panel-raised; border-radius: 5px; border-width: 1px; border-color: Theme.border; }
+                    ListView {
+                        x: 5px; y: 5px; width: parent.width - 10px; height: parent.height - 42px;
+                        for item[i] in MaschineUi.patterns: Rectangle {
+                            height: 38px;
+                            background: i == pattern ? tint.with-alpha(0.12) : transparent;
+                            VerticalLayout { padding: 5px; spacing: 2px;
+                                Text { text: item.name; color: Theme.text; font-size: 11px; }
+                                Text { text: item.detail; color: Theme.text-dim; font-size: 9px; }
+                            }
+                            TouchArea { mouse-cursor: pointer; clicked => { MaschineUi.pick-pattern(i); patterns.close(); } }
+                        }
+                    }
+                    MaschineButton { x: 5px; y: parent.height - 31px; width: parent.width - 10px; text: "+ Pattern"; clicked => { MaschineUi.add-pattern(); } }
+                }
+            }
+        }
+        HorizontalLayout {
+            vertical-stretch: 1;
+            spacing: 8px;
+            VerticalLayout {
+                width: clamp(root.width * 0.24, 128px, 208px);
+                spacing: 3px;
+                MaschinePads { group: group; selected-group: group-index; sound: sound; tint: tint; vertical-stretch: 1; }
+                MaschineButton { text: MaschineUi.selected-sound-name + " · " + MaschineUi.selected-instrument-name + " ▾"; height: 24px; clicked => { MaschineUi.instrument-menu-open = true; } }
+            }
+            VerticalLayout {
+                spacing: 4px;
+                HorizontalLayout {
+                    height: 24px;
+                    spacing: 3px;
+                    for name[i] in ["PATTERN", root.width < 600px ? "PIANO" : "PIANO ROLL", "SAMPLING", "BROWSE"]: MaschineButton {
+                        text: name;
+                        on: MaschineUi.context == i;
+                        tint: tint;
+                        horizontal-stretch: 1;
+                        clicked => { MaschineUi.context = i; }
+                    }
+                    if MaschineUi.context == 1: MaschineButton { text: "−"; width: 24px; clicked => { pitch-low = max(0, pitch-low - 12); } }
+                    if MaschineUi.context == 1: MaschineButton { text: "+"; width: 24px; clicked => { pitch-low = min(104, pitch-low + 12); } }
+                }
+                if MaschineUi.context < 2: MaschineNotes {
+                    vertical-stretch: 1;
+                    piano: MaschineUi.context == 1;
+                    sound: sound;
+                    tint: tint;
+                    pitch-low <=> pitch-low;
+                    position: Controls.value(Controls.resolve(group, "position"), Controls.tick);
+                    playing: Controls.value(Controls.resolve(group, "playing"), Controls.tick) > 0;
+                }
+                if MaschineUi.context == 2: MaschineSampling { vertical-stretch: 1; tint: tint; }
+                if MaschineUi.context == 3: MaschineBrowser { vertical-stretch: 1; tint: tint; }
+            }
+        }
+        HorizontalLayout {
+            height: 56px;
+            spacing: 4px;
+            VerticalLayout {
+                width: 62px;
+                spacing: 2px;
+                Text { text: MaschineUi.parameter-page; color: Theme.text-dim; font-size: 9px; overflow: elide; height: 24px; }
+                HorizontalLayout { spacing: 3px;
+                    MaschineButton { text: "‹"; width: 26px; clicked => { MaschineUi.parameter-page-step(-1); } }
+                    MaschineButton { text: "›"; width: 26px; clicked => { MaschineUi.parameter-page-step(1); } }
+                }
+            }
+            for parameter[i] in MaschineUi.parameters: MaschineKnob { horizontal-stretch: 1; min-width: 0px; parameter: parameter; tint: tint; changed(value) => { MaschineUi.set-parameter(i, value); } }
+        }
+        if MaschineUi.status != "": Text { text: MaschineUi.status; color: #ff9f0a; font-size: 10px; overflow: elide; height: 14px; }
+    }
+    if MaschineUi.instrument-menu-open: Rectangle {
+        background: #00000088;
+        TouchArea { clicked => { MaschineUi.instrument-menu-open = false; } }
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: 12px;
+            width: min(320px, parent.width - 24px);
+            height: parent.height - 24px;
+            background: Theme.panel-raised;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: 8px;
+                spacing: 6px;
+                HorizontalLayout {
+                    height: 26px;
+                    Text { text: "Instrument · " + MaschineUi.selected-sound-name; color: Theme.text; font-size: 12px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                    MaschineButton { text: "×"; width: 26px; clicked => { MaschineUi.instrument-menu-open = false; } }
+                }
+                ListView {
+                    vertical-stretch: 1;
+                    for instrument[i] in MaschineUi.instruments: Rectangle {
+                        height: 38px;
+                        border-radius: 4px;
+                        background: ta.has-hover ? Theme.control-pressed : Theme.panel;
+                        VerticalLayout {
+                            padding: 5px;
+                            spacing: 2px;
+                            Text { text: instrument.name; color: Theme.text; font-size: 11px; }
+                            Text { text: instrument.detail; color: Theme.text-dim; font-size: 9px; overflow: elide; }
+                        }
+                        ta := TouchArea { mouse-cursor: pointer; clicked => { MaschineUi.load-instrument(i); MaschineUi.instrument-menu-open = false; } }
+                    }
+                }
+            }
+        }
+    }
+}

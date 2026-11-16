@@ -1,10 +1,11 @@
 // The side panel's Lyrics tab: the lyrics of the playing track (or the
 // selected one, or a deck's), from an .lrc file beside it or its tags.
 // Timed lyrics follow the deck: the line sung now is lit and kept in view,
-// and a click on a line plays from there. Find looks the track up on
-// LRCLIB. PlayerLyrics shows the same lyrics large in Player mode.
+// and a click on a line plays from there. Find searches LRCLIB and Letras.
+// PlayerLyrics shows the same lyrics large in Player mode.
 import { Theme } from "theme.slint";
 import { ListView } from "scroll.slint";
+import { LineEdit, TextEdit } from "std-widgets.slint";
 
 export struct LyricLine {
     // m:ss, empty for plain lyrics.
@@ -12,7 +13,7 @@ export struct LyricLine {
     text: string,
 }
 
-// A record LRCLIB has for the track, in the Find list.
+// An online result in the Find list.
 export struct LyricMatch {
     title: string,
     // "Artist · Album · 3:41".
@@ -21,6 +22,8 @@ export struct LyricMatch {
     kind: int,
     // Its length is within 2 s of the track's, so its timing fits.
     fits: bool,
+    source: string,
+    quality: string,
 }
 
 export global LyricsUi {
@@ -53,6 +56,18 @@ export global LyricsUi {
     in property <string> find-note;
     in property <[LyricMatch]> found;
     callback find();
+    in-out property <string> query-artist;
+    in-out property <string> query-title;
+    // 0 all, 1 LRCLIB, 2 Letras.
+    in-out property <int> find-source;
+    callback search();
+    callback preview-found(row: int);
+    in property <int> selected: -1;
+    in-out property <string> preview;
+    in property <string> preview-title;
+    in property <string> preview-url;
+    in property <string> preview-note;
+    callback open-found();
     callback use-found(row: int);
     callback close-found();
     // Find lyrics online is off: the Find list says so and offers to turn it on.
@@ -215,14 +230,31 @@ component VocalSlider inherits Rectangle {
     }
 }
 
-// LRCLIB's records for the track, best first; Use saves one.
+// Online results are previewed before the DJ explicitly imports a selection.
 component FindList inherits VerticalLayout {
-    spacing: 4px;
+    spacing: 5px;
     HorizontalLayout {
         height: 26px;
         spacing: 6px;
         Text { text: "Find lyrics"; color: Theme.text; font-size: 13px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
         SmallButton { text: "Close"; clicked => { LyricsUi.close-found(); } }
+    }
+    HorizontalLayout {
+        height: 28px;
+        spacing: 5px;
+        LineEdit { text <=> LyricsUi.query-artist; placeholder-text: "Artist"; accepted => { LyricsUi.search(); } }
+        LineEdit { text <=> LyricsUi.query-title; placeholder-text: "Song title"; accepted => { LyricsUi.search(); } }
+    }
+    HorizontalLayout {
+        height: 25px;
+        spacing: 5px;
+        for source[i] in ["All", "LRCLIB", "Letras"]: SmallButton {
+            text: source;
+            primary: LyricsUi.find-source == i;
+            clicked => { LyricsUi.find-source = i; }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        SmallButton { text: "Search"; clicked => { LyricsUi.search(); } }
     }
     if LyricsUi.find-note != "": Text {
         text: LyricsUi.find-note;
@@ -235,12 +267,14 @@ component FindList inherits VerticalLayout {
         SmallButton { text: "Turn On and Find"; primary: true; clicked => { LyricsUi.enable-lookup(); } }
     }
     ListView {
-        vertical-stretch: 1;
+        vertical-stretch: LyricsUi.selected < 0 ? 1 : 0;
+        min-height: 68px;
+        max-height: LyricsUi.selected < 0 ? 100000px : 155px;
         for m[i] in LyricsUi.found: Rectangle {
-            height: 46px;
+            height: 64px;
             border-radius: Theme.radius;
-            background: mta.has-hover ? #ffffff0a : transparent;
-            mta := TouchArea { }
+            background: LyricsUi.selected == i ? Theme.accent.with-alpha(0.14) : mta.has-hover ? #ffffff0a : transparent;
+            mta := TouchArea { mouse-cursor: pointer; clicked => { LyricsUi.preview-found(i); } }
             HorizontalLayout {
                 padding-left: 6px;
                 padding-right: 6px;
@@ -249,37 +283,37 @@ component FindList inherits VerticalLayout {
                     horizontal-stretch: 1;
                     alignment: center;
                     Text { text: m.title; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
-                    Text {
-                        text: (m.fits ? "" : "Other length · ") + m.detail;
-                        color: m.fits ? Theme.text-dim : Theme.health-check;
-                        font-size: 11px;
-                        overflow: elide;
-                    }
+                    Text { text: m.detail; color: Theme.text-dim; font-size: 11px; overflow: elide; }
+                    Text { text: m.source + " · " + m.quality; color: m.fits ? Theme.label : Theme.health-check; font-size: 10px; overflow: elide; }
                 }
                 VerticalLayout {
                     alignment: center;
-                    Rectangle {
-                        height: 18px;
-                        width: kind-text.preferred-width + 12px;
-                        border-radius: 9px;
-                        background: m.kind == 0 ? Theme.accent.with-alpha(0.18) : #ffffff10;
-                        kind-text := Text {
-                            text: ["Synced", "Plain", "Instrumental"][m.kind];
-                            color: m.kind == 0 ? Theme.accent : Theme.text-dim;
-                            font-size: 10px;
-                            font-weight: 700;
-                        }
-                    }
-                }
-                VerticalLayout {
-                    alignment: center;
-                    if m.kind != 2: SmallButton { text: "Use"; primary: i == 0; clicked => { LyricsUi.use-found(i); } }
+                    Text { text: ["Synced", "Plain", "Instrumental"][m.kind]; color: m.kind == 0 ? Theme.accent : Theme.text-dim; font-size: 10px; }
+                    SmallButton { text: "Preview"; clicked => { LyricsUi.preview-found(i); } }
                 }
             }
         }
     }
+    if LyricsUi.selected >= 0: VerticalLayout {
+        vertical-stretch: 1;
+        spacing: 5px;
+        Text { text: LyricsUi.preview-title; color: Theme.text; font-size: 12px; font-weight: 600; overflow: elide; }
+        Text { text: LyricsUi.preview-note; color: Theme.text-dim; font-size: 11px; wrap: word-wrap; }
+        TextEdit { text <=> LyricsUi.preview; min-height: 75px; vertical-stretch: 1; wrap: word-wrap; }
+        Text { text: LyricsUi.preview-url; color: Theme.label; font-size: 10px; overflow: elide; }
+        HorizontalLayout {
+            alignment: start;
+            spacing: 6px;
+            SmallButton { text: "Abrir no site"; clicked => { LyricsUi.open-found(); } }
+            if LyricsUi.preview != "": SmallButton {
+                text: "Import selection";
+                primary: true;
+                clicked => { LyricsUi.use-found(LyricsUi.selected); }
+            }
+        }
+    }
     Text {
-        text: "From LRCLIB (lrclib.net). Saved as an .lrc file beside the track.";
+        text: "Import saves an .lrc with source attribution. Existing lyric files are backed up. Plain text keeps its original timing status.";
         color: Theme.label;
         font-size: 10px;
         wrap: word-wrap;
@@ -590,7 +624,7 @@ export component PlayerLyrics inherits Rectangle {
         TouchArea { }
         Rectangle {
             width: min(560px, parent.width - 32px);
-            height: min(460px, parent.height - 32px);
+            height: min(660px, parent.height - 32px);
             background: Theme.browser;
             border-radius: 8px;
             border-width: 1px;

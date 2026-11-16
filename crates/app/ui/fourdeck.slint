@@ -1,16 +1,13 @@
-// The 4-Deck layout, after djay Pro's Four Decks: four strips side by side,
-// decks 3, 1, 2 and 4 from the left, each with its header, a small mixer
-// channel, PLAY, CUE, the loop and pads. Under them a bar with each deck's
-// crossfader side, SYNC and tempo either side of the crossfader; the FX
-// are in the FX bar under that.
+// Complete deck editors, arranged in two rows or four across. The horizontal
+// arrangement keeps decks 3, 1, 2 and 4 aligned with the transport and FX bars.
 // A two-deck controller (the DDJ-FLX4) plays decks 1 and 2 until a strip's
 // deck number is clicked: then that side plays deck 3 or 4.
 import { TrackDrag } from "library.slint";
 import { InstrumentsUi } from "instruments.slint";
 import { Theme } from "theme.slint";
 import { ControlButton, ControlFader, Controls, Crossfader, CueHeadphones, StereoMeter, SyncButton } from "controls.slint";
-import { DeckInfo, Header, LiveStrip, LoopStepper, Pads, PadsUi, PlayButton, TempoStep } from "deck.slint";
-import { AudioSettings, Knob, ModeMenu, SideKnob } from "mixer.slint";
+import { Deck, DeckInfo, Header, LiveStrip, LoopStepper, Pads, PadsUi, PlayButton, TempoStep } from "deck.slint";
+import { AudioSettings, ExternalMixer, Knob, Mixer, ModeMenu, SideKnob } from "mixer.slint";
 
 // Which side of the crossfader a deck is on, as Mixxx's `orientation`:
 // 0 left, 1 thru (not faded), 2 right. Click to pick, as in djay.
@@ -205,6 +202,104 @@ export component DeckStrip inherits Rectangle {
         border-width: drop.has-drag || files-here ? 3px : 2px;
         border-color: drop.has-drag || files-here ? tint : tint.transparentize(0.55);
         background: drop.has-drag || files-here ? tint.transparentize(0.9) : transparent;
+    }
+}
+
+// A full editor and its channel stay together in either four-deck arrangement.
+component PerformanceDeck inherits Rectangle {
+    in property <int> deck;
+    in property <DeckInfo> info;
+    in property <image> overview;
+    in property <angle> spin;
+    out property <length> overview-width: editor.overview-width;
+    out property <length> overview-height: editor.overview-height;
+    property <string> group: "[Channel" + (deck + 1) + "]";
+    property <color> tint: Theme.deck-color(deck);
+    property <bool> external: Controls.value(Controls.resolve("[Master]", "external_mixer"), Controls.tick) > 0;
+    property <int> layer-index: Controls.resolve("[Controller]", Math.mod(deck, 2) == 0 ? "deck3" : "deck4");
+    background: Theme.panel;
+    HorizontalLayout {
+        spacing: 1px;
+        Rectangle {
+            width: external ? 28px : 72px;
+            background: Theme.panel-raised;
+            VerticalLayout {
+                padding: 5px;
+                spacing: 4px;
+                HorizontalLayout {
+                    height: 24px;
+                    spacing: 4px;
+                    Rectangle {
+                        width: 23px;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: tint;
+                        background: tint.with-alpha(0.15);
+                        Text { text: deck + 1; color: tint; font-size: 12px; font-weight: 700; }
+                        TouchArea { mouse-cursor: pointer; clicked => { Controls.set-value(layer-index, deck >= 2 ? 1 : 0); } }
+                    }
+                    if !external: CueHeadphones { group: group; tint: tint; width: 30px; }
+                }
+                if !external: HorizontalLayout { alignment: center; Knob { group: group; key: "pregain"; size: 24px; } }
+                for place in external ? 0 : 4: SideKnob { deck: deck; place: [2, 1, 0, 3][place]; size: 28px; cfx-arrow-left: false; }
+                HorizontalLayout {
+                    vertical-stretch: 1;
+                    spacing: 4px;
+                    alignment: center;
+                    if !external: ControlFader { group: group; key: "volume"; tint: tint; ticks: 5; width: 36px; }
+                    StereoMeter { group: group; }
+                }
+            }
+        }
+        editor := Deck {
+            horizontal-stretch: 1;
+            min-width: 0px;
+            deck: deck;
+            info: info;
+            overview: overview;
+            spin: spin;
+            mirrored: Math.mod(deck, 2) == 1;
+            show-pads: PadsUi.visible;
+            controller-layers: true;
+        }
+    }
+}
+
+export component FourDecks inherits Rectangle {
+    in property <bool> stacked: true;
+    in property <[DeckInfo]> decks;
+    in property <[image]> overviews;
+    in property <angle> spin-1;
+    in property <angle> spin-2;
+    out property <length> overview-width: stacked ? top-a.overview-width : row-a.overview-width;
+    out property <length> overview-height: stacked ? top-a.overview-height : row-a.overview-height;
+    property <bool> external: Controls.value(Controls.resolve("[Master]", "external_mixer"), Controls.tick) > 0;
+    VerticalLayout {
+        spacing: 1px;
+        HorizontalLayout {
+            height: stacked ? 272px : 0px;
+            visible: stacked;
+            spacing: 1px;
+            top-a := Deck { deck: 0; info: decks[0]; overview: overviews[0]; spin: spin-1; show-pads: PadsUi.visible; controller-layers: true; horizontal-stretch: 1; min-width: 400px; preferred-width: 400px; }
+            if !external: Mixer {}
+            if external: ExternalMixer {}
+            Deck { deck: 1; info: decks[1]; overview: overviews[1]; spin: spin-2; mirrored: true; show-pads: PadsUi.visible; controller-layers: true; horizontal-stretch: 1; min-width: 400px; preferred-width: 400px; }
+        }
+        HorizontalLayout {
+            height: stacked ? 352px : 0px;
+            visible: stacked;
+            spacing: 1px;
+            PerformanceDeck { deck: 2; info: decks[2]; overview: overviews[2]; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+            PerformanceDeck { deck: 3; info: decks[3]; overview: overviews[3]; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+        }
+    }
+    HorizontalLayout {
+        visible: !stacked;
+        spacing: 1px;
+        PerformanceDeck { deck: 2; info: decks[2]; overview: overviews[2]; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+        row-a := PerformanceDeck { deck: 0; info: decks[0]; overview: overviews[0]; spin: spin-1; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+        PerformanceDeck { deck: 1; info: decks[1]; overview: overviews[1]; spin: spin-2; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+        PerformanceDeck { deck: 3; info: decks[3]; overview: overviews[3]; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
     }
 }
 

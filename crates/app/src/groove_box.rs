@@ -23,6 +23,7 @@ pub(crate) const LAYOUT: f64 = 3.0;
 pub(crate) fn kept_keys() -> Vec<String> {
     let mut keys: Vec<String> = [
         "enabled",
+        "backend",
         "kit",
         "groove",
         "genre",

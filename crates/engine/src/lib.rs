@@ -43,6 +43,9 @@ pub mod loader;
 pub mod looper;
 pub mod loudness;
 pub mod lyrics;
+pub mod machine_capture;
+pub mod maschine;
+pub mod maschine_factory;
 pub mod meter;
 pub mod midi_clock;
 mod output;
@@ -147,6 +150,8 @@ pub struct AudioEngine {
     live_waves: Mutex<Option<[rtrb::Consumer<live_wave::LiveSlice>; NUM_DECKS]>>,
     /// Each Groove Box's hits as played, until the app takes them.
     groove_hits: Mutex<Option<[rtrb::Consumer<groove::GrooveHit>; NUM_DECKS]>>,
+    maschines: Vec<maschine::MaschineHandle>,
+    machine_capture: Vec<Arc<Mutex<machine_capture::CaptureHandle>>>,
     /// The master for broadcasting, until the broadcaster takes it.
     broadcast_feed: Mutex<Option<recorder::Feed>>,
     /// Picks the outputs MIDI clock goes to.
@@ -195,6 +200,19 @@ pub fn create_controls(registry: &Arc<ControlRegistry>) {
 }
 
 impl AudioEngine {
+    /// Access a deck's embedded Maschine document outside the audio callback.
+    pub fn maschine(&self, deck: usize) -> Option<maschine::MaschineHandle> {
+        self.maschines.get(deck).cloned()
+    }
+
+    /// Capture one deck before EQ, from a non-audio thread.
+    pub fn machine_capture(
+        &self,
+        deck: usize,
+    ) -> Option<Arc<Mutex<machine_capture::CaptureHandle>>> {
+        self.machine_capture.get(deck).cloned()
+    }
+
     /// Creates all engine controls in `registry` and starts audio output to
     /// the devices `setup` names. The engine runs at the main device's rate.
     pub fn start(registry: Arc<ControlRegistry>, setup: &AudioSetup) -> Self {
@@ -215,6 +233,8 @@ impl AudioEngine {
         let instrument_view = engine.instrument_view();
         let live_waves = engine.take_live_waves().expect("live waves");
         let groove_hits = engine.take_groove_hits().expect("groove hits");
+        let maschines = engine.take_maschine_handles();
+        let machine_capture = engine.take_machine_capture_handles();
         let plugins = plugin_helper().map(|helper| {
             plugins::PluginHost::start(
                 &registry,
@@ -266,6 +286,8 @@ impl AudioEngine {
             instrument_view,
             live_waves: Mutex::new(Some(live_waves)),
             groove_hits: Mutex::new(Some(groove_hits)),
+            maschines,
+            machine_capture,
             broadcast_feed: Mutex::new(broadcast_feed),
             midi_clock,
         }
@@ -733,6 +755,16 @@ impl AudioEngine {
     /// Each route's state, in the setup's order.
     pub fn route_status(&self) -> Vec<String> {
         self.output.borrow().route_status.clone()
+    }
+}
+
+impl Drop for AudioEngine {
+    fn drop(&mut self) {
+        for machine in &self.maschines {
+            if let Err(error) = machine.flush() {
+                eprintln!("Maschine autosave: {error}");
+            }
+        }
     }
 }
 

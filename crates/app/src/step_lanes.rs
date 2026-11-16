@@ -11,6 +11,7 @@ use std::collections::VecDeque;
 use opendj_control::{ControlHandle, ControlRegistry};
 use opendj_engine::groove::{fill_seed, groove_group, GrooveHit, GROOVES, ROWS, STEPS};
 use opendj_engine::groove_fills::{auto_fill, held_fill};
+use opendj_engine::maschine::{timeline, MaschineHandle, Mode, Timeline, PPQ};
 use opendj_engine::NUM_DECKS;
 use opendj_waveform::{Lanes, Mark, MarkKind, MAX_MARKS};
 
@@ -22,6 +23,109 @@ const HIT_LENGTH: f64 = 0.6;
 const KEEP_SECONDS: f64 = 10.0;
 /// Fills are drawn in Electric Lilac.
 const LILAC: [f32; 4] = [0.714, 0.612, 1.0, 1.0];
+
+/// The embedded instrument's upcoming events, from DECKARD's own scheduler.
+#[derive(Clone)]
+pub struct MaschineLanes {
+    handle: MaschineHandle,
+    backend: ControlHandle,
+    group: ControlHandle,
+    scene: ControlHandle,
+    position: ControlHandle,
+    playing: ControlHandle,
+    tempo: ControlHandle,
+    seen: Option<(u64, usize)>,
+    timeline: Timeline,
+}
+
+impl MaschineLanes {
+    pub fn new(registry: &ControlRegistry, deck: usize, handle: MaschineHandle) -> Self {
+        let group = format!("[Maschine{}]", deck + 1);
+        let control = |key| registry.get(&group, key).expect("Maschine lane control");
+        Self {
+            handle,
+            backend: registry
+                .get(&groove_group(deck), "backend")
+                .expect("Groove backend"),
+            group: control("group"),
+            scene: control("scene"),
+            position: control("position"),
+            playing: control("playing"),
+            tempo: control("tempo"),
+            seen: None,
+            timeline: Timeline::default(),
+        }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.backend.get_bool()
+    }
+
+    pub fn lanes(&mut self, start: f64, at: f64, ahead: f64, color: [f32; 4]) -> Lanes {
+        let mut lanes = Lanes {
+            count: 16,
+            tinted: 0,
+            marks: Vec::new(),
+            trace: UNDER_STEPS,
+            color,
+            lit: LILAC,
+        };
+        let revision = self.handle.snapshot_version();
+        let Some(project) = self.handle.snapshot_cached() else {
+            return lanes;
+        };
+        let group = self.group.get().round() as usize;
+        let scene = self.scene.get().round() as usize;
+        let Some(selected) = project.groups.get(group) else {
+            return lanes;
+        };
+        if !self.playing.get_bool() || selected.muted || scene >= project.scenes.len() {
+            return lanes;
+        }
+        let key = (revision, scene);
+        if self.seen != Some(key) {
+            self.timeline = timeline(&project, Mode::Scene(scene));
+            self.seen = Some(key);
+        }
+        let length = self.timeline.length.max(1) as f64;
+        let position = self.position.get();
+        let ticks_per_second = self.tempo.get().max(1.0) / 60.0 * PPQ as f64;
+        let end = position + ahead.max(0.0) * ticks_per_second;
+        let first = (position / length).floor() as i64;
+        let last = ((end / length).floor() as i64).min(first + MAX_MARKS as i64);
+        'passes: for pass in first..=last {
+            for event in &self.timeline.events {
+                if event.group != group
+                    || event.sound >= 16
+                    || event.midi.is_some()
+                    || event.cue.is_some()
+                    || event.probability <= 0
+                    || selected
+                        .sounds
+                        .get(event.sound)
+                        .is_none_or(|sound| sound.muted)
+                {
+                    continue;
+                }
+                let tick = event.tick as f64 + pass as f64 * length;
+                if tick < position || tick > end {
+                    continue;
+                }
+                let time = at + (tick - position) / ticks_per_second;
+                lanes.marks.push(Mark {
+                    start: time - start,
+                    end: time + event.length.max(1) as f64 / ticks_per_second - start,
+                    lane: (15 - event.sound) as u32,
+                    kind: MarkKind::Coming,
+                });
+                if lanes.marks.len() == MAX_MARKS {
+                    break 'passes;
+                }
+            }
+        }
+        lanes
+    }
+}
 
 /// The Groove Box controls the lanes read, for one deck.
 #[derive(Clone)]

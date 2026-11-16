@@ -17,7 +17,7 @@ import { CueList } from "cues.slint";
 import { ChecklistUi } from "checklist.slint";
 import { LyricsUi, WaveLyrics, LyricsLane, WaveLine } from "lyrics.slint";
 import { NowPlayingUi } from "nowplaying.slint";
-import { DeckStrip, FourDeckBar } from "fourdeck.slint";
+import { FourDecks, FourDeckBar } from "fourdeck.slint";
 import { LiteDeck, LiteMixer, LiteUi, PadBarHalf } from "lite.slint";
 import { FxBar } from "fxbar.slint";
 import { InstrumentsUi, LiveItem, ParamMatch, PresetItem, PresetUi } from "instruments.slint";
@@ -33,6 +33,7 @@ export { SourceUi, SourceTab, SearchItem, FoundRow, QueueLine, StatusLine } from
 export { TrackInfo, InfoField, InfoLine, TagChip, CoverChoice, ValueChoice } from "info.slint";
 export { FilterUi, FilterChip, FilterChoice, FilterSuggestion } from "filters.slint";
 export { SamplerUi, SamplerPad, SamplePack, SampleChoice } from "sampler.slint";
+export { MaschineUi, MaschineGroup, MaschineSound, MaschinePattern, MaschineScene, MaschineNote, MaschineParam, MaschineInstrument, MaschineBrowserItem, MaschineBrowserFilter } from "maschine.slint";
 export { ColumnUi, ListColumn }
 export { Tour, TourSetup }
 export { MapMode }
@@ -810,6 +811,21 @@ component FxButton inherits Rectangle {
     TourMark { id: "ui,fx_button"; }
 }
 
+component DeckArrangementButton inherits Rectangle {
+    in-out property <bool> stacked;
+    callback changed-to(stacked: bool);
+    height: 36px;
+    y: 8px;
+    width: 52px;
+    border-radius: 10px;
+    background: ta.pressed ? Theme.control-pressed : ta.has-hover ? #3a3a3d : Theme.panel-raised;
+    Text { text: stacked ? "2×2" : "1×4"; color: Theme.text; font-size: 13px; font-weight: 600; }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { stacked = !stacked; changed-to(stacked); }
+    }
+}
+
 // Shows or hides the pad grid in the decks: a small grid of eight pads,
 // two rows of four as on most controllers, lit while they show. Hidden,
 // 4-Deck strips get shorter and the browser gets the room.
@@ -1014,6 +1030,8 @@ export component AppWindow inherits Window {
     // for preparing tracks).
     in-out property <int> layout: 0;
     callback layout-changed(layout: int);
+    in-out property <bool> four-deck-stacked: true;
+    callback four-deck-stacked-changed(stacked: bool);
     // The large scrolling waveforms above the decks, from the top bar button.
     in-out property <bool> waveforms-visible: true;
     callback waveforms-visible-changed(on: bool);
@@ -1036,8 +1054,8 @@ export component AppWindow inherits Window {
     out property <length> waveform-height: max(1px, (waveforms.height - (wave-rows + 1) * 1px - (prep ? 24px : 0px)) / wave-rows);
     property <int> wave-rows: four ? 4 : prep ? 1 : 2;
     // From whichever layout's deck A is showing.
-    out property <length> overview-width: player ? 1px : four ? strip-1.overview-width : compact ? player-a.overview-width : prep ? prep-deck.overview-width : lite ? lite-a.overview-width : deck-a.overview-width;
-    out property <length> overview-height: player ? 1px : four ? strip-1.overview-height : compact ? player-a.overview-height : prep ? prep-deck.overview-height : lite ? lite-a.overview-height : deck-a.overview-height;
+    out property <length> overview-width: player ? 1px : four ? four-decks.overview-width : compact ? player-a.overview-width : prep ? prep-deck.overview-width : lite ? lite-a.overview-width : deck-a.overview-width;
+    out property <length> overview-height: player ? 1px : four ? four-decks.overview-height : compact ? player-a.overview-height : prep ? prep-deck.overview-height : lite ? lite-a.overview-height : deck-a.overview-height;
     property <bool> four: layout == 2 && !library-expanded;
     // 2-Deck, the lighter two-deck layout (lite.slint). A deck there holding
     // a Groove Box or an instrument shows the full deck, and the row is as
@@ -1422,6 +1440,7 @@ export component AppWindow inherits Window {
                     // menu bar).
                     if AppMenu.shown: AppMenuButton { }
                     LayoutPill { layout <=> root.layout; player-mic <=> root.player-mic; changed-to(l) => { layout-changed(l); } }
+                    if layout == 2: DeckArrangementButton { stacked <=> root.four-deck-stacked; changed-to(stacked) => { four-deck-stacked-changed(stacked); } }
                     if !player: WaveformsButton { on <=> root.waveforms-visible; changed-to(on) => { waveforms-visible-changed(on); } }
                     if !player: FxButton { on <=> root.fx-bar-visible; changed-to(on) => { fx-bar-visible-changed(on); } }
                     if layout == 2 || layout == 4: PadsButton { on <=> root.pads-visible; changed-to(on) => { pads-visible-changed(on); } }
@@ -1463,7 +1482,7 @@ export component AppWindow inherits Window {
                 // Not rounded or clipped: that renders into a cached layer, which
                 // would freeze the GPU-updated waveform images. Folded away while
                 // the library is expanded or the top bar button hides them.
-                height: library-expanded || !waveforms-visible || player ? 0px : four ? 213px : prep ? 200px : 144px;
+                height: library-expanded || !waveforms-visible || player ? 0px : four ? 104px : prep ? 200px : 144px;
                 visible: !library-expanded && waveforms-visible && !player;
                 background: Theme.well;
                 // Thin grey lines above, between and below the waveforms.
@@ -1590,17 +1609,15 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                // 4-Deck: four strips, decks 3, 1, 2 and 4, then the bar with the
-                // crossfader. Folded away, like the 2-Deck row, in the other
-                // layouts.
-                HorizontalLayout {
-                    spacing: 1px;
-                    height: four ? (PadsUi.visible ? 330px : 247px) : 0px;
+                // Both four-deck arrangements keep the complete instrument editors.
+                four-decks := FourDecks {
+                    height: four ? (four-deck-stacked ? 625px : 448px) : 0px;
                     visible: four;
-                    DeckStrip { deck: 2; info: decks[2]; overview: overview-3; horizontal-stretch: 1; min-width: 270px; preferred-width: 270px; }
-                    strip-1 := DeckStrip { deck: 0; info: decks[0]; overview: overview-1; horizontal-stretch: 1; min-width: 270px; preferred-width: 270px; }
-                    DeckStrip { deck: 1; info: decks[1]; overview: overview-2; horizontal-stretch: 1; min-width: 270px; preferred-width: 270px; }
-                    DeckStrip { deck: 3; info: decks[3]; overview: overview-4; horizontal-stretch: 1; min-width: 270px; preferred-width: 270px; }
+                    stacked: four-deck-stacked;
+                    decks: decks;
+                    overviews: [overview-1, overview-2, overview-3, overview-4];
+                    spin-1: spin-1;
+                    spin-2: spin-2;
                 }
 
                 // Over the expanded library: the deck headers either side of

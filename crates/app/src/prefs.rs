@@ -2241,8 +2241,8 @@ impl Prefs {
             switch(
                 crate::lrclib::ENABLED,
                 "Find lyrics online",
-                "Find in the Lyrics tab looks the track up on LRCLIB, a free lyrics \
-                 database, and saves what you pick as an .lrc file beside it.",
+                "Search in the Lyrics tab by artist and title, choose LRCLIB or Letras, \
+                 preview a result and save the lyrics you select beside the track.",
                 crate::lrclib::enabled(),
             ),
         ];

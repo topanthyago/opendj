@@ -2,8 +2,8 @@
 //! one selected, or a deck's), read from an `.lrc` file beside it or from
 //! its tags (see [`opendj_engine::lyrics`]). Timed lyrics follow the deck
 //! the track is on: the line sung now is lit, and a click on a line plays
-//! from it. Find looks the track up on LRCLIB when the DJ has turned that
-//! on (see [`crate::lrclib`]) and saves the pick as an `.lrc` beside it.
+//! from it. Find searches LRCLIB and Letras when enabled. A selection is
+//! previewed before explicit import, with a backup of existing lyric files.
 //!
 //! The same lyrics show large in Player mode when the Player bar's Lyrics
 //! button is on, and on the karaoke screen (see [`karaoke`]); both always
@@ -22,6 +22,7 @@ use opendj_engine::{deck_group, Source, Track, NUM_DECKS};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use super::Browser;
+use crate::letras;
 use crate::lrclib::{self, Found, Miss, Query};
 use crate::{settings, AppWindow, LyricLine, LyricMatch, LyricsUi};
 
@@ -35,8 +36,11 @@ const SELECTED: i32 = 1;
 /// 2 and 3 are decks A and B.
 const FIRST_DECK: i32 = 2;
 
-/// What a look-up on LRCLIB gives back.
-type Looked = Result<Vec<Found>, Miss>;
+/// Results and per-source status, including partial success.
+struct Looked {
+    found: Vec<Found>,
+    note: String,
+}
 
 /// A deck's controls the tab reads and sets.
 struct DeckPlay {
@@ -60,9 +64,12 @@ pub(super) struct LyricsState {
     current: i32,
     /// The current line split into sung and to come, as last shown.
     sung: (String, String),
-    /// A look-up on LRCLIB running, by generation, and what it found.
+    /// Online look-up running, by generation, and what it found.
     finding: Option<(u64, Receiver<Looked>)>,
     found: Vec<Found>,
+    query: Query,
+    preview: Option<(usize, Receiver<Result<String, letras::Error>>)>,
+    selected: Option<usize>,
     karaoke: karaoke::Karaoke,
     wave: wave::WaveState,
     /// Words being timed with Whisper (Time words).
@@ -95,6 +102,9 @@ impl LyricsState {
             sung: Default::default(),
             finding: None,
             found: Vec::new(),
+            query: Query::default(),
+            preview: None,
+            selected: None,
             karaoke: karaoke::Karaoke::new(registry),
             wave: Default::default(),
             timing: None,
@@ -115,7 +125,7 @@ fn describe(l: &Lyrics) -> String {
         Timing::Lines => "Timed by line",
         Timing::Plain => "Not timed",
     };
-    let from = match &l.origin {
+    let mut from = match &l.origin {
         Origin::Lrc(p) => p
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -123,6 +133,27 @@ fn describe(l: &Lyrics) -> String {
         Origin::Tag => "the file's tags".into(),
         Origin::Saved(_) => "saved by openDJ".into(),
     };
+    if let Origin::Lrc(path) | Origin::Saved(path) = &l.origin {
+        use std::io::Read;
+        let mut header = Vec::new();
+        if std::fs::File::open(path)
+            .and_then(|file| file.take(2048).read_to_end(&mut header))
+            .is_ok()
+        {
+            let header = String::from_utf8_lossy(&header);
+            if let Some(source) = header
+                .lines()
+                .take(12)
+                .find_map(|line| {
+                    line.strip_prefix("[source:")
+                        .and_then(|s| s.strip_suffix(']'))
+                })
+                .filter(|source| matches!(*source, "Letras" | "LRCLIB"))
+            {
+                from = format!("{source} · {from}");
+            }
+        }
+    }
     if l.auto {
         format!("Transcribed by openDJ · {from}")
     } else {
@@ -136,7 +167,7 @@ fn store() -> Option<std::path::PathBuf> {
 }
 
 /// A row of the Find list.
-fn match_row(f: &Found, duration: f64) -> LyricMatch {
+fn match_row(f: &Found, q: &Query) -> LyricMatch {
     let mut detail = f.artist.clone();
     if !f.album.is_empty() {
         detail.push_str(" · ");
@@ -156,7 +187,95 @@ fn match_row(f: &Found, duration: f64) -> LyricMatch {
         } else {
             1
         },
-        fits: f.fits(duration),
+        fits: f.duration <= 0.0 || f.fits(q.duration),
+        source: f.source.into(),
+        quality: match_quality(f, q).into(),
+    }
+}
+
+/// Keep every file that save() could replace. create_new protects earlier
+/// backups, and failure aborts import before any lyrics are changed.
+fn backup_lyrics(track: &std::path::Path, store: Option<&std::path::Path>) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut paths = vec![track.with_extension("lrc")];
+    if let Some(store) = store {
+        paths.push(lyrics::stored_path(store, track));
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    for path in paths {
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        let name = format!(
+            "{}.opendj-backup-{stamp}",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        );
+        let backup = path.with_file_name(name);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(backup)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+    }
+    Ok(())
+}
+
+fn match_quality(f: &Found, q: &Query) -> String {
+    let normalized = |s: &str| {
+        s.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
+    let names = normalized(&f.title) == normalized(&q.title)
+        && (q.artist.trim().is_empty() || normalized(&f.artist) == normalized(&q.artist));
+    let length = if f.duration <= 0.0 {
+        "length unavailable"
+    } else if f.fits(q.duration) {
+        "length fits"
+    } else {
+        "other length"
+    };
+    format!(
+        "{} · {length}",
+        if names {
+            "Artist/title match"
+        } else {
+            "Check artist/title"
+        }
+    )
+}
+
+fn lookup(q: &Query, source: i32) -> Looked {
+    let mut found = Vec::new();
+    let mut notes = Vec::new();
+    std::thread::scope(|scope| {
+        let lrclib = (source != 2).then(|| scope.spawn(|| lrclib::find(q)));
+        let letras = (source != 1).then(|| scope.spawn(|| letras::find(q)));
+        if let Some(job) = lrclib {
+            match job.join().unwrap_or(Err(Miss::Offline)) {
+                Ok(items) => found.extend(items),
+                Err(Miss::None) => notes.push("LRCLIB has no matching lyrics."),
+                Err(Miss::Offline) => notes.push("Couldn't reach LRCLIB."),
+            }
+        }
+        if let Some(job) = letras {
+            match job.join().unwrap_or(Err(letras::Error::Offline)) {
+                Ok(items) if items.is_empty() => notes.push("Letras has no matching songs."),
+                Ok(items) => found.extend(items),
+                Err(e) => notes.push(e.message()),
+            }
+        }
+    });
+    Looked {
+        found,
+        note: notes.join(" "),
     }
 }
 
@@ -179,7 +298,13 @@ impl Browser {
         let w = with.clone();
         ui.on_seek(move |line| w(&|b| b.seek_to_line(line)));
         let w = with.clone();
-        ui.on_find(move || w(&|b| b.find_lyrics()));
+        ui.on_find(move || w(&|b| b.open_find_lyrics()));
+        let w = with.clone();
+        ui.on_search(move || w(&|b| b.find_lyrics()));
+        let w = with.clone();
+        ui.on_preview_found(move |i| w(&|b| b.preview_found(i)));
+        let w = with.clone();
+        ui.on_open_found(move || w(&|b| b.open_found()));
         let w = with.clone();
         ui.on_use_found(move |i| w(&|b| b.use_found(i)));
         let w = with.clone();
@@ -343,24 +468,36 @@ impl Browser {
         }
         self.poll_karaoke(app);
         self.poll_find(&ui);
+        self.poll_lyric_preview(&ui);
     }
 
-    /// Looks the track shown up on LRCLIB, when the DJ has turned that on.
+    fn open_find_lyrics(&mut self) {
+        let Some(app) = self.app.upgrade() else {
+            return;
+        };
+        let Some((_, track)) = &self.lyrics.shown else {
+            return;
+        };
+        let ui = app.global::<LyricsUi>();
+        ui.set_query_artist(track.artist.as_str().into());
+        ui.set_query_title(track.title.as_str().into());
+        self.find_lyrics();
+    }
+
+    /// Search changes only the result list. Existing lyrics keep playing.
     fn find_lyrics(&mut self) {
         let Some(app) = self.app.upgrade() else {
             return;
         };
         let ui = app.global::<LyricsUi>();
+        self.close_found_ui(&ui);
         ui.set_finding(true);
-        ui.set_found(ModelRc::default());
-        self.lyrics.found.clear();
-        // Off: the list opens to say so, with a button that turns it on.
         ui.set_lookup_off(!lrclib::enabled());
         if !lrclib::enabled() {
             ui.set_find_note(
-                "Finding lyrics online is off. Turning it on sends the track's title, artist, \
-                 album and length to LRCLIB (lrclib.net) when you press Find. It's also in \
-                 Settings › Collection › Health."
+                "Finding lyrics online is off. LRCLIB receives artist/title/album/length. \
+                 Letras receives the song title. Selecting a Letras result requests its page. \
+                 Enable this here or in Settings › Collection › Health."
                     .into(),
             );
             return;
@@ -370,15 +507,21 @@ impl Browser {
             return;
         };
         let q = Query {
-            title: t.title.clone(),
-            artist: t.artist.clone(),
+            title: ui.get_query_title().trim().to_string(),
+            artist: ui.get_query_artist().trim().to_string(),
             album: t.album.clone(),
             duration: t.duration,
         };
-        ui.set_find_note("Looking on LRCLIB…".into());
+        if q.title.is_empty() {
+            ui.set_find_note("Enter a song title to search.".into());
+            return;
+        }
+        self.lyrics.query = q.clone();
+        let source = ui.get_find_source().clamp(0, 2);
+        ui.set_find_note("Searching…".into());
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(lrclib::find(&q));
+            let _ = tx.send(lookup(&q, source));
         });
         self.lyrics.finding = Some((self.lyrics.generation, rx));
     }
@@ -395,17 +538,114 @@ impl Browser {
         if !current {
             return;
         }
-        let duration = self.lyrics.shown.as_ref().map_or(0.0, |(_, t)| t.duration);
-        match result {
-            Ok(found) => {
-                let rows: Vec<LyricMatch> = found.iter().map(|f| match_row(f, duration)).collect();
-                ui.set_find_note(SharedString::new());
-                ui.set_found(ModelRc::new(VecModel::from(rows)));
-                self.lyrics.found = found;
+        let rows: Vec<LyricMatch> = result
+            .found
+            .iter()
+            .map(|f| match_row(f, &self.lyrics.query))
+            .collect();
+        ui.set_find_note(result.note.into());
+        ui.set_found(ModelRc::new(VecModel::from(rows)));
+        self.lyrics.found = result.found;
+    }
+
+    fn preview_found(&mut self, row: i32) {
+        let Some(app) = self.app.upgrade() else {
+            return;
+        };
+        let ui = app.global::<LyricsUi>();
+        let Some((index, f)) = usize::try_from(row)
+            .ok()
+            .and_then(|i| self.lyrics.found.get(i).map(|f| (i, f)))
+        else {
+            return;
+        };
+        self.lyrics.preview = None;
+        self.lyrics.selected = Some(index);
+        ui.set_selected(row);
+        ui.set_preview(f.text().into());
+        ui.set_preview_url(f.url.as_str().into());
+        ui.set_preview_title(format!("{} · {} · {}", f.artist, f.title, f.source).into());
+        ui.set_preview_note(
+            if f.instrumental {
+                "Instrumental — no lyrics to import."
+            } else if f.source == "Letras" {
+                "Original plain text. Timing is unavailable."
+            } else if f.is_synced() {
+                "Synced lyrics. Review timing and track version before importing."
+            } else {
+                "Plain text. Timing is unavailable."
             }
-            Err(Miss::None) => ui.set_find_note("LRCLIB has no lyrics for this track.".into()),
-            Err(Miss::Offline) => ui
-                .set_find_note("Couldn't reach LRCLIB. Check the connection and try again.".into()),
+            .into(),
+        );
+        if f.source == "Letras" && f.plain.is_empty() {
+            if !lrclib::enabled() {
+                ui.set_preview_note(
+                    "Online lookup is off. Enable it to load the song page.".into(),
+                );
+                return;
+            }
+            ui.set_preview_note("Loading original lyrics from Letras…".into());
+            let url = f.url.clone();
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(letras::lyrics(&url));
+            });
+            self.lyrics.preview = Some((index, rx));
+        }
+    }
+
+    fn poll_lyric_preview(&mut self, ui: &LyricsUi) {
+        let Some((index, rx)) = &self.lyrics.preview else {
+            return;
+        };
+        let Ok(result) = rx.try_recv() else {
+            return;
+        };
+        let index = *index;
+        self.lyrics.preview = None;
+        if self.lyrics.selected != Some(index) {
+            return;
+        }
+        match result {
+            Ok(text) => {
+                if let Some(f) = self.lyrics.found.get_mut(index) {
+                    f.plain = text.clone();
+                }
+                // A user may already have pasted text while the request ran.
+                if ui.get_preview().trim().is_empty() {
+                    ui.set_preview(text.into());
+                }
+                ui.set_preview_note(
+                    "Original plain text from Letras. Timing is unavailable.".into(),
+                );
+            }
+            Err(e) => ui.set_preview_note(
+                format!(
+                    "{} Copy the original lyrics from the site and paste them below to import.",
+                    e.message()
+                )
+                .into(),
+            ),
+        }
+    }
+
+    fn open_found(&mut self) {
+        let Some(index) = self.lyrics.selected else {
+            return;
+        };
+        let Some(f) = self.lyrics.found.get(index) else {
+            return;
+        };
+        let safe = if f.source == "Letras" {
+            letras::valid_url(&f.url)
+        } else {
+            f.url == "https://lrclib.net/"
+                || f.url
+                    .strip_prefix("https://lrclib.net/api/get/")
+                    .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+        };
+        if safe {
+            crate::spotify::open_in_browser(&f.url);
         }
     }
 
@@ -426,11 +666,37 @@ impl Browser {
         else {
             return;
         };
-        if f.instrumental || f.text().trim().is_empty() {
-            ui.set_find_note("That one is marked instrumental: no words to save.".into());
+        if self.lyrics.selected != usize::try_from(i).ok() {
             return;
         }
-        match lyrics::save(&path, store().as_deref(), f.text()) {
+        if self.lyrics.timing.is_some() {
+            ui.set_preview_note("Wait for word timing to finish before importing lyrics.".into());
+            return;
+        }
+        let text = ui.get_preview().to_string();
+        if f.instrumental {
+            ui.set_preview_note("This result is marked instrumental.".into());
+            return;
+        }
+        if lyrics::parse(&text).is_none() {
+            ui.set_preview_note("The preview has no lyric words to import.".into());
+            return;
+        }
+        let store = store();
+        if let Err(e) = backup_lyrics(&path, store.as_deref()) {
+            ui.set_preview_note(format!("Couldn't back up existing lyrics: {e}").into());
+            return;
+        }
+        let clean_tag = |value: &str| value.replace(['\r', '\n', '[', ']'], " ");
+        let imported = format!(
+            "[re:openDJ import]\n[source:{}]\n[url:{}]\n[ti:{}]\n[ar:{}]\n{}",
+            f.source,
+            f.url,
+            clean_tag(&f.title),
+            clean_tag(&f.artist),
+            text.trim()
+        );
+        match lyrics::save(&path, store.as_deref(), &imported) {
             Ok(_) => {
                 self.close_found_ui(&ui);
                 self.lyrics.wave.reload();
@@ -451,6 +717,13 @@ impl Browser {
     fn close_found_ui(&mut self, ui: &LyricsUi) {
         self.lyrics.finding = None;
         self.lyrics.found.clear();
+        self.lyrics.preview = None;
+        self.lyrics.selected = None;
+        ui.set_selected(-1);
+        ui.set_preview(SharedString::new());
+        ui.set_preview_url(SharedString::new());
+        ui.set_preview_title(SharedString::new());
+        ui.set_preview_note(SharedString::new());
         ui.set_finding(false);
         ui.set_lookup_off(false);
         ui.set_find_note(SharedString::new());
@@ -512,6 +785,41 @@ mod tests {
         assert_eq!(clock(0.0), "0:00");
         assert_eq!(clock(61.9), "1:01");
         assert_eq!(clock(600.0), "10:00");
+    }
+
+    #[test]
+    fn backs_up_exact_enhanced_lrc_and_saved_copy_before_import() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("opendj-lyric-backup-{stamp}"));
+        let saved = root.join("saved");
+        std::fs::create_dir_all(&saved).unwrap();
+        let track = root.join("Song.flac");
+        let sidecar = track.with_extension("lrc");
+        let stored = lyrics::stored_path(&saved, &track);
+        let original = b"\xef\xbb\xbf[00:01.00]<00:01.00>One <00:01.50>word\r\n";
+        std::fs::write(&sidecar, original).unwrap();
+        std::fs::write(&stored, b"[00:02.00]Previous stored copy").unwrap();
+        backup_lyrics(&track, Some(&saved)).unwrap();
+        lyrics::save(&track, Some(&saved), "[source:Letras]\nPlain imported text").unwrap();
+        let backups: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains(".opendj-backup-")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read(&backups[0]).unwrap(), original);
+        assert_eq!(std::fs::read_dir(&saved).unwrap().count(), 2);
+        let imported = lyrics::find_with(&track, Some(&saved)).unwrap();
+        assert_eq!(imported.timing(), Timing::Plain);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

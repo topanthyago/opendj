@@ -10,6 +10,11 @@ opendj-control = { path = "../control" }
 opendj-separation = { path = "../separation" }
 # Plugins run in a helper process; the engine only needs the client side.
 opendj-plugin-host = { path = "../plugin-host", default-features = false }
+# DECKARD supplies the Maschine project model and instrument, not audio I/O.
+deckard-engine = { git = "https://github.com/topanthyago/Deckard", rev = "0510e7aba372c9c5ab4cd5508c51d98eea717a3b", default-features = false }
+deckard-model = { git = "https://github.com/topanthyago/Deckard", rev = "0510e7aba372c9c5ab4cd5508c51d98eea717a3b" }
+deckard-doc = { git = "https://github.com/topanthyago/Deckard", rev = "0510e7aba372c9c5ab4cd5508c51d98eea717a3b" }
+mxprj = { git = "https://github.com/topanthyago/Deckard", rev = "0510e7aba372c9c5ab4cd5508c51d98eea717a3b" }
 cpal = "0.18"
 symphonia = { version = "0.6", features = ["all"] }
 lofty = "0.25"
@@ -20,6 +25,7 @@ rustfft = "6"
 matrixmultiply = { version = "0.3", features = ["std"] }
 signalsmith-stretch = "0.1"
 serde_json = "1"
+sha2 = "0.11"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 rusty_link = "0.4"
 # MIDI clock out to drum machines and other apps.

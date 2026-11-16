@@ -6,7 +6,7 @@
 //! replaced or ejected tracks go back over another, so they are freed off this
 //! thread.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use opendj_control::{ControlHandle, ControlRegistry};
@@ -1605,7 +1605,12 @@ pub struct Engine {
     /// Each deck's Groove Box (playing only while `[GrooveN],enabled`),
     /// its sound for this buffer, and the gain each deck is ducked by.
     grooves: Vec<GrooveBox>,
+    maschines: Vec<crate::maschine::Maschine>,
+    maschine_handles: Option<Vec<crate::maschine::MaschineHandle>>,
+    machine_capture: Vec<crate::machine_capture::CaptureTap>,
+    machine_capture_handles: Option<Vec<Arc<Mutex<crate::machine_capture::CaptureHandle>>>>,
     groove_buf: Vec<Vec<[f32; 2]>>,
+    maschine_cue_buf: Vec<Vec<[f32; 2]>>,
     /// Previous buffer's track RMS, before the Groove Box and channel EQ.
     /// The audio identity prevents a newly loaded track using a stale level.
     groove_leader_rms: [Option<(usize, f32)>; NUM_DECKS],
@@ -1847,7 +1852,7 @@ impl Engine {
         let (samplers, sampler_input) = Samplers::new(registry, sample_rate);
         let kits: Arc<[crate::kits::Kit]> = crate::kits::build(sample_rate).into();
         let mut groove_hit_rx = Vec::with_capacity(NUM_DECKS);
-        let grooves = (0..NUM_DECKS)
+        let grooves: Vec<_> = (0..NUM_DECKS)
             .map(|d| {
                 let mut g = GrooveBox::new(registry, d, kits.clone(), sample_rate);
                 let (tx, rx) = rtrb::RingBuffer::new(GROOVE_HITS_QUEUED);
@@ -1856,6 +1861,25 @@ impl Engine {
                 g
             })
             .collect();
+        let (maschines, maschine_handles): (Vec<_>, Vec<_>) = grooves
+            .iter()
+            .enumerate()
+            .map(|(d, groove)| {
+                crate::maschine::Maschine::new(
+                    registry,
+                    d,
+                    sample_rate,
+                    groove.c.clone(),
+                    kits.clone(),
+                )
+            })
+            .unzip();
+        let (machine_capture, machine_capture_handles): (Vec<_>, Vec<_>) = (0..NUM_DECKS)
+            .map(|_| {
+                let (tap, handle) = crate::machine_capture::channel(sample_rate as u32);
+                (tap, Arc::new(Mutex::new(handle)))
+            })
+            .unzip();
         let groove_hit_rx = groove_hit_rx.try_into().ok();
         let (looper_supply, looper_intake): (_, LooperIntake) = crate::looper::channel(NUM_DECKS);
         let loopers = Loopers::new(registry, NUM_DECKS, sample_rate, looper_intake);
@@ -1920,7 +1944,12 @@ impl Engine {
                 ],
                 samplers,
                 grooves,
+                maschines,
+                maschine_handles: Some(maschine_handles),
+                machine_capture,
+                machine_capture_handles: Some(machine_capture_handles),
                 groove_buf: vec![vec![[0.0; 2]; BLOCK]; NUM_DECKS],
+                maschine_cue_buf: vec![vec![[0.0; 2]; BLOCK]; NUM_DECKS],
                 groove_leader_rms: [None; NUM_DECKS],
                 duck_buf: vec![vec![1.0; BLOCK]; NUM_DECKS],
                 duck_env: [0.0; NUM_DECKS],
@@ -1981,6 +2010,16 @@ impl Engine {
         &mut self,
     ) -> Option<[rtrb::Consumer<crate::groove::GrooveHit>; NUM_DECKS]> {
         self.groove_hit_rx.take()
+    }
+
+    pub(crate) fn take_maschine_handles(&mut self) -> Vec<crate::maschine::MaschineHandle> {
+        self.maschine_handles.take().unwrap_or_default()
+    }
+
+    pub(crate) fn take_machine_capture_handles(
+        &mut self,
+    ) -> Vec<Arc<Mutex<crate::machine_capture::CaptureHandle>>> {
+        self.machine_capture_handles.take().unwrap_or_default()
     }
 
     /// The other end of the broadcast's tap; there is only one.
@@ -2276,8 +2315,15 @@ impl Engine {
             } else if live > 0 && groove && !self.groove_seen[deck] {
                 self.decks[deck].c.live_input.set(0.0);
             }
+            let groove = self.grooves[deck].enabled();
             let d = &mut self.decks[deck];
-            if d.live_input() == 0 && !looper {
+            if groove && !self.groove_seen[deck] {
+                if d.side_before_live.is_none() {
+                    d.side_before_live = Some(d.c.orientation.get());
+                }
+                d.c.orientation.set(1.0);
+            }
+            if d.live_input() == 0 && !looper && !groove {
                 if let Some(side) = d.side_before_live.take() {
                     d.c.orientation.set(side);
                 }
@@ -3458,11 +3504,21 @@ impl Engine {
         // leading deck (the one SYNC follows, else the first playing), else
         // Link's, else their own tempo.
         let mut groove_buf = std::mem::take(&mut self.groove_buf);
+        let mut maschine_cue_buf = std::mem::take(&mut self.maschine_cue_buf);
+        for cue in &mut maschine_cue_buf {
+            cue[..frames].fill([0.0; 2]);
+        }
         let mut duck_buf = std::mem::take(&mut self.duck_buf);
         let mut track_energy = [0.0f64; NUM_DECKS];
         let mut break_leader = None;
         let groove_on: [bool; NUM_DECKS] =
             std::array::from_fn(|i| self.grooves[i].enabled() && self.decks[i].track.is_none());
+        for (i, on) in groove_on.iter().enumerate() {
+            self.maschines[i].poll();
+            if !*on || !self.grooves[i].c.backend.get_bool() {
+                self.maschines[i].suspend();
+            }
+        }
         for g in duck_buf.iter_mut() {
             g[..frames].fill(1.0);
         }
@@ -3510,12 +3566,39 @@ impl Engine {
                 let mut kicks = [0usize; 32];
                 let mut n = 0;
                 let play = self.decks[i].c.play.get_bool();
-                g.render(play, source, &mut groove_buf[i][..frames], |f| {
-                    if n < kicks.len() {
-                        kicks[n] = f;
-                        n += 1;
+                if g.c.backend.get_bool() && self.maschines[i].controls.ready.get_bool() {
+                    if !self.maschines[i].active() {
+                        g.restart_clock();
                     }
-                });
+                    let break_start = g.c.break_active.get_bool();
+                    // Advance the original scheduler, but do not emit its audio
+                    // or waveform hits: DECKARD supplies the actual voices.
+                    let waveform = g.hit_tx.take();
+                    g.render(play, source, &mut groove_buf[i][..frames], |_| {});
+                    g.hit_tx = waveform;
+                    self.maschines[i].render(
+                        play,
+                        source,
+                        g.step_signals(),
+                        &g.c,
+                        break_start,
+                        &mut groove_buf[i][..frames],
+                        &mut maschine_cue_buf[i][..frames],
+                        |f| {
+                            if n < kicks.len() {
+                                kicks[n] = f;
+                                n += 1;
+                            }
+                        },
+                    );
+                } else {
+                    g.render(play, source, &mut groove_buf[i][..frames], |f| {
+                        if n < kicks.len() {
+                            kicks[n] = f;
+                            n += 1;
+                        }
+                    });
+                }
                 let target = (g.c.duck_deck.get().round() as usize).wrapping_sub(1);
                 if target < NUM_DECKS && target != i {
                     let depth = 1.0 - 10f32.powf(-(g.c.duck_amount.get() as f32) / 20.0);
@@ -3670,6 +3753,7 @@ impl Engine {
                 let gains = std::array::from_fn(|k| p.eq_from[k] + (p.eq_to[k] - p.eq_from[k]) * r);
                 let pre = lerp(p.pre);
                 s = [s[0] * pre, s[1] * pre];
+                self.machine_capture[i].push(s);
                 // A live deck's sound for its waveform, after the trim and
                 // before the EQ, as a track's waveform shows the track.
                 if live_on[i] > 0 || groove_on[i] || looper_on[i] {
@@ -3722,6 +3806,8 @@ impl Engine {
                     cue[0] += s[0];
                     cue[1] += s[1];
                 }
+                cue[0] += maschine_cue_buf[i][f][0];
+                cue[1] += maschine_cue_buf[i][f][1];
                 if external {
                     continue;
                 }
@@ -3915,6 +4001,7 @@ impl Engine {
         });
         self.click_buf = click_buf;
         self.groove_buf = groove_buf;
+        self.maschine_cue_buf = maschine_cue_buf;
         self.looper_buf = looper_buf;
         self.duck_buf = duck_buf;
         self.main_buf = main_buf;
@@ -7499,6 +7586,94 @@ mod tests {
         load(&mut input, 1, short_track(120.0, 4.0));
         run(&mut engine, 0.05);
         assert!(!g("enabled").get_bool());
+    }
+
+    #[test]
+    fn embedded_maschine_plays_through_normal_deck_engine() {
+        let (reg, mut engine, _input) = setup();
+        let groove = |k: &str| reg.get("[Groove3]", k).unwrap();
+        let machine = |k: &str| reg.get("[Maschine3]", k).unwrap();
+        let channel = |k: &str| reg.get("[Channel3]", k).unwrap();
+        assert_eq!(channel("orientation").get(), 0.0);
+        reg.get("[Master]", "crossfader").unwrap().set(1.0);
+        groove("enabled").set_bool(true);
+        groove("backend").set(1.0);
+        channel("play").set_bool(true);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !machine("ready").get_bool() && Instant::now() < deadline {
+            run(&mut engine, 0.02);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            machine("ready").get_bool(),
+            "embedded backend failed to initialize"
+        );
+        assert_eq!(channel("orientation").get(), 1.0, "Groove uses Thru");
+        assert!(
+            run(&mut engine, 0.5) > 0.001,
+            "embedded instrument reaches the deck channel"
+        );
+        channel("volume").set(0.0);
+        run(&mut engine, 0.1);
+        assert!(
+            run(&mut engine, 0.5) < 1e-3,
+            "deck fader controls embedded audio"
+        );
+        groove("enabled").set_bool(false);
+        run(&mut engine, 0.02);
+        assert_eq!(
+            channel("orientation").get(),
+            0.0,
+            "the deck's original side returns"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires OPENDJ_TEST_ALLOW_FACTORY and the curated factory manifest"]
+    fn embedded_factory_bootstraps_through_normal_engine() {
+        assert!(std::env::var_os("OPENDJ_TEST_ALLOW_FACTORY").is_some());
+        assert!(std::env::var_os("OPENDJ_MASCHINE_FACTORY_KITS").is_some());
+        let (reg, mut engine, _input) = setup();
+        let handles = engine.take_maschine_handles();
+        assert!(
+            handles[0].snapshot_cached().is_none(),
+            "idle decks remain lazy"
+        );
+        reg.get("[Groove3]", "enabled").unwrap().set_bool(true);
+        reg.get("[Groove3]", "backend").unwrap().set(1.0);
+        let ready = reg.get("[Maschine3]", "ready").unwrap();
+        let error = reg.get("[Maschine3]", "error").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(180);
+        while !ready.get_bool() && !error.get_bool() && Instant::now() < deadline {
+            run(&mut engine, 0.02);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            ready.get_bool(),
+            "factory did not initialize: {:?}",
+            handles[2].last_error()
+        );
+        let project = handles[2].snapshot_cached().expect("project snapshot");
+        assert_eq!(project.groups.len(), 8);
+        assert!(project.groups.iter().all(|g| g.sounds.len() == 16
+            && g.sounds
+                .iter()
+                .all(|s| s.sampler.as_ref().is_some_and(|s| !s.zones.is_empty()))));
+        assert_eq!(project.scenes.len(), 33);
+        assert_eq!(project.scenes[0].patterns.len(), 1);
+        assert!(
+            handles[0].snapshot_cached().is_none(),
+            "other decks were not initialized"
+        );
+        handles[2].flush().unwrap();
+        let backup = std::env::temp_dir()
+            .join(format!("opendj-maschine-tests-{}", std::process::id()))
+            .join("deck3")
+            .join("initial-legacy.mxprj");
+        assert!(
+            backup.is_file(),
+            "legacy document is backed up before factory import"
+        );
     }
 
     #[test]

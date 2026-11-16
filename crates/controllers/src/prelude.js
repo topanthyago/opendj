@@ -59,6 +59,15 @@
     };
 
     globalThis.engine = {
+        // openDJ's embedded DECKARD surface. The MIDI mapping remains the
+        // controller's only owner and transports returned display packets.
+        maschine: deck => ({
+            open: () => JSON.parse(native.maschine(Number(deck), "open", [])),
+            input: bytes => JSON.parse(native.maschine(Number(deck), "input", Array.from(bytes))),
+            tick: () => JSON.parse(native.maschine(Number(deck), "tick", [])),
+            repaint: () => JSON.parse(native.maschine(Number(deck), "repaint", [])),
+            close: () => JSON.parse(native.maschine(Number(deck), "close", [])),
+        }),
         getValue: (group, name) => native.get(String(group), String(name)),
         setValue(group, name, value) {
             const v = numberOrNaN(value);

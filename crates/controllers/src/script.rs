@@ -293,6 +293,11 @@ fn natives<'js>(ctx: &Ctx<'js>, host: &Rc<RefCell<Host>>) -> rquickjs::Result<Ob
         }};
     }
     native!("get", |h, g: String, k: String| h.resolve(&g, &k).get());
+    native!("maschine", |h,
+                         deck: usize,
+                         command: String,
+                         data: Vec<u8>| h
+        .maschine(deck, &command, &data));
     native!("set", |h, g: String, k: String, v: f64| h
         .set_value(&g, &k, v));
     native!("getParameter", |h, g: String, k: String| h

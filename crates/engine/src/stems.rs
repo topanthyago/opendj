@@ -276,6 +276,10 @@ impl Stems {
     }
 
     #[inline]
+    pub(crate) fn has_frame(&self, i: usize) -> bool {
+        self.frame_at(i).is_some()
+    }
+
     fn frame_at(&self, i: usize) -> Option<&StemFrame> {
         self.chunks
             .get(i / CHUNK)

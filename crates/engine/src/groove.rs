@@ -92,8 +92,11 @@ const MAX_BEND: f64 = 0.05;
 const CHOKE_FRAMES: usize = 64;
 
 /// The controls of one Groove Box.
+#[derive(Clone)]
 pub struct GrooveControls {
     pub enabled: ControlHandle,
+    /// 0: the original Groove Box; 1: the embedded Maschine engine.
+    pub backend: ControlHandle,
     pub kit: ControlHandle,
     pub groove: ControlHandle,
     pub groove_queued: ControlHandle,
@@ -192,6 +195,7 @@ impl GrooveControls {
         let most = lib.iter().map(|g| g.grooves.len()).max().unwrap_or(0) as f64;
         let c = Self {
             enabled: reg.toggle(g, "enabled"),
+            backend: reg.create(g, "backend", 0.0, 0.0, 1.0, Behavior::Free),
             kit: reg.create(g, "kit", 0.0, 0.0, kit_count - 1.0, Behavior::Free),
             groove: reg.create(g, "groove", 0.0, 0.0, (GROOVES - 1) as f64, Behavior::Free),
             groove_queued: reg.indicator(g, "groove_queued", (GROOVES - 1) as f64),
@@ -698,6 +702,17 @@ pub fn fill_seed(deck: usize) -> u32 {
 }
 
 const MAX_HITS: usize = 64;
+const MAX_STEP_SIGNALS: usize = 64;
+
+/// A sequencer boundary, for an embedded instrument using the same fills and
+/// break detector. The signal describes the state from this frame onward.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct GrooveStep {
+    pub frame: usize,
+    pub step: usize,
+    pub beat: f64,
+    pub break_active: bool,
+}
 
 /// A causal detector for a large drop in the leading track's clean audio.
 /// The held reference and separate entry/exit thresholds avoid mistaking a
@@ -850,6 +865,8 @@ pub struct GrooveBox {
     pub last_bpm: f64,
     rate: f64,
     hits: [Hit; MAX_HITS],
+    step_signals: [GrooveStep; MAX_STEP_SIGNALS],
+    step_count: usize,
     /// A controller's pads (see [`crate::groove_pads`]).
     pub pads: PadSurface,
     /// A live hit recorded into a step still to come: that step skips the
@@ -891,6 +908,8 @@ impl GrooveBox {
             last_bpm: DEFAULT_BPM,
             rate,
             hits: [Hit::default(); MAX_HITS],
+            step_signals: [GrooveStep::default(); MAX_STEP_SIGNALS],
+            step_count: 0,
             pads,
             skip: [None; ROWS],
             key: None,
@@ -933,6 +952,17 @@ impl GrooveBox {
 
     pub fn enabled(&self) -> bool {
         self.c.enabled.get_bool()
+    }
+
+    pub(crate) fn step_signals(&self) -> &[GrooveStep] {
+        &self.step_signals[..self.step_count]
+    }
+
+    /// Start the embedded scheduler in phase with a newly selected backend.
+    pub(crate) fn restart_clock(&mut self) {
+        self.clock.stop();
+        self.was_running = false;
+        self.skip.fill(None);
     }
 
     /// Listen to the leading deck before its EQ/fader, from the previous
@@ -981,6 +1011,7 @@ impl GrooveBox {
         mut kick: impl FnMut(usize),
     ) {
         out.iter_mut().for_each(|s| *s = [0.0; 2]);
+        self.step_count = 0;
         let frames = out.len();
         let genre = self.c.genre.get().round() as usize;
         let (chosen, partner) = self.c.slots();
@@ -1058,6 +1089,8 @@ impl GrooveBox {
             let in_fill = &mut self.in_fill;
             let pending_set = &mut self.pending_set;
             let breaks = &mut self.breaks;
+            let step_signals = &mut self.step_signals;
+            let step_count = &mut self.step_count;
             let mut crossed_jump = false;
             span.steps_with_swing(
                 frames,
@@ -1087,6 +1120,15 @@ impl GrooveBox {
                     }
                     bar_played = true;
                     last_step = Some(step);
+                    if *step_count < MAX_STEP_SIGNALS {
+                        step_signals[*step_count] = GrooveStep {
+                            frame,
+                            step,
+                            beat,
+                            break_active: breaks.active,
+                        };
+                        *step_count += 1;
+                    }
                     if breaks.active {
                         *in_fill = false;
                         *crash_next = false;

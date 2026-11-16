@@ -3,12 +3,527 @@
 //! scratch/brake filters. Script natives and MIDI input both go through here.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use opendj_control::{Behavior, ConfigKey, ControlHandle, ControlRegistry};
 
 use crate::pickup::{self, Takeover};
+
+/// The embedded Maschine document, as the existing controller thread sees it.
+/// The app supplies snapshots and queues actions onto its document-owning thread.
+/// This interface never opens a MIDI or audio device.
+pub trait MaschineProvider: Send + Sync {
+    /// Decks count from one, matching `[MaschineN]` and `[GrooveN]`.
+    fn view(&self, deck: usize) -> Option<deckard_surface::View>;
+    fn dispatch(&self, deck: usize, actions: Vec<deckard_surface::Action>);
+    fn contextual_wheel(
+        &self,
+        _deck: usize,
+        action: deckard_surface::Action,
+        _group: usize,
+        _sound: Option<usize>,
+    ) -> deckard_surface::Action {
+        action
+    }
+    fn error(&self, _deck: usize) -> Option<String> {
+        None
+    }
+}
+
+pub(crate) type MaschineSource = Arc<RwLock<Option<Arc<dyn MaschineProvider>>>>;
+
+struct MaschineSurface {
+    device: deckard_surface::device::Device,
+    mode: u8,
+    sampling: bool,
+    held: HashSet<u8>,
+    physical: HashSet<u8>,
+    pinned: HashSet<u8>,
+    encoders: HashMap<u8, u8>,
+    taps: Vec<Instant>,
+    browsing: bool,
+    multi_select: bool,
+    duplicate_from: Option<(u8, usize)>,
+    pattern_bank: usize,
+    scene_bank: usize,
+    step_page: usize,
+    erase_sounds: HashMap<u8, usize>,
+    erase_groups: HashSet<usize>,
+    pads: HashSet<u8>,
+}
+
+impl MaschineSurface {
+    fn new() -> Self {
+        Self {
+            device: deckard_surface::device::Device::new(
+                "maschine_mk2",
+                std::env::var_os("OPENDJ_MASCHINE_CONTROLLER").map(Into::into),
+            ),
+            mode: 0,
+            sampling: false,
+            held: HashSet::new(),
+            physical: HashSet::new(),
+            pinned: HashSet::new(),
+            encoders: HashMap::new(),
+            taps: Vec::new(),
+            browsing: false,
+            multi_select: false,
+            duplicate_from: None,
+            pattern_bank: 0,
+            scene_bank: 0,
+            step_page: 0,
+            erase_sounds: HashMap::new(),
+            erase_groups: HashSet::new(),
+            pads: HashSet::new(),
+        }
+    }
+
+    /// Add MK2 secondary gestures around the existing DECKARD device script.
+    /// Returning actions replaces that message's app requests while preserving
+    /// the script's internal encoder counters and display-page state.
+    fn gesture(
+        &mut self,
+        bytes: &[u8],
+        view: &deckard_surface::View,
+        keyboard: bool,
+        now: Instant,
+    ) -> Option<Vec<deckard_surface::Action>> {
+        use deckard_surface::Action as A;
+        if bytes.len() != 3 {
+            return None;
+        }
+        let (status, key, value) = (bytes[0] & 0xf0, bytes[1], bytes[2]);
+        let shift = self.held.contains(&49);
+        if (status == 0x80 || (status == 0x90 && value == 0)) && (36..=51).contains(&key) {
+            self.erase_sounds.remove(&(key - 35));
+        }
+        if status == 0x90 && value > 0 && (36..=51).contains(&key) {
+            let pad = key - 35;
+            if self.held.contains(&2) && self.mode == 1 && !self.sampling {
+                let step = view.grid.step_ticks.max(1);
+                let first = ((view.pattern_start + step - 1) / step) * step;
+                let at = first + (self.step_page * 16 + usize::from(pad - 1)) as i64 * step;
+                return Some(vec![A::Events("erase_step", at)]);
+            }
+            if self.held.contains(&2) && view.playing && !self.sampling {
+                let target = view.group * 16 + usize::from(pad - 1);
+                self.erase_sounds.insert(pad, target);
+                return Some(vec![A::Events("erase_sound_window", target as i64)]);
+            }
+            if self.held.contains(&29) && (self.mode == 2 || self.mode == 3) {
+                let slot = if self.mode == 2 {
+                    self.pattern_bank
+                } else {
+                    self.scene_bank
+                } * 16
+                    + usize::from(pad - 1);
+                let index = if self.mode == 2 {
+                    view.groups
+                        .get(view.group)
+                        .and_then(|g| g.patterns.iter().position(|p| p.slot == slot))
+                } else {
+                    (slot < view.scenes.len()).then_some(slot)
+                };
+                let Some((mode, from)) = self.duplicate_from else {
+                    self.duplicate_from = index.map(|index| (self.mode, index));
+                    return Some(Vec::new());
+                };
+                if mode != self.mode {
+                    self.duplicate_from = index.map(|index| (self.mode, index));
+                    return Some(Vec::new());
+                }
+                self.duplicate_from = None;
+                if self.mode == 3 {
+                    return Some(vec![A::CopyScene {
+                        from,
+                        to: slot.min(view.scenes.len()),
+                    }]);
+                }
+                if let Some(to) = index {
+                    return Some(vec![A::CopyPattern {
+                        group: view.group,
+                        from,
+                        to,
+                    }]);
+                }
+                let patterns = &view.groups[view.group].patterns;
+                let to = patterns
+                    .iter()
+                    .position(|p| p.slot > slot)
+                    .unwrap_or(patterns.len());
+                return Some(vec![
+                    A::NewPatternAt {
+                        group: view.group,
+                        slot,
+                    },
+                    A::CopyPattern {
+                        group: view.group,
+                        from: from + usize::from(to <= from),
+                        to,
+                    },
+                ]);
+            }
+            if shift && self.held.contains(&30) {
+                return Some(vec![
+                    A::FocusSound(usize::from(pad - 1)),
+                    A::Events("select_sound", i64::from(pad - 1)),
+                ]);
+            }
+            if self.held.contains(&30) && self.multi_select {
+                return Some(vec![
+                    A::FocusSound(usize::from(pad - 1)),
+                    A::Events("select_sound_toggle", i64::from(pad - 1)),
+                ]);
+            }
+            if shift {
+                let action = match pad {
+                    1 => A::Edit("undo"),
+                    2 => A::Edit("redo"),
+                    3 => A::Edit("undo_step"),
+                    4 => A::Edit("redo_step"),
+                    5 => A::Events("quantize", 0),
+                    6 => A::Events("quantize_half", 0),
+                    7 => A::Events("nudge", -1),
+                    8 => A::Events("nudge", 1),
+                    9 => A::Events("clear_all", 1),
+                    10 => A::Edit("clear_modulation"),
+                    11 => A::Edit("copy"),
+                    12 => A::Edit("paste"),
+                    13..=16 => A::Scale {
+                        root: view.scale_root
+                            + match pad {
+                                13 => -1,
+                                14 => 1,
+                                15 => -12,
+                                _ => 12,
+                            },
+                        bank: view.scale_bank,
+                        kind: view.scale_kind,
+                    },
+                    _ => return None,
+                };
+                return Some(vec![action]);
+            }
+            if keyboard
+                && self.mode == 0
+                && !self.sampling
+                && ![2, 29, 30, 31, 33].iter().any(|k| self.held.contains(k))
+            {
+                return Some(Vec::new());
+            }
+        }
+        if status != 0xb0 {
+            return None;
+        }
+        if (15..=23).contains(&key) {
+            let old = self.encoders.insert(key, value)?;
+            let delta = (i32::from(value) - i32::from(old) + 192) % 128 - 64;
+            if self.held.contains(&4) {
+                let action = match key {
+                    16 => A::Grid(
+                        "step",
+                        (view.grid.step + i64::from(delta.signum())).clamp(0, 15),
+                    ),
+                    17 => A::Grid(
+                        "nudge",
+                        (view.grid.nudge + i64::from(delta.signum())).clamp(0, 4),
+                    ),
+                    18 => A::Grid(
+                        "perform",
+                        (view.grid.perform + i64::from(delta.signum())).clamp(0, 6),
+                    ),
+                    _ => return Some(Vec::new()),
+                };
+                return Some(vec![action]);
+            }
+            if self.held.contains(&10) && key == 16 {
+                let rate = view
+                    .note_repeat
+                    .settings
+                    .iter()
+                    .find(|s| s.key == "rate")
+                    .map_or(240.0, |s| s.value);
+                return Some(vec![A::Repeat(
+                    "rate",
+                    (rate * 2f64.powf(-f64::from(delta) / 32.0)).clamp(15.0, 3840.0),
+                )]);
+            }
+            if self.held.contains(&27) {
+                let sound = view
+                    .groups
+                    .get(view.group)
+                    .and_then(|g| g.sounds.get(view.sound));
+                let Some(sound) = sound else {
+                    return Some(Vec::new());
+                };
+                let (field, shown, max) = match key {
+                    16 => ("choke_group", sound.choke_group, 8),
+                    17 => ("choke_mode", sound.choke_mode, 1),
+                    18 => ("link_group", sound.link_group, 8),
+                    19 => ("link_mode", sound.link_mode, 1),
+                    _ => return Some(Vec::new()),
+                };
+                return Some(vec![A::SoundSetting(
+                    field,
+                    (shown + i64::from(delta.signum())).clamp(0, max),
+                )]);
+            }
+            return None;
+        }
+        if value == 0 {
+            if key == 2 {
+                self.erase_sounds.clear();
+                self.erase_groups.clear();
+            }
+            if (80..=87).contains(&key) {
+                self.erase_groups.remove(&usize::from(key - 80));
+            }
+            if key == 29 {
+                self.duplicate_from = None;
+            }
+            return None;
+        }
+        if (80..=87).contains(&key) && self.held.contains(&2) && view.playing {
+            let group = usize::from(key - 80);
+            self.erase_groups.insert(group);
+            return Some(vec![A::Events("erase_group_window", group as i64)]);
+        }
+        if self.mode == 1 {
+            if key == 6 || key == 46 {
+                self.step_page = self.step_page.saturating_add(1);
+            }
+            if key == 5 || key == 45 {
+                self.step_page = self.step_page.saturating_sub(1);
+            }
+        }
+        if (80..=87).contains(&key) && self.held.contains(&29) {
+            let to = usize::from(key - 80);
+            if let Some((4, from)) = self.duplicate_from {
+                self.duplicate_from = None;
+                return Some(vec![A::CopyGroup { from, to }]);
+            }
+            self.duplicate_from = Some((4, to));
+            return Some(Vec::new());
+        }
+        if self.mode == 2 || self.mode == 3 {
+            let bank = if self.mode == 2 {
+                &mut self.pattern_bank
+            } else {
+                &mut self.scene_bank
+            };
+            if key == 47 || key == 46 {
+                *bank = bank.saturating_add(1);
+            }
+            if key == 48 || key == 45 {
+                *bank = bank.saturating_sub(1);
+            }
+        }
+        if key == 39 {
+            if let Some(mode) = [10, 4, 27, 30, 31, 33]
+                .into_iter()
+                .find(|k| self.held.contains(k))
+            {
+                if !self.pinned.insert(mode) {
+                    self.pinned.remove(&mode);
+                }
+                return Some(Vec::new());
+            }
+        }
+        if key == 33 && shift {
+            return Some(vec![A::ChokeAll]);
+        }
+        if key == 11 && shift {
+            return Some(vec![A::SlotEdit("add")]);
+        }
+        if key == 27 && shift {
+            return Some(vec![A::KeyboardMode(!keyboard)]);
+        }
+        if key == 36 && !self.browsing && !self.sampling {
+            if shift {
+                return Some(vec![A::Metronome(!view.metronome)]);
+            }
+            if self
+                .taps
+                .last()
+                .is_some_and(|at| now.saturating_duration_since(*at) > Duration::from_secs(2))
+            {
+                self.taps.clear();
+            }
+            self.taps.push(now);
+            if self.taps.len() > 5 {
+                self.taps.remove(0);
+            }
+            if self.taps.len() > 1 {
+                let seconds = now.saturating_duration_since(self.taps[0]).as_secs_f64()
+                    / (self.taps.len() - 1) as f64;
+                if seconds > 0.0 {
+                    return Some(vec![A::Tempo((60.0 / seconds).clamp(10.0, 400.0))]);
+                }
+            }
+            return Some(Vec::new());
+        }
+        if self.held.contains(&10) && (43..=46).contains(&key) {
+            return Some(vec![A::Repeat(
+                "rate",
+                [480.0, 240.0, 160.0, 120.0][usize::from(key - 43)],
+            )]);
+        }
+        if self.held.contains(&4) {
+            return Some(match key {
+                40 => vec![A::Grid("step_snap", i64::from(!view.grid.step_snap))],
+                41 => vec![A::Setting("quantize", 0, 1)],
+                _ => Vec::new(),
+            });
+        }
+        if self.held.contains(&27) {
+            return Some(match key {
+                40 => vec![A::KeyboardMode(false)],
+                41 => vec![A::KeyboardMode(true)],
+                42 => vec![A::FixedVelocity(!view.fixed_velocity)],
+                43..=46 => vec![A::Scale {
+                    root: view.scale_root + [-12, 12, -1, 1][usize::from(key - 43)],
+                    bank: view.scale_bank,
+                    kind: view.scale_kind,
+                }],
+                _ => Vec::new(),
+            });
+        }
+        if self.held.contains(&30) && key == 46 {
+            self.multi_select = !self.multi_select;
+            return Some(Vec::new());
+        }
+        None
+    }
+
+    fn overlay(
+        &self,
+        view: &deckard_surface::View,
+        keyboard: bool,
+        quantize: bool,
+    ) -> serde_json::Value {
+        let mode = [4, 10, 27, 30, 31, 33]
+            .into_iter()
+            .find(|key| self.held.contains(key));
+        let Some(mode) = mode else {
+            return serde_json::Value::Null;
+        };
+        let (name, mut buttons) = match mode {
+            4 => ("GRID", vec!["PIN", "SNAP", "INPUT Q", "", "", "", "", ""]),
+            10 => (
+                "NOTE REPEAT",
+                vec!["PIN", "", "", "", "1/8", "1/16", "1/16T", "1/32"],
+            ),
+            27 => (
+                "PAD MODE",
+                vec![
+                    "PIN", "GROUP", "KEYBOARD", "FIXED", "OCT -", "OCT +", "SEMI -", "SEMI +",
+                ],
+            ),
+            30 => ("SELECT", vec!["PIN", "", "", "", "", "", "MULTI"]),
+            31 => ("SOLO", vec!["PIN", "", "", "", "", "", "", ""]),
+            _ => ("MUTE", vec!["PIN", "", "", "", "", "", "", ""]),
+        };
+        if self.pinned.contains(&mode) {
+            buttons[0] = "UNPIN";
+        }
+        let current = view
+            .groups
+            .get(view.group)
+            .and_then(|g| g.sounds.get(view.sound));
+        let parameter = |name: &str, text: String, value: f64| serde_json::json!({"name":name,"text":text,"value":value});
+        let knobs = match mode {
+            4 => vec![
+                parameter(
+                    "STEP GRID",
+                    format!("{} ticks", view.grid.step_ticks),
+                    view.grid.step as f64 / 15.0,
+                ),
+                parameter(
+                    "NUDGE",
+                    format!("1/{}", 1 << view.grid.nudge),
+                    view.grid.nudge as f64 / 4.0,
+                ),
+                parameter(
+                    "PERFORM",
+                    view.grid.perform.to_string(),
+                    view.grid.perform as f64 / 6.0,
+                ),
+                parameter(
+                    "INPUT Q",
+                    if quantize { "ON" } else { "OFF" }.into(),
+                    if quantize { 1.0 } else { 0.0 },
+                ),
+            ],
+            10 => view
+                .note_repeat
+                .settings
+                .iter()
+                .map(|s| {
+                    parameter(
+                        &s.name,
+                        s.text.clone(),
+                        (s.value - s.min) / (s.max - s.min).max(1.0),
+                    )
+                })
+                .collect(),
+            27 => current
+                .map(|s| {
+                    vec![
+                        parameter(
+                            "CHOKE GROUP",
+                            s.choke_group.to_string(),
+                            s.choke_group as f64 / 8.0,
+                        ),
+                        parameter(
+                            "CHOKE MODE",
+                            if s.choke_mode == 0 { "SEND" } else { "RECEIVE" }.into(),
+                            s.choke_mode as f64,
+                        ),
+                        parameter(
+                            "LINK GROUP",
+                            s.link_group.to_string(),
+                            s.link_group as f64 / 8.0,
+                        ),
+                        parameter(
+                            "LINK MODE",
+                            if s.link_mode == 0 { "SEND" } else { "RECEIVE" }.into(),
+                            s.link_mode as f64,
+                        ),
+                    ]
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        serde_json::json!({"mode":mode,"title":name,"buttons":buttons,"knobs":knobs,
+            "group":view.groups.get(view.group).map(|g| g.name.as_str()).unwrap_or(""),
+            "sound":current.map(|s| s.name.as_str()).unwrap_or(""),"keyboard":keyboard,"multi":self.multi_select,"quantize":quantize})
+    }
+}
+
+/// Linear RGB addition preserves the contribution of simultaneous sounds.
+/// A uniform scale fits an over-range sum into the MK2's output gamut.
+pub fn maschine_group_rgb(group: &deckard_surface::GroupView) -> [u8; 3] {
+    let mut sum = [0.0f32; 3];
+    if !group.muted {
+        for sound in &group.sounds {
+            let meter = sound.mix.meter.0.max(sound.mix.meter.1);
+            if sound.muted || !meter.is_finite() {
+                continue;
+            }
+            for (channel, value) in sum.iter_mut().zip(sound.rgb) {
+                *channel += f32::from(value) * meter.clamp(0.0, 1.0);
+            }
+        }
+    }
+    let peak = sum.iter().copied().fold(255.0f32, f32::max);
+    sum.map(|value| (value * 255.0 / peak).round().clamp(0.0, 255.0) as u8)
+}
+
+fn maschine_light(id: u8, rgb: [u8; 3]) -> Vec<u8> {
+    let [r, g, b] = rgb.map(|v| (f32::from(v) * 127.0 / 255.0).round() as u8);
+    vec![0xf0, 0x7d, 0x44, 0x4b, id, r, g, b, 0xf7]
+}
 
 /// Shortcut controls Mixxx adds next to every knob, e.g. `pregain_set_default`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -446,6 +961,8 @@ pub(crate) struct Host {
     routes_changed: bool,
     /// An HID controller's device and the output reports for it.
     pub(crate) hid: Option<HidLink>,
+    pub(crate) maschine_source: MaschineSource,
+    maschine_surfaces: HashMap<usize, MaschineSurface>,
 }
 
 /// What an HID mapping's `controller` object talks to.
@@ -472,6 +989,8 @@ impl Host {
             note_values: HashMap::new(),
             routes_changed: false,
             hid: None,
+            maschine_source: Default::default(),
+            maschine_surfaces: HashMap::new(),
             watches: Vec::new(),
             triggered: Vec::new(),
             script_bound: HashSet::new(),
@@ -490,6 +1009,282 @@ impl Host {
             shift: 0,
             trace: None,
         }
+    }
+
+    /// Runs DECKARD's MIDI device script on this mapping's existing thread.
+    /// Graphics return to JavaScript so the MK2's acknowledged transport can
+    /// atomically commit a complete display frame.
+    pub(crate) fn maschine(&mut self, deck: usize, command: &str, bytes: &[u8]) -> String {
+        let source = self.maschine_source.read().ok().and_then(|s| s.clone());
+        let Some(source) = source else {
+            return "{\"available\":false,\"midi\":[]}".into();
+        };
+        let Some(mut view) = source.view(deck) else {
+            return "{\"available\":false,\"midi\":[]}".into();
+        };
+        let now = Instant::now();
+        let maschine_group = format!("[Maschine{deck}]");
+        let keyboard = self
+            .registry
+            .get(&maschine_group, "keyboard")
+            .is_some_and(|c| c.get_bool());
+        if let Some(group) = self.registry.get(&maschine_group, "group") {
+            view.group = group.get().round().clamp(0.0, 7.0) as usize;
+        }
+        if let Some(sound) = self.registry.get(&maschine_group, "sound") {
+            view.sound = sound.get().round().clamp(0.0, 15.0) as usize;
+        }
+        let quantize = self
+            .registry
+            .get(&maschine_group, "quantize")
+            .is_some_and(|c| c.get_bool());
+        let surface = self
+            .maschine_surfaces
+            .entry(deck)
+            .or_insert_with(MaschineSurface::new);
+        let step = view.grid.step_ticks.max(1);
+        if view.follow && view.playing {
+            if let Some(at) = view.pattern_position {
+                surface.step_page =
+                    (at.saturating_sub(view.pattern_start).max(0) / (step * 16)) as usize;
+            }
+        }
+        surface.step_page = surface.step_page.min(
+            (view.pattern_length.max(1) as usize)
+                .div_ceil((step * 16) as usize)
+                .saturating_sub(1),
+        );
+        let opening_browser = command == "input"
+            && bytes.len() == 3
+            && bytes[0] == 0xb0
+            && bytes[1] == 8
+            && bytes[2] > 0;
+        if !surface.browsing && !opening_browser {
+            view.browser = Default::default();
+        }
+        let mut actions = Vec::new();
+        let mut output = Vec::new();
+        let mut overridden = None;
+        let events = match command {
+            "open" => surface.device.open(&view, now),
+            "input" => {
+                if bytes.len() == 3 && bytes[0] & 0xf0 == 0xb0 {
+                    if bytes[2] > 0 {
+                        surface.physical.insert(bytes[1]);
+                        surface.held.insert(bytes[1]);
+                    } else {
+                        surface.physical.remove(&bytes[1]);
+                        if !surface.pinned.contains(&bytes[1]) {
+                            surface.held.remove(&bytes[1]);
+                        }
+                    }
+                }
+                overridden = surface.gesture(bytes, &view, keyboard, now);
+                if bytes.len() == 3
+                    && bytes[0] & 0xf0 == 0xb0
+                    && bytes[2] == 0
+                    && surface.pinned.contains(&bytes[1])
+                {
+                    Vec::new()
+                } else {
+                    let mut events = surface.device.midi("controls", bytes, &view, now);
+                    for mode in [10, 4, 27, 30, 31, 33] {
+                        if surface.held.contains(&mode)
+                            && !surface.pinned.contains(&mode)
+                            && !surface.physical.contains(&mode)
+                        {
+                            surface.held.remove(&mode);
+                            events.extend(surface.device.midi(
+                                "controls",
+                                &[0xb0, mode, 0],
+                                &view,
+                                now,
+                            ));
+                            if mode == 10 {
+                                overridden
+                                    .get_or_insert_with(Vec::new)
+                                    .push(deckard_surface::Action::Repeat("on", 0.0));
+                            }
+                        }
+                    }
+                    events
+                }
+            }
+            "tick" => surface.device.tick(&view, now),
+            "repaint" => {
+                let mut events =
+                    surface
+                        .device
+                        .midi("controls", &[0xf0, 0x7d, 0x44, 0x49, 0xf7], &view, now);
+                events.extend(surface.device.tick(&view, now));
+                events
+            }
+            "close" => surface.device.close(),
+            _ => Vec::new(),
+        };
+        for event in events {
+            match event {
+                deckard_surface::device::Out::App(action) => {
+                    if let deckard_surface::Action::Sampling(on) = action {
+                        surface.sampling = on;
+                    }
+                    if let deckard_surface::Action::Library(on) = action {
+                        surface.browsing = on;
+                    }
+                    if overridden.is_none() {
+                        let held_group = (80..=87)
+                            .find(|key| surface.held.contains(key))
+                            .map(|key| usize::from(key - 80));
+                        let contextual = matches!(
+                            action,
+                            deckard_surface::Action::Volume(_)
+                                | deckard_surface::Action::Swing(_)
+                                | deckard_surface::Action::Tempo(_)
+                        ) && (held_group.is_some() || surface.held.contains(&30));
+                        actions.push(if contextual {
+                            source.contextual_wheel(
+                                deck,
+                                action,
+                                held_group.unwrap_or(view.group),
+                                held_group.is_none().then_some(view.sound),
+                            )
+                        } else {
+                            action
+                        });
+                    }
+                }
+                deckard_surface::device::Out::Midi { role, bytes } if role == "controls" => {
+                    if bytes.len() == 9 && bytes[..4] == [0xf0, 0x7d, 0x44, 0x4b] {
+                        let id = bytes[4];
+                        if id == 64 {
+                            surface.mode = bytes[5];
+                        }
+                        // Group emitters use the actual sound meters below.
+                        if id < 8 || (65..=72).contains(&id) {
+                            continue;
+                        }
+                    }
+                    output.push(bytes);
+                }
+                deckard_surface::device::Out::Message(_) => {}
+                _ => {}
+            }
+        }
+        if let Some(overridden) = overridden {
+            actions.extend(overridden);
+        }
+        if command == "tick" && view.playing {
+            actions.extend(surface.erase_sounds.values().map(|target| {
+                deckard_surface::Action::Events("erase_sound_window", *target as i64)
+            }));
+            actions.extend(surface.erase_groups.iter().map(|target| {
+                deckard_surface::Action::Events("erase_group_window", *target as i64)
+            }));
+        }
+        let mut pad_value = None;
+        if command == "input" && bytes.len() == 3 && (36..=51).contains(&bytes[1]) {
+            let status = bytes[0] & 0xf0;
+            let pad = bytes[1] - 35;
+            if status == 0x80 || (status == 0x90 && bytes[2] == 0) {
+                if surface.pads.remove(&pad) {
+                    pad_value = Some((pad, 0.0));
+                }
+            } else if status == 0x90
+                && surface.mode == 0
+                && !surface.sampling
+                && ![2, 29, 30, 31, 33, 49]
+                    .iter()
+                    .any(|k| surface.held.contains(k))
+            {
+                surface.pads.insert(pad);
+                let velocity = if view.fixed_velocity {
+                    view.velocity.clamp(1, 127) as u8
+                } else {
+                    bytes[2]
+                };
+                pad_value = Some((pad, f64::from(velocity) / 127.0));
+            }
+        }
+        let error = surface.device.error().or_else(|| source.error(deck));
+        let owned_repeat = surface.held.contains(&10);
+        let overlay = surface.overlay(&view, keyboard, quantize);
+        if keyboard && surface.mode == 0 && !surface.sampling {
+            if let Some(sound) = view
+                .groups
+                .get(view.group)
+                .and_then(|g| g.sounds.get(view.sound))
+            {
+                for pad in 1..=16 {
+                    let level = if surface.pads.contains(&pad) {
+                        1.0
+                    } else {
+                        0.25
+                    };
+                    output.push(maschine_light(
+                        47 + pad,
+                        sound.rgb.map(|v| (f64::from(v) * level).round() as u8),
+                    ));
+                }
+            }
+        }
+        let group = format!("[Maschine{deck}]");
+        for action in &actions {
+            let target = match action {
+                deckard_surface::Action::FocusGroup(n) => Some(("group", *n as f64)),
+                deckard_surface::Action::FocusSound(n) => Some(("sound", *n as f64)),
+                deckard_surface::Action::KeyboardMode(on) => {
+                    Some(("keyboard", if *on { 1.0 } else { 0.0 }))
+                }
+                _ => None,
+            };
+            if let Some((key, value)) = target {
+                if let Some(control) = self.registry.get(&group, key) {
+                    control.set(value);
+                }
+            }
+        }
+        actions.retain(|action| {
+            !matches!(
+                action,
+                deckard_surface::Action::FocusGroup(_)
+                    | deckard_surface::Action::FocusSound(_)
+                    | deckard_surface::Action::KeyboardMode(_)
+            )
+        });
+        if command == "close" {
+            if owned_repeat {
+                if let Some(control) = self.registry.get(&group, "note_repeat") {
+                    control.set(0.0);
+                }
+            }
+            for pad in 1..=16 {
+                if let Some(control) = self.registry.get(&group, &format!("pad{pad}")) {
+                    control.set(0.0);
+                }
+            }
+            self.maschine_surfaces.remove(&deck);
+        } else {
+            if let Some((pad, value)) = pad_value {
+                if value > 0.0 {
+                    if let Some(velocity) = self.registry.get(&group, &format!("pad{pad}_velocity"))
+                    {
+                        velocity.set(value);
+                    }
+                }
+                if let Some(control) = self.registry.get(&group, &format!("pad{pad}")) {
+                    control.set(value);
+                }
+            }
+            for (index, group) in view.groups.iter().take(8).enumerate() {
+                output.push(maschine_light(index as u8, group.rgb));
+                output.push(maschine_light(65 + index as u8, maschine_group_rgb(group)));
+            }
+        }
+        if !actions.is_empty() {
+            source.dispatch(deck, actions);
+        }
+        serde_json::json!({"available":true, "midi":output, "error":error,"overlay":overlay})
+            .to_string()
     }
 
     /// Lets the deck 3 and 4 switches redirect this controller's decks.
@@ -1298,6 +2093,30 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maschine_group_emitter_adds_sound_rgb_with_uniform_headroom() {
+        use deckard_surface::{GroupView, MixView, SoundView};
+        let sound = |rgb, meter| SoundView {
+            rgb,
+            mix: MixView {
+                meter: (meter, meter),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut group = GroupView {
+            sounds: vec![sound([255, 0, 0], 1.0), sound([0, 255, 0], 1.0)],
+            ..Default::default()
+        };
+        assert_eq!(maschine_group_rgb(&group), [255, 255, 0]);
+        group.sounds.push(sound([255, 0, 0], 1.0));
+        assert_eq!(maschine_group_rgb(&group), [255, 128, 0]);
+        group.sounds[1].mix.meter = (0.25, 0.25);
+        assert_eq!(maschine_group_rgb(&group), [255, 32, 0]);
+        group.muted = true;
+        assert_eq!(maschine_group_rgb(&group), [0, 0, 0]);
+    }
 
     fn host() -> Host {
         let reg = ControlRegistry::new();

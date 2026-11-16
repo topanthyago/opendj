@@ -147,6 +147,11 @@ playing either way.
 
 ### Instruments
 
+Deck 3's embedded Maschine offers native Sampler, Audio, drum and tonal
+synthesizers, with the selected module's parameters on its eight knobs.
+Open the instrument menu below its Sound pads to choose one.
+[Maschine with Deckard](groove-box.md#maschine-with-deckard)
+
 Tick an instrument on the **Instruments** tab of **Settings › Plugins**,
 then open the **MIC** panel. Under **Mic** and **Aux** is the
 **Instrument** input:

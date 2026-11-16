@@ -22,9 +22,12 @@ pub fn enabled() -> bool {
     settings::flag(ENABLED, true)
 }
 
-/// One record LRCLIB has.
+/// An online lyric match, including source attribution.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Found {
+    pub source: &'static str,
+    /// Public attribution page. Never interpreted as a command.
+    pub url: String,
     pub title: String,
     pub artist: String,
     pub album: String,
@@ -68,6 +71,11 @@ pub struct Query {
 fn record(v: &Value) -> Option<Found> {
     let s = |k: &str| v[k].as_str().unwrap_or_default().to_string();
     let found = Found {
+        source: "LRCLIB",
+        url: v["id"]
+            .as_u64()
+            .map(|id| format!("https://lrclib.net/api/get/{id}"))
+            .unwrap_or_else(|| "https://lrclib.net/".into()),
         title: s("trackName"),
         artist: s("artistName"),
         album: s("albumName"),
@@ -161,6 +169,8 @@ mod tests {
 
     fn found(duration: f64, synced: &str, plain: &str) -> Found {
         Found {
+            source: "LRCLIB",
+            url: "https://lrclib.net/".into(),
             title: "Song".into(),
             artist: "Artist".into(),
             album: String::new(),
@@ -179,6 +189,8 @@ mod tests {
             "plainLyrics": "I feel your breath", "syncedLyrics": "[00:17.12] I feel your breath"
         });
         let f = record(&v).unwrap();
+        assert_eq!(f.source, "LRCLIB");
+        assert_eq!(f.url, "https://lrclib.net/api/get/3396226");
         assert_eq!(f.title, "I Want to Live");
         assert_eq!(f.duration, 233.0);
         assert!(f.is_synced());

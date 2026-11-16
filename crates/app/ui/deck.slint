@@ -5,6 +5,7 @@
 // Large artwork, flat dark controls, white pointers.
 import { TrackDrag } from "library.slint";
 import { SamplerPanel } from "sampler.slint";
+import { MaschinePanel } from "maschine.slint";
 import { Theme, KeyNotation, EdgeLine, EdgeVLine, CloseIcon } from "theme.slint";
 import { Caption, ControlButton, ControlFader, ControlKnob, Controls, HoverTip, MasterBadge, PitchReset, SyncButton } from "controls.slint";
 import { TourMark } from "tourmark.slint";
@@ -1096,7 +1097,7 @@ component GroovePreset inherits GrooveButton {
         width: 230px;
         // Previous, Next, the presets, then Save as new (and Save, Rename
         // and Tags with a preset playing), with their lines between.
-        height: min(PresetUi.groove.length * 24px + (name != "" ? 180px : 84px), 440px);
+        height: min(PresetUi.groove.length * 24px + (name != "" ? 206px : 110px), 440px);
         GrooveMenuBackground { }
         ScrollView {
             x: 4px;
@@ -1104,6 +1105,10 @@ component GroovePreset inherits GrooveButton {
             width: parent.width - 8px;
             height: parent.height - 8px;
             VerticalLayout {
+                if deck == 2: GrooveMenuItem {
+                    text: "Deckard · 16 Sounds";
+                    clicked => { Controls.set-value(Controls.resolve("[Groove" + (deck + 1) + "]", "backend"), 1); menu.close(); }
+                }
                 GrooveMenuItem { text: "‹ Previous preset"; clicked => { PresetUi.step(deck, -1); } }
                 GrooveMenuItem { text: "› Next preset"; clicked => { PresetUi.step(deck, 1); } }
                 Rectangle { height: 1px; background: Theme.border; }
@@ -3764,9 +3769,9 @@ component GrooveBox inherits Rectangle {
         HorizontalLayout {
             height: 30px;
             spacing: 4px;
-            PlayButton { group: group; tint: tint; width: 42px; }
+            PlayButton { group: group; tint: tint; width: root.width < 600px ? 38px : 42px; }
             GrooveButton {
-                width: 76px;
+                width: root.width < 600px ? 64px : 76px;
                 height: 30px;
                 text: GrooveUi.kits[kit].name + " ▾";
                 clicked => { kit-menu.show(); }
@@ -3786,7 +3791,7 @@ component GrooveBox inherits Rectangle {
                 }
             }
             GrooveButton {
-                width: 60px;
+                width: root.width < 600px ? 54px : 60px;
                 height: 30px;
                 text: GrooveUi.genres[genre].name + " ▾";
                 clicked => { genre-menu.show(); }
@@ -3844,7 +3849,7 @@ component GrooveBox inherits Rectangle {
                 }
             }
             GrooveButton {
-                width: 52px;
+                width: root.width < 600px ? 48px : 52px;
                 height: 30px;
                 text: "Chain ▾";
                 lit: chain > 0;
@@ -3881,6 +3886,10 @@ component GrooveBox inherits Rectangle {
             }
             // The preset shares the room left over with the groove's name.
             GroovePreset { deck: deck; min-width: 34px; horizontal-stretch: 1; height: 30px; tint: tint; }
+        }
+        HorizontalLayout {
+            height: 30px;
+            spacing: 4px;
             for letter[i] in ["A", "B", "C", "D"]: GrooveButton {
                 width: 22px;
                 height: 30px;
@@ -3893,7 +3902,7 @@ component GrooveBox inherits Rectangle {
             }
             GrooveDice { g: g; width: 30px; height: 30px; tint: tint; }
             GrooveTempo { g: g; width: 60px; height: 30px; tint: tint; }
-            Rectangle { width: 2px; }
+            Rectangle { horizontal-stretch: 1; }
             Rectangle {
                 width: 148px;
                 border-radius: 6px;
@@ -4481,94 +4490,106 @@ component LooperLayer inherits Rectangle {
     }
 }
 
-// A deck playing its Looper: four layers, what it records from, how long a
-// new layer is, CAPTURE of the bars just heard, UNDO and REDO.
+component LooperLayers inherits VerticalLayout {
+    in property <string> g;
+    in property <string> group;
+    in property <color> tint;
+    property <bool> ready: Controls.value(Controls.resolve(g, "ready"), Controls.tick) > 0;
+    property <bool> too-long: Controls.value(Controls.resolve(g, "too_long"), Controls.tick) > 0;
+    property <float> bar-beat: Controls.value(Controls.resolve(g, "bar_beat"), Controls.tick);
+    property <int> play-index: Controls.resolve(group, "play");
+    property <bool> playing: Controls.value(play-index, Controls.tick) > 0;
+    horizontal-stretch: 1;
+    spacing: 5px;
+    HorizontalLayout {
+        spacing: 5px;
+        LooperLayer { g: g; layer: 0; tint: tint; }
+        LooperLayer { g: g; layer: 1; tint: tint; }
+    }
+    HorizontalLayout {
+        spacing: 5px;
+        LooperLayer { g: g; layer: 2; tint: tint; }
+        LooperLayer { g: g; layer: 3; tint: tint; }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        height: 24px;
+        GrooveButton {
+            text: playing ? "■ STOP" : "▶ PLAY";
+            width: 76px;
+            lit: playing;
+            tint: tint;
+            clicked => { Controls.toggle(play-index); }
+        }
+        for beat in 4: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 10px;
+                height: 10px;
+                border-radius: 5px;
+                background: playing && floor(bar-beat) == beat ? (beat == 0 ? tint : Theme.text) : #ffffff1a;
+            }
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: !ready ? "Getting ready…" : too-long ? "Too long to fit: pick fewer bars." : "";
+            color: too-long ? #ff9f0a : Theme.text-dim;
+            font-size: 11px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+component LooperOptions inherits VerticalLayout {
+    in property <string> g;
+    in property <color> tint;
+    spacing: 5px;
+    alignment: center;
+    HorizontalLayout {
+        spacing: 6px;
+        Text { text: "FROM"; width: 40px; color: Theme.text-dim; font-size: 10px; font-weight: 600; vertical-alignment: center; }
+        LooperChoice { g: g; key: "input"; tint: tint; names: ["Mix", "Mic", "Aux", "Instr.", "Aux 2", "Aux 3"]; values: [0, 1, 2, 3, 4, 5]; }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        Text { text: "BARS"; width: 40px; color: Theme.text-dim; font-size: 10px; font-weight: 600; vertical-alignment: center; }
+        LooperChoice { g: g; key: "length"; tint: tint; names: ["1", "2", "4", "8", "16"]; values: [1, 2, 4, 8, 16]; }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        Text { text: "LAST"; width: 40px; color: Theme.text-dim; font-size: 10px; font-weight: 600; vertical-alignment: center; }
+        LooperChoice { g: g; key: "capture_bars"; tint: tint; names: ["1", "2", "4", "8"]; values: [1, 2, 4, 8]; horizontal-stretch: 1; }
+        LooperButton { g: g; key: "capture"; text: "CAPTURE"; tint: tint; width: 76px; }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        LooperButton { g: g; key: "undo"; text: "UNDO"; }
+        LooperButton { g: g; key: "redo"; text: "REDO"; }
+        GrooveToggleButton { g: g; key: "after"; text: "THEN OVERDUB"; tint: tint; width: 110px; }
+    }
+}
+
+// Four recording layers and all capture options remain visible at narrow widths.
 component LooperPanel inherits Rectangle {
     in property <int> deck;
     in property <string> group;
     in property <color> tint;
     property <string> g: "[Looper" + (deck + 1) + "]";
-    property <bool> ready: Controls.value(Controls.resolve(g, "ready"), Controls.tick) > 0;
-    property <bool> too-long: Controls.value(Controls.resolve(g, "too_long"), Controls.tick) > 0;
-    property <float> bar-beat: Controls.value(Controls.resolve(g, "bar_beat"), Controls.tick);
-    property <bool> playing: Controls.value(Controls.resolve(group, "play"), Controls.tick) > 0;
-    property <int> play-index: Controls.resolve(group, "play");
+    property <bool> narrow: self.width < 650px;
     border-radius: 10px;
     background: Theme.well;
-    HorizontalLayout {
+    if !narrow: HorizontalLayout {
         padding: 8px;
         spacing: 12px;
-        // The layers, two by two, with PLAY and the beat of the bar under them.
-        VerticalLayout {
-            horizontal-stretch: 1;
-            spacing: 5px;
-            HorizontalLayout {
-                spacing: 5px;
-                LooperLayer { g: g; layer: 0; tint: tint; }
-                LooperLayer { g: g; layer: 1; tint: tint; }
-            }
-            HorizontalLayout {
-                spacing: 5px;
-                LooperLayer { g: g; layer: 2; tint: tint; }
-                LooperLayer { g: g; layer: 3; tint: tint; }
-            }
-            HorizontalLayout {
-                spacing: 6px;
-                height: 24px;
-                GrooveButton {
-                    text: playing ? "■ STOP" : "▶ PLAY";
-                    width: 76px;
-                    lit: playing;
-                    tint: tint;
-                    clicked => { Controls.toggle(play-index); }
-                }
-                for beat in 4: VerticalLayout {
-                    alignment: center;
-                    Rectangle {
-                        width: 10px;
-                        height: 10px;
-                        border-radius: 5px;
-                        background: playing && floor(bar-beat) == beat ? (beat == 0 ? tint : Theme.text) : #ffffff1a;
-                    }
-                }
-                Text {
-                    horizontal-stretch: 1;
-                    text: !ready ? "Getting ready…" : too-long ? "Too long to fit: pick fewer bars." : "";
-                    color: too-long ? #ff9f0a : Theme.text-dim;
-                    font-size: 11px;
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
-            }
-        }
-        // What it records from, how long a new layer is, CAPTURE, UNDO, REDO.
-        VerticalLayout {
-            width: 300px;
-            spacing: 5px;
-            alignment: center;
-            HorizontalLayout {
-                spacing: 6px;
-                Text { text: "FROM"; width: 40px; color: Theme.text-dim; font-size: 10px; font-weight: 600; vertical-alignment: center; }
-                LooperChoice { g: g; key: "input"; tint: tint; names: ["Mix", "Mic", "Aux", "Instr.", "Aux 2", "Aux 3"]; values: [0, 1, 2, 3, 4, 5]; }
-            }
-            HorizontalLayout {
-                spacing: 6px;
-                Text { text: "BARS"; width: 40px; color: Theme.text-dim; font-size: 10px; font-weight: 600; vertical-alignment: center; }
-                LooperChoice { g: g; key: "length"; tint: tint; names: ["1", "2", "4", "8", "16"]; values: [1, 2, 4, 8, 16]; }
-            }
-            HorizontalLayout {
-                spacing: 6px;
-                Text { text: "LAST"; width: 40px; color: Theme.text-dim; font-size: 10px; font-weight: 600; vertical-alignment: center; }
-                LooperChoice { g: g; key: "capture_bars"; tint: tint; names: ["1", "2", "4", "8"]; values: [1, 2, 4, 8]; horizontal-stretch: 1; }
-                LooperButton { g: g; key: "capture"; text: "CAPTURE"; tint: tint; width: 76px; }
-            }
-            HorizontalLayout {
-                spacing: 6px;
-                LooperButton { g: g; key: "undo"; text: "UNDO"; }
-                LooperButton { g: g; key: "redo"; text: "REDO"; }
-                GrooveToggleButton { g: g; key: "after"; text: "THEN OVERDUB"; tint: tint; width: 110px; }
-            }
-        }
+        LooperLayers { g: g; group: group; tint: tint; }
+        LooperOptions { width: 300px; g: g; tint: tint; }
+    }
+    if narrow: VerticalLayout {
+        padding: 8px;
+        spacing: 8px;
+        LooperLayers { g: g; group: group; tint: tint; vertical-stretch: 1; }
+        LooperOptions { g: g; tint: tint; }
     }
 }
 
@@ -4804,13 +4825,18 @@ export component Deck inherits Rectangle {
     in property <DeckInfo> info;
     in property <image> overview;
     in property <bool> mirrored: false;
+    in property <bool> show-pads: true;
+    in property <bool> controller-layers: false;
     // Set from the renderer each frame, so the jog marker turns smoothly.
     in property <angle> spin;
     out property <length> overview-width: header.overview-width;
     out property <length> overview-height: header.overview-height;
     property <string> group: "[Channel" + (deck + 1) + "]";
     property <color> tint: Theme.deck-color(deck);
+    property <bool> narrow: self.width < 650px;
+    property <int> layer-index: Controls.resolve("[Controller]", Math.mod(deck, 2) == 0 ? "deck3" : "deck4");
     property <bool> groove: Controls.value(Controls.resolve("[Groove" + (deck + 1) + "]", "enabled"), Controls.tick) > 0;
+    property <bool> maschine: groove && Controls.value(Controls.resolve("[Groove" + (deck + 1) + "]", "backend"), Controls.tick) > 0;
     property <bool> looper: !info.loaded && Controls.value(Controls.resolve("[Looper" + (deck + 1) + "]", "enabled"), Controls.tick) > 0;
     property <int> live: info.loaded || groove || looper ? 0 : InstrumentsUi.live(deck);
     // Files dragged in from Finder or a file manager (see TrackDrag.files-over).
@@ -4845,7 +4871,11 @@ export component Deck inherits Rectangle {
     VerticalLayout {
         spacing: 1px;
 
-        header := Header { deck: deck; info: info; overview: overview; mirrored: mirrored; group: group; }
+        header := Header {
+            deck: deck; info: info; overview: overview; mirrored: mirrored; group: group;
+            number-lit: controller-layers && ((deck >= 2) == (Controls.value(layer-index, Controls.tick) > 0));
+            number-clicked => { if controller-layers { Controls.set-value(layer-index, deck >= 2 ? 1 : 0); } }
+        }
 
         Rectangle {
             background: Theme.panel;
@@ -4854,7 +4884,7 @@ export component Deck inherits Rectangle {
             // with play and CUE under it beside the mixer. Deck B is the mirror image.
             if live > 0: LivePanel { x: 8px; y: 8px; width: parent.width - 16px; height: parent.height - 16px; live: live; group: group; tint: tint; }
             if looper: LooperPanel { x: 8px; y: 8px; width: parent.width - 16px; height: parent.height - 16px; deck: deck; group: group; tint: tint; }
-            if !groove && !looper && live == 0: HorizontalLayout {
+            if !groove && !looper && live == 0 && !narrow: HorizontalLayout {
                 padding: 8px;
                 spacing: 0px;
                 if mirrored: JogSection { group: group; info: info; tint: tint; spin: spin; mirrored: true; }
@@ -4865,7 +4895,8 @@ export component Deck inherits Rectangle {
                 if !mirrored: Rectangle { width: 12px; }
                 // 2-Deck Pro always shows the pads (PADS is for 2-Deck and
                 // 4-Deck).
-                Pads { deck: deck; group: group; info: info; horizontal-stretch: 1; }
+                if show-pads: Pads { deck: deck; group: group; info: info; horizontal-stretch: 1; }
+                if !show-pads: Rectangle { horizontal-stretch: 1; }
                 if !mirrored: VDivider { }
                 if !mirrored: LoopSection { group: group; info: info; tint: tint; }
                 if !mirrored: Rectangle { width: 10px; }
@@ -4873,11 +4904,26 @@ export component Deck inherits Rectangle {
                 if mirrored: Rectangle { width: 12px; }
                 if mirrored: Pitch { group: group; info: info; tint: tint; mirrored: true; }
             }
+            if !groove && !looper && live == 0 && narrow: VerticalLayout {
+                padding: 8px;
+                spacing: 8px;
+                HorizontalLayout {
+                    spacing: 12px;
+                    vertical-stretch: 1;
+                    if mirrored: JogSection { group: group; info: info; tint: tint; spin: spin; mirrored: true; }
+                    if !mirrored: Pitch { group: group; info: info; tint: tint; }
+                    LoopSection { group: group; info: info; tint: tint; mirrored: mirrored; horizontal-stretch: 1; }
+                    if !mirrored: JogSection { group: group; info: info; tint: tint; spin: spin; }
+                    if mirrored: Pitch { group: group; info: info; tint: tint; mirrored: true; }
+                }
+                if show-pads: Pads { deck: deck; group: group; info: info; height: 112px; }
+            }
         }
     }
 
     // A Groove Box has no waveform or jog: it takes the whole deck.
-    if groove: GrooveBox { width: parent.width; height: parent.height; deck: deck; group: group; tint: tint; }
+    if groove && !maschine: GrooveBox { width: parent.width; height: parent.height; deck: deck; group: group; tint: tint; }
+    if maschine: MaschinePanel { width: parent.width; height: parent.height; deck: deck; channel: group; tint: tint; }
 
     // Drop target for tracks dragged from the browser. While any drag is in
     if TrackDrag.active || InstrumentsUi.dragging || TrackDrag.files-over || drop.has-drag: Rectangle {

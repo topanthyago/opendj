@@ -44,8 +44,8 @@ beat grid is off: click the tempo on the jog and choose **Bar 1 here** on a
 downbeat (see [Beat grids](music.md)).
 
 Choose **Off**, **Beats** (squares only) or **Beats and phrases** under
-**Settings › Decks › Beat counter**. The 4-Deck strips show the squares
-only.
+**Settings › Decks › Beat counter**. The complete deck headers in 4-Deck
+show the same counter.
 
 **PLAY**, **CUE** and **SYNC** show an outline in the deck's color while
 they're on. **Shift-click** and hold PLAY while the deck plays for
@@ -60,6 +60,8 @@ the rail at the far left (the keyboard icon) and drag one onto a deck:
 
 - A **Groove Box** kit: a drum machine in time with the mix (see
   [Groove Box](groove-box.md)).
+- The **Looper**, with four recording layers, capture, overdub, Undo and
+  Redo. Its complete editor stays visible in both 4-Deck arrangements.
 - An **instrument plugin** you ticked in **Settings › Plugins**, played with
   a MIDI keyboard or the **KEYBOARD** pads. **EDIT** on the deck opens its
   own window for its sounds and presets (see
@@ -72,6 +74,10 @@ crossfader all work on it. A track on the deck is stopped and ejected
 first. An input plays on one deck at a time: dropping it on another deck
 moves it there, and while a deck has it, its own channel in the MIC panel
 stays quiet. The Jam page shows which deck each one is on.
+
+On deck 3, the Groove Box's Preset menu also opens **Deckard · 16 Sounds**.
+Its Groups, Patterns, piano roll, native instruments and sampling tools
+share the deck's channel and effects. [Maschine with Deckard](groove-box.md#maschine-with-deckard)
 
 The deck's scrolling waveform draws what it plays as it plays: the sound
 comes in at the play line and scrolls away to the left, with nothing ahead
