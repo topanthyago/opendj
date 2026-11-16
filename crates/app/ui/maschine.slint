@@ -82,6 +82,12 @@ export global MaschineUi {
     in property <float> sample-loop-end: 1;
     in property <bool> sample-loop;
     in property <bool> sample-loaded;
+    in property <string> sound-launch-mode;
+    in property <bool> sound-launch-audio;
+    in property <float> sound-launch-bars;
+    in property <int> sound-launch-audio-mode;
+    in property <int> sound-launch-audio-engine: 1;
+    callback sound-launch(action: string);
     in property <float> sample-gain: 1;
     in property <float> sample-pitch;
     in property <float> sample-fade-in;
@@ -382,6 +388,15 @@ component MaschineSampling inherits Rectangle {
             MaschineButton { text: "CAPTURE"; width: 56px; on: !edit-mode; clicked => { edit-mode = false; } }
             MaschineButton { text: "EDIT"; width: 38px; on: edit-mode; clicked => { edit-mode = true; } }
         }
+        if MaschineUi.sound-launch-mode != "" || MaschineUi.sound-launch-audio: MaschineButton {
+            height: 24px;
+            text: "LAUNCH · " + (MaschineUi.sound-launch-audio ? (MaschineUi.sound-launch-audio-mode == 0 ? "Pattern loop" : "Pattern gate") :
+                MaschineUi.sound-launch-mode == "poly" ? "One-shot poly" :
+                MaschineUi.sound-launch-mode == "retrigger" ? "Retrigger" :
+                MaschineUi.sound-launch-mode == "gate" ? "Gate" :
+                MaschineUi.sound-launch-mode == "loop" ? "Loop held" : "Custom") + " ▾";
+            clicked => { launch-options.show(); }
+        }
         if !edit-mode: HorizontalLayout {
             height: 24px;
             spacing: 4px;
@@ -429,12 +444,6 @@ component MaschineSampling inherits Rectangle {
                 clicked => { MaschineUi.sample-slice-mode = Math.mod(MaschineUi.sample-slice-mode + 1, 3); }
             }
             if MaschineUi.sample-slice-mode == 2: MaschineButton { text: "CLEAR"; width: 44px; clicked => { MaschineUi.sample-action("clear-markers"); } }
-            MaschineButton {
-                text: MaschineUi.sample-loop ? "LOOP ON" : "LOOP OFF";
-                width: 64px;
-                on: MaschineUi.sample-loop;
-                clicked => { MaschineUi.sample-edit("loop", MaschineUi.sample-loop ? 0 : 1); }
-            }
         }
         Rectangle {
             vertical-stretch: 1;
@@ -477,6 +486,72 @@ component MaschineSampling inherits Rectangle {
                 text: action;
                 enabled: MaschineUi.sample-loaded;
                 clicked => { MaschineUi.sample-action(action); }
+            }
+        }
+    }
+    launch-options := PopupWindow {
+        x: 6px; y: 62px;
+        width: max(200px, min(340px, root.width - 12px)); height: 210px;
+        Rectangle {
+            background: Theme.panel-raised;
+            border-radius: 5px;
+            border-width: 1px; border-color: Theme.border;
+            VerticalLayout {
+                padding: 8px; spacing: 5px;
+                HorizontalLayout {
+                    height: 24px;
+                    Text { text: MaschineUi.selected-sound-name; color: Theme.text; font-size: 11px; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                    MaschineButton { text: "×"; width: 26px; clicked => { launch-options.close(); } }
+                }
+                if MaschineUi.sound-launch-mode != "": Rectangle {
+                    height: 52px;
+                    for label[i] in ["One-shot poly", "Retrigger", "Gate", "Loop held"]: MaschineButton {
+                        x: Math.mod(i, 2) * parent.width / 2;
+                        y: floor(i / 2) * 27px;
+                        width: parent.width / 2 - 3px;
+                        height: 24px;
+                        text: label;
+                        on: MaschineUi.sound-launch-mode == ["poly", "retrigger", "gate", "loop"][i];
+                        clicked => { MaschineUi.sound-launch(["poly", "retrigger", "gate", "loop"][i]); }
+                    }
+                }
+                if MaschineUi.sound-launch-mode != "": Text {
+                    text: MaschineUi.sound-launch-mode == "poly" ? "Overlapping hits · selected Sound" :
+                        MaschineUi.sound-launch-mode == "retrigger" ? "New hit restarts sample and cuts previous hit" :
+                        MaschineUi.sound-launch-mode == "gate" ? "Plays while held · release closes gate" :
+                        MaschineUi.sound-launch-mode == "loop" ? "Repeats loop range while held · new hit restarts" :
+                        "Custom envelope / polyphony";
+                    color: Theme.text-dim; font-size: 9px; wrap: word-wrap;
+                }
+                if MaschineUi.sound-launch-audio: HorizontalLayout {
+                    height: 24px; spacing: 4px;
+                    MaschineButton { text: "Pattern loop"; horizontal-stretch: 1; on: MaschineUi.sound-launch-audio-mode == 0; clicked => { MaschineUi.sound-launch("audio-loop"); } }
+                    MaschineButton { text: "Pattern gate"; horizontal-stretch: 1; on: MaschineUi.sound-launch-audio-mode == 1; clicked => { MaschineUi.sound-launch("audio-gate"); } }
+                }
+                if MaschineUi.sound-launch-audio: HorizontalLayout {
+                    height: 24px; spacing: 4px;
+                    for label[i] in ["Resample", "Stretch", "Formant"]: MaschineButton {
+                        text: label; horizontal-stretch: 1;
+                        on: MaschineUi.sound-launch-audio-engine == i;
+                        clicked => { MaschineUi.sound-launch(["resample", "stretch", "formant"][i]); }
+                    }
+                }
+                if MaschineUi.sound-launch-audio: Text {
+                    text: MaschineUi.sound-launch-audio-engine == 0 ? "Tempo follows pattern · pitch follows speed" : "Tempo follows pattern · pitch preserved";
+                    color: Theme.text-dim; font-size: 9px; wrap: word-wrap;
+                }
+                if MaschineUi.sound-launch-mode != "" || MaschineUi.sound-launch-audio: Text {
+                    text: MaschineUi.sound-launch-audio ? "SOURCE LENGTH · focused Audio take" : "FIT ZONE 1 · current BPM · pitch preserved";
+                    color: Theme.text-dim; font-size: 9px;
+                }
+                if MaschineUi.sound-launch-mode != "" || MaschineUi.sound-launch-audio: HorizontalLayout {
+                    height: 24px; spacing: 4px;
+                    for bars in [1, 2, 4, 8]: MaschineButton {
+                        text: bars + " bars"; horizontal-stretch: 1;
+                        on: MaschineUi.sound-launch-audio && abs(MaschineUi.sound-launch-bars - bars) < 0.001;
+                        clicked => { MaschineUi.sound-launch("fit-" + bars); }
+                    }
+                }
             }
         }
     }

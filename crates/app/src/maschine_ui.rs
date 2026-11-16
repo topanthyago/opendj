@@ -27,6 +27,9 @@ use crate::{
     MaschineUi,
 };
 
+#[path = "maschine_launch.rs"]
+mod launch;
+
 const DECK: usize = 2;
 
 pub const NATIVE_INSTRUMENTS: &[(&str, &str)] = &[
@@ -279,6 +282,41 @@ pub fn install(
             })
             .collect(),
     ));
+
+    {
+        let editor = editor.clone();
+        let selection = selection.clone();
+        let handle = handle.clone();
+        let weak = app.as_weak();
+        ui.on_sound_launch(move |action| {
+            let (group, sound, _, _) = selection.indices();
+            let generation = handle.project_generation();
+            let version = handle.snapshot_version();
+            let bpm = selection.tempo.get();
+            let action = action.to_string();
+            if let Some(app) = weak.upgrade() {
+                app.global::<MaschineUi>().set_status("Updating selected Sound…".into());
+            }
+            editor.command(move |handle| {
+                let sampler = handle.snapshot_cached().is_some_and(|project| {
+                    project.groups.get(group)
+                        .and_then(|g| g.sounds.get(sound))
+                        .is_some_and(|s| s.instrument == "Sampler")
+                });
+                let bars = action.strip_prefix("fit-")
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .filter(|_| sampler);
+                if let Some(bars) = bars {
+                    return launch::fit(handle, generation, version, group, sound, bars, bpm);
+                }
+                handle.edit_deferred_for_project(generation, move |doc| {
+                    launch::apply(doc, group, sound, &action)
+                })?
+                .recv().map_err(|_| "Maschine editor stopped".to_string())??;
+                Ok(())
+            });
+        });
+    }
 
     {
         let editor = editor.clone();
@@ -786,6 +824,13 @@ fn show(
     (group, sound, pattern, _): (usize, usize, usize, usize),
 ) {
     let ui = app.global::<MaschineUi>();
+    let launch_sound = project.groups.get(group).and_then(|g| g.sounds.get(sound));
+    ui.set_sound_launch_mode(launch::mode(launch_sound).into());
+    ui.set_sound_launch_audio(launch_sound.is_some_and(|s| s.instrument == "AudioModule"));
+    ui.set_sound_launch_bars(launch::audio_bars(project, launch_sound) as f32);
+    let slot = launch_sound.and_then(|s| s.slots.first());
+    ui.set_sound_launch_audio_mode(slot.and_then(|s| s.param("mode")).unwrap_or(0.0) as i32);
+    ui.set_sound_launch_audio_engine(slot.and_then(|s| s.param("engine")).unwrap_or(1.0) as i32);
     ui.set_project_name(project.name.as_str().into());
     ui.set_groups(model(
         (0..8)

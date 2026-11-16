@@ -157,7 +157,22 @@ fn prepare_frames(
                 .fold(0.0f32, |peak, f| peak.max(f[0].abs()).max(f[1].abs()))
         })
         .collect();
-    let bytes = wav(&frames, rate)?;
+    let path = store_sample(&frames, rate)?;
+    Ok(Prepared {
+        project_generation,
+        path,
+        ranges,
+        group,
+        sound,
+        waveform,
+        preserve_zone: false,
+        source_sample: None,
+    })
+}
+
+/// Store immutable, content-addressed audio shared by captures and offline edits.
+pub(crate) fn store_sample(frames: &[[f32; 2]], rate: u32) -> Result<PathBuf, String> {
+    let bytes = wav(frames, rate)?;
     let hash = Sha256::digest(&bytes);
     let name: String = hash.iter().map(|b| format!("{b:02x}")).collect();
     let root = opendj_engine::paths::config_base()
@@ -208,16 +223,7 @@ fn prepare_frames(
     if std::fs::read(&path).map_err(|e| e.to_string())? != bytes {
         return Err("sample cache hash collision or corrupt file".into());
     }
-    Ok(Prepared {
-        project_generation,
-        path,
-        ranges,
-        group,
-        sound,
-        waveform,
-        preserve_zone: false,
-        source_sample: None,
-    })
+    Ok(path)
 }
 
 impl Prepared {
