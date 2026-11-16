@@ -29,6 +29,9 @@ pub use deckard_model::{
 pub use mxprj::decode::Value;
 pub use mxprj::sound_info::SoundInfo;
 
+#[path = "maschine_paths.rs"]
+mod project_paths;
+
 use crate::effects::BLOCK;
 use crate::groove::{GrooveControls, GrooveManualHit, GroovePadEdit, GrooveStep, Source};
 use crate::groove_dice::{self, Dice, Habits, Move, Track};
@@ -800,8 +803,8 @@ impl Editor {
                 self.backup_if_needed()?;
                 let data = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
                 let origin = project_origin(&path, &data)?;
-                let mut document = Document::from_bytes(data, origin)?;
-                let modified = complete_groups(&mut document)?;
+                let mut document = project_paths::normalize(Document::from_bytes(data, origin)?)?;
+                let modified = complete_groups(&mut document)? || document.is_dirty();
                 self.document = Some(document);
                 self.groove_solo_saved = [None; GROUPS];
                 self.publish_snapshot(modified)?;
@@ -921,7 +924,7 @@ impl Editor {
             }
             Request::Open(path) => {
                 self.lock_project()?;
-                let mut document = Document::open(&path)?;
+                let mut document = project_paths::normalize(Document::open(&path)?)?;
                 complete_groups(&mut document)?;
                 self.autosave_now()?;
                 let autosave = self
