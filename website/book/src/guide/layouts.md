@@ -78,7 +78,7 @@ The menu at the top left of the window switches layouts:
   macOS, the media overlay on Windows, the desktop's media controls on
   Linux) work Player as its buttons do, and show the track with its art.
   The DJ layouts leave them alone unless **Media keys in every layout** is
-  on in **Settings › Keyboard**, so a headphone button can't stop a deck
+  on in **Settings › Player**, so a headphone button can't stop a deck
   in the middle of a set.
   The top bar keeps to search. The search box (**⌘F**) is Player's only
   search box: it filters the track list and shows the best matches as you
@@ -89,15 +89,19 @@ The menu at the top left of the window switches layouts:
   album in order, and on an artist **Show tracks** searches for them. The keys are **↵**, **⇧↵** and **⌘↵**; **Esc**
   clears the box and the list's search. There is no MASTER button (the
   bar's volume is the master volume); **REC** shows only while recording
-  (start it from **File › Record Mix**), and **MIC** only while the mic is
-  on, or when **Show MIC** is ticked in the layout menu.
+  (start it from **File › Record Mix**), and there is no **MIC** button
+  (switch to another layout to use the microphone).
   Underneath, decks 1 and 2 take turns and [Automix](automix.md) mixes from
   one to the other. **Play** switches Automix on, **Next** mixes into the next
   track straight away, **Previous** goes back to the start of the track, and
   **Order** puts Up Next in order (shuffle, BPM, harmonic and so on). The
   large waveforms and the FX bar are hidden in Player.
-- **2-Deck** shows the full decks, with pads and loops, and the mixer between
-  them (see [Decks and mixer](decks.md)).
+- **2-Deck** shows the full decks, with jogs, tempo faders, pads and loops,
+  and the mixer between them (see [Decks and mixer](decks.md)).
+- **2-Deck Basic** shows two lighter decks without jogs or tempo faders, the
+  slim mixer between them and the pads and loops in a bar under them
+  (**PADS** shows or hides it, **JOG** adds a jog to each deck). It is off
+  at first: switch it on with the layout menu's pencil.
 - **4-Deck** shows four complete deck editors. **2×2** puts decks 1 and 2
   above decks 3 and 4. Click the **2×2** button beside the layout menu for
   **1×4**, with decks 3, 1, 2 and 4 across the window. The choice is kept
@@ -114,7 +118,6 @@ The menu at the top left of the window switches layouts:
   Deck 3 also offers the embedded Maschine with 16 Sounds per Group.
   [Groove Box and Maschine](groove-box.md#maschine-with-deckard)
 - **Prep** shows deck 1 alone, for getting tracks ready (see [Prep](#prep)).
-  It isn't in the menu at first: add it in **Settings › Layouts**.
 
 The button at the bottom left of the window hides the decks for a compact
 view in 2-Deck and 4-Deck.
@@ -122,20 +125,36 @@ view in 2-Deck and 4-Deck.
 ## Your layouts
 
 The layout menu offers only **your layouts**. At first that's Player,
-2-Deck, 2-Deck Pro and 4-Deck. To change them, click the small cog at the
-top right of the layout menu, or open **Settings › Layouts**:
+2-Deck, 4-Deck and Prep, in that order. To change them, click the
+**pencil** at the top right of the layout menu. It turns the menu into a
+list of every layout, each with a switch, as the side panel tabs' and the
+library rail's choosers have:
 
-- **Your layouts** lists the layouts the menu offers, in its order, each
-  with a small drawing of it. **↑** and **↓** move one up or down; **−**
-  takes it out of the menu. The layout you're on can't be taken out.
-- **More layouts** shows the others as cards, each with a drawing and a
-  line on what it's for. **+ Add** puts one at the end of your layouts.
+- Switch a layout on to put it in the menu, or off to take it out. The
+  layout you're on, and the last one on, can't be switched off.
+- Drag a row by its grip (the six dots at its left) to move it up or down the menu.
+- **Reset to default** goes back to Player, 2-Deck, 4-Deck and Prep.
 
-Click any row or card to switch to that layout straight away. A
-controller's VIEW button (on the DDJ-FLX4, **SHIFT** + right **LOAD**)
+Click the lit pencil to go back to the menu.
+
+A controller's VIEW button (on the DDJ-FLX4, **SHIFT** + right **LOAD**)
 goes to the next of your layouts, and from the last back to the first.
-Prep, and layouts added to openDJ in later versions, start under More
-layouts.
+Layouts added to openDJ in later versions start switched off.
+
+In openDJ 0.6 **2-Deck** was called 2-Deck Pro, and **2-Deck Basic** was
+called 2-Deck. Your layouts carry over.
+
+## Appearance
+
+**Settings › Appearance** picks **Dark**, **Light** or **Match
+system**, and so does the row at the foot of the layout menu (**Auto**
+there is Match system). Dark is the default. Light is easier to read in daylight and at
+outdoor gigs: panels, the library, buttons and Settings turn light, while
+the big waveforms and the overviews stay on black with their colours, as
+they read best there. Lilac text turns a deeper lilac so it stays readable
+on white, and the Player layout drops its striped rows. **Match system**
+follows your computer's light or dark setting, also when it changes while
+openDJ is open. The mini player and the karaoke screen stay dark.
 
 ## Prep
 
@@ -149,8 +168,9 @@ genre and at least one of your tags), **Cover**, **Ready** (checklist lines
 ticked) and **Score**. Pick other columns from the header's menu as
 in any list; In Prep keeps its own set. Load a track and work through it:
 
-- The large waveform shows 8 bars; **−** and **+** above the hot cues show
-  more or fewer. While the grid is unlocked, dragging the waveform slides the
+- The large waveform shares the zoom of every other layout (see
+  [Waveform zoom](decks.md#waveform-zoom)); **−** and **+** above the hot cues
+  zoom out and in, with the step between them. While the grid is unlocked, dragging the waveform slides the
   audio under the grid, so you can line the beat lines up with the kicks by
   hand; one drag is one **Undo**. With the grid locked, dragging moves through
   the track as on the other layouts.

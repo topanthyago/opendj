@@ -8,8 +8,9 @@
 | <kbd>⌘</kbd> <kbd>I</kbd> (Linux and Windows: <kbd>Ctrl</kbd> <kbd>I</kbd>) | Show the picked track in the side panel's Info tab, as **Show Info** on the track menu does |
 | <kbd>⌘</kbd> <kbd>A</kbd> (Linux and Windows: <kbd>Ctrl</kbd> <kbd>A</kbd>) | Pick every track in the track list or side list you last clicked, to drag or analyze them together |
 | <kbd>⌘</kbd> <kbd>,</kbd> (Linux and Windows: <kbd>Ctrl</kbd> <kbd>,</kbd>) | Open or close Settings |
+| <kbd>⇧</kbd> <kbd>⌥</kbd> <kbd>←</kbd> / <kbd>⇧</kbd> <kbd>⌥</kbd> <kbd>→</kbd> (Linux and Windows: <kbd>Shift</kbd> <kbd>Alt</kbd>) | Unload deck 1 or deck 2 (`deck 1 eject`), as ⏏ on the deck's cover does; not while it plays |
 | <kbd>Esc</kbd> | Close Settings |
-| Media keys (play/pause, next, previous) | In [Player](layouts.md), play or pause, mix into the next track in Up Next, or go back to the start of the track; headphone buttons and the system's Now Playing do the same. Other layouts only with **Media keys in every layout** on in Settings › Keyboard |
+| Media keys (play/pause, next, previous) | In [Player](layouts.md), play or pause, mix into the next track in Up Next, or go back to the start of the track; headphone buttons and the system's Now Playing do the same. Other layouts only with **Media keys in every layout** on in Settings › Player |
 
 ## openDJscript
 
@@ -34,6 +35,7 @@ set '[Master],gain' 1             a control of another group
 | `play`, `pause`, `play_pause` | Start or stop the deck |
 | `goto_start` | Jump to the start of the track |
 | `sync`, `key_lock`, `quantize`, `slip` | Turn that on or off |
+| `edit_grid` | Start or finish editing the beat grid (G) |
 | `loop 4`, `loop_exit` | Loop that many beats (4 if left out), end the loop |
 | `hot_cue 1` | Play from a hot cue, or set it |
 | `eject` | Unload the deck |

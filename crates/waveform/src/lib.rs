@@ -29,7 +29,17 @@ pub enum Style {
     /// played part in the accent, the rest grey, the mix zone (see
     /// [`WaveformView::set_mix`]) in a dim accent. No cues or minute dots.
     Mono,
+    /// One shape in blue, lighter where the highs are loud (rekordbox's
+    /// Blue).
+    Blue,
+    /// Each stem in its own colour, the loudest at the back, from the
+    /// stem levels a [`GpuTrack`] has (see [`Extras`]); [`Style::Rgb`] for a
+    /// track without them.
+    Stems,
 }
+
+/// Stems a waveform draws at most, as the engine plays them.
+pub const MAX_STEMS: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -198,7 +208,14 @@ struct Params {
     mark_count: u32,
     /// The text atlas's width and height, in atlas pixels.
     atlas: [f32; 2],
-    _pad: u32,
+    /// 1: drawn from the bottom edge up.
+    half: u32,
+    /// 1: the grid is being edited: beats and bar lines drawn louder, over
+    /// the waveform too (scrolling only).
+    grid_edit: u32,
+    /// Scrolling: where the play line is, as a fraction of the width.
+    needle: f32,
+    _pad: [u32; 2],
     /// Bit `n` set: lane `n` (from the bottom) is tinted.
     lane_tint: [u32; 4],
     mark_color: [f32; 4],
@@ -208,6 +225,13 @@ struct Params {
     /// Each mark's start and end, in slices, its row, and its kind (as in
     /// [`MarkKind`]).
     marks: [[f32; 4]; MAX_MARKS],
+    /// The vocal levels: first texel, count, finest slices per level, and
+    /// 1 to tint the sung parts.
+    vocal: [f32; 4],
+    /// The stem levels: first texel, count, finest slices per level, and
+    /// how many stems (0: not drawn).
+    stems: [f32; 4],
+    stem_colors: [[f32; 4]; MAX_STEMS],
 }
 
 /// The colours [`MarkKind::Level`]'s `color` 1 to 8 picks, as sRGB hex.
@@ -289,8 +313,8 @@ pub struct Lanes {
 /// far more than any overview needs.
 const MAX_LEVELS: usize = 16;
 
-/// Band colours: bass red, mids amber, highs blue.
-#[derive(Clone, Copy, Debug)]
+/// Band colours; by default bass red, mids amber, highs blue.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
     pub low: [f32; 4],
     pub mid: [f32; 4],
@@ -305,6 +329,42 @@ impl Default for Palette {
             mid: [1.0, 0.72, 0.12, 1.0],
             high: [0.30, 0.62, 1.0, 1.0],
             background: [0.05, 0.05, 0.055, 1.0],
+        }
+    }
+}
+
+/// An sRGB colour as `0xRRGGBB`, for a [`Palette`].
+const fn rgb(hex: u32) -> [f32; 4] {
+    [
+        ((hex >> 16) & 0xFF) as f32 / 255.0,
+        ((hex >> 8) & 0xFF) as f32 / 255.0,
+        (hex & 0xFF) as f32 / 255.0,
+        1.0,
+    ]
+}
+
+/// The palettes the stacked bands ([`Style::Bands`]) come in, as low, mid
+/// and high: blue, orange and white as on rekordbox; and lilac (openDJ's
+/// accent), cyan and white.
+pub const BAND_PALETTES: [[[f32; 4]; 3]; 2] = [
+    [rgb(0x0050E0), rgb(0xF8A000), rgb(0xF0E8D0)],
+    [rgb(0xB69CFF), rgb(0x22C7E0), rgb(0xF4FBFF)],
+];
+
+impl Palette {
+    /// The default background with one of [`BAND_PALETTES`] (the first if
+    /// out of range).
+    pub fn bands(index: usize) -> Self {
+        let [low, mid, high] = BAND_PALETTES[if index < BAND_PALETTES.len() {
+            index
+        } else {
+            0
+        }];
+        Self {
+            low,
+            mid,
+            high,
+            ..Self::default()
         }
     }
 }
@@ -412,6 +472,29 @@ pub struct GpuTrack {
     level_offset: [[u32; 4]; 4],
     level_len: [[u32; 4]; 4],
     num_levels: u32,
+    /// Where the vocal levels start (in texels, four to a texel), how many
+    /// there are, and finest-level slices per level; none if `count` is 0.
+    vocal: [f32; 3],
+    /// Where the stem levels start (two texels a level), how many levels
+    /// there are, finest-level slices per level, and how many stems.
+    stems: [f32; 4],
+    stem_colors: [[f32; 4]; MAX_STEMS],
+}
+
+/// What a [`GpuTrack`] can carry beside its waveform.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Extras<'a> {
+    /// Vocal levels, 0 to 255, `vocal_rate` a second, that
+    /// [`WaveformView::set_show_vocals`] marks the sung parts with.
+    pub vocals: &'a [u8],
+    pub vocal_rate: f64,
+    /// Each stem's peak along the track, `stem_rate` a second, as the
+    /// square root of its level relative to the loudest, scaled to 0..255
+    /// (as waveform slices are), for [`Style::Stems`].
+    pub stems: &'a [[u8; MAX_STEMS]],
+    pub stem_rate: f64,
+    /// Each stem's colour as `0xRRGGBB`; as many as there are stems.
+    pub stem_colors: &'a [u32],
 }
 
 impl GpuTrack {
@@ -427,7 +510,41 @@ impl GpuTrack {
         levels: &[Vec<[u8; 8]>],
         bins_per_second: f64,
     ) -> Self {
-        let capacity = BIN_ROW as usize * renderer.max_rows as usize;
+        Self::with_extras(
+            device,
+            queue,
+            renderer,
+            id,
+            levels,
+            bins_per_second,
+            Extras::default(),
+        )
+    }
+
+    /// Uploads `levels` as [`GpuTrack::new`] does, with the track's vocal
+    /// and stem levels (see [`Extras`]).
+    pub fn with_extras(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        renderer: &WaveformRenderer,
+        id: usize,
+        levels: &[Vec<[u8; 8]>],
+        bins_per_second: f64,
+        extras: Extras,
+    ) -> Self {
+        let vocals = if extras.vocal_rate > 0.0 {
+            extras.vocals
+        } else {
+            &[]
+        };
+        let stem_count = extras.stem_colors.len().min(MAX_STEMS);
+        let stems = if extras.stem_rate > 0.0 && stem_count > 0 {
+            extras.stems
+        } else {
+            &[]
+        };
+        let capacity = (BIN_ROW as usize * renderer.max_rows as usize)
+            .saturating_sub(vocals.len().div_ceil(4) + 2 * stems.len());
         let texels = |from: usize| -> usize {
             levels[from..]
                 .iter()
@@ -439,17 +556,41 @@ impl GpuTrack {
             .find(|&b| texels(b) <= capacity)
             .unwrap_or(levels.len());
         let used = &levels[base..levels.len().min(base + MAX_LEVELS)];
-        let (data, level_offset, level_len) = pack(used);
+        let (data, level_offset, level_len, [vocal_offset, stem_offset]) =
+            pack(used, vocals, stems);
         let rows = data.len() / BIN_ROW as usize;
         let texture = bins_texture(device, rows as u32);
         write_bins(queue, &texture, &data);
+        let bins_per_second = bins_per_second / 2f64.powi(base as i32);
         Self {
             id,
             texture,
-            bins_per_second: bins_per_second / 2f64.powi(base as i32),
+            bins_per_second,
             level_offset,
             level_len,
             num_levels: used.len() as u32,
+            vocal: [
+                vocal_offset as f32,
+                vocals.len() as f32,
+                if vocals.is_empty() {
+                    0.0
+                } else {
+                    (bins_per_second / extras.vocal_rate) as f32
+                },
+            ],
+            stems: if stems.is_empty() {
+                [0.0; 4]
+            } else {
+                [
+                    stem_offset as f32,
+                    stems.len() as f32,
+                    (bins_per_second / extras.stem_rate) as f32,
+                    stem_count as f32,
+                ]
+            },
+            stem_colors: std::array::from_fn(|k| {
+                extras.stem_colors.get(k).map_or([0.0; 4], |&c| rgb(c))
+            }),
         }
     }
 
@@ -459,9 +600,11 @@ impl GpuTrack {
     /// new [`GpuTrack`] is needed then.
     pub fn rewrite(&self, queue: &wgpu::Queue, levels: &[Vec<[u8; 8]>]) -> bool {
         let used = &levels[..levels.len().min(MAX_LEVELS)];
-        let (data, level_offset, level_len) = pack(used);
+        let (data, level_offset, level_len, _) = pack(used, &[], &[]);
         let rows = (data.len() / BIN_ROW as usize) as u32;
         if used.len() as u32 != self.num_levels
+            || self.vocal[1] > 0.0
+            || self.stems[1] > 0.0
             || level_len != self.level_len
             || level_offset != self.level_offset
             || rows != self.texture.height()
@@ -487,9 +630,14 @@ impl GpuTrack {
 }
 
 /// Lays levels out as the shader reads them: two texels per slice, each
-/// level after the one before, padded to whole rows of [`BIN_ROW`].
+/// level after the one before, then the vocal and stem levels (their first
+/// texels returned last), padded to whole rows of [`BIN_ROW`].
 #[allow(clippy::type_complexity)]
-fn pack(used: &[Vec<[u8; 8]>]) -> (Vec<[u8; 4]>, [[u32; 4]; 4], [[u32; 4]; 4]) {
+fn pack(
+    used: &[Vec<[u8; 8]>],
+    vocals: &[u8],
+    stems: &[[u8; MAX_STEMS]],
+) -> (Vec<[u8; 4]>, [[u32; 4]; 4], [[u32; 4]; 4], [u32; 2]) {
     let mut level_offset = [[0u32; 4]; 4];
     let mut level_len = [[0u32; 4]; 4];
     let mut data: Vec<[u8; 4]> = Vec::with_capacity(used.iter().map(|l| 2 * l.len()).sum());
@@ -501,10 +649,23 @@ fn pack(used: &[Vec<[u8; 8]>]) -> (Vec<[u8; 4]>, [[u32; 4]; 4], [[u32; 4]; 4]) {
             data.push([b[4], b[5], b[6], b[7]]);
         }
     }
+    // Then the vocal levels, four to a texel.
+    let vocal_offset = data.len() as u32;
+    data.extend(
+        vocals
+            .chunks(4)
+            .map(|c| std::array::from_fn(|k| c.get(k).copied().unwrap_or(0))),
+    );
+    // Then the stem levels, two texels each.
+    let stem_offset = data.len() as u32;
+    for s in stems {
+        data.push([s[0], s[1], s[2], s[3]]);
+        data.push([s[4], 0, 0, 0]);
+    }
     // Pad to whole rows so the upload is one rectangle.
     let rows = data.len().div_ceil(BIN_ROW as usize).max(1);
     data.resize(rows * BIN_ROW as usize, [0; 4]);
-    (data, level_offset, level_len)
+    (data, level_offset, level_len, [vocal_offset, stem_offset])
 }
 
 /// Uploads packed slices (see [`pack`]) into a bins texture of their size.
@@ -531,6 +692,12 @@ pub struct WaveformView {
     mode: Mode,
     style: Style,
     palette: Palette,
+    /// Drawn from the bottom up (see [`WaveformView::set_half`]).
+    half: bool,
+    /// Where the play line is (see [`WaveformView::set_needle`]).
+    needle: f32,
+    /// Marks the sung parts (see [`WaveformView::set_show_vocals`]).
+    show_vocals: bool,
     /// The next mix, as fractions of the track (Mono style).
     mix: Option<(f32, f32)>,
     texture: wgpu::Texture,
@@ -540,6 +707,8 @@ pub struct WaveformView {
     empty: wgpu::Texture,
     /// Draws a live deck (see [`WaveformView::set_live`]).
     live: bool,
+    /// Draws the grid louder (see [`WaveformView::set_grid_edit`]).
+    grid_edit: bool,
     /// Lanes of marks over the waveform (see [`WaveformView::set_lanes`]).
     lanes: Option<Lanes>,
 }
@@ -557,6 +726,9 @@ impl WaveformView {
             mode,
             style: Style::default(),
             palette: Palette::default(),
+            half: false,
+            needle: 0.5,
+            show_vocals: false,
             mix: None,
             texture: create_texture(device, width, height),
             size: (width.max(1), height.max(1)),
@@ -564,12 +736,42 @@ impl WaveformView {
             track: None,
             empty,
             live: false,
+            grid_edit: false,
             lanes: None,
         }
     }
 
     pub fn set_style(&mut self, style: Style) {
         self.style = style;
+    }
+
+    /// The band colours, keeping the background.
+    pub fn set_palette(&mut self, palette: Palette) {
+        self.palette = Palette {
+            background: self.palette.background,
+            ..palette
+        };
+    }
+
+    /// Draws the waveform from the bottom edge up instead of mirrored about
+    /// the middle, as rekordbox does. A scrolling view showing lanes of
+    /// marks stays whole.
+    pub fn set_half(&mut self, half: bool) {
+        self.half = half;
+    }
+
+    /// Where a scrolling view's play line is, as a fraction of its width
+    /// from the left: 0.5 in the middle (the default), 0.25 a quarter in so
+    /// more of what is coming shows.
+    pub fn set_needle(&mut self, at: f32) {
+        self.needle = at.clamp(0.1, 0.9);
+    }
+
+    /// Marks where someone sings with a cyan bar along the bottom of a
+    /// scrolling view, from the vocal levels its [`GpuTrack::with_extras`]
+    /// has. Not on overviews, nor in the Mono style.
+    pub fn set_show_vocals(&mut self, show: bool) {
+        self.show_vocals = show;
     }
 
     /// The stretch where the next mix happens, as fractions of the track
@@ -580,6 +782,11 @@ impl WaveformView {
 
     /// Whether the view shows a live deck, whose waveform ends at the play
     /// line: its beat grid and bar numbers then run on past the end.
+    /// Draws the beat grid louder, for editing it (scrolling only).
+    pub fn set_grid_edit(&mut self, on: bool) {
+        self.grid_edit = on;
+    }
+
     pub fn set_live(&mut self, live: bool) {
         self.live = live;
     }
@@ -667,6 +874,8 @@ impl WaveformView {
                 Style::Rgb => 0,
                 Style::Bands => 1,
                 Style::Mono => 2,
+                Style::Blue => 3,
+                Style::Stems => 4,
             },
             scale,
             spread: DIGIT_SPREAD,
@@ -694,13 +903,32 @@ impl WaveformView {
             lane_count: 0,
             mark_count: 0,
             atlas: renderer.digits.size,
-            _pad: 0,
+            half: (self.half && (self.mode == Mode::Overview || self.lanes.is_none())) as u32,
+            grid_edit: (self.grid_edit && self.mode == Mode::Scrolling) as u32,
+            needle: if self.mode == Mode::Scrolling {
+                self.needle
+            } else {
+                0.5
+            },
+            _pad: [0; 2],
             lane_tint: [0; 4],
             mark_color: [0.0; 4],
             lit_color: [0.0; 4],
             word_width: renderer.digits.words,
             marks: [[0.0; 4]; MAX_MARKS],
+            vocal: [0.0; 4],
+            stems: [0.0; 4],
+            stem_colors: [[0.0; 4]; MAX_STEMS],
         };
+        if let (Some(t), Style::Stems) = (track, self.style) {
+            params.stems = t.stems;
+            params.stem_colors = t.stem_colors;
+        }
+        if let (Some(t), true) = (track, self.show_vocals) {
+            if t.vocal[1] > 0.0 && t.vocal[2] > 0.0 {
+                params.vocal = [t.vocal[0], t.vocal[1], t.vocal[2], 1.0];
+            }
+        }
         if let Some(l) = &self.lanes {
             params.trace_alpha = l.trace;
             params.lane_count = l.count.min(128);

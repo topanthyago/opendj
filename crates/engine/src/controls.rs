@@ -133,6 +133,9 @@ pub(crate) struct DeckControls {
     pub(crate) sync_enabled: ControlHandle,
     pub(crate) rate: ControlHandle,
     pub(crate) rate_range: ControlHandle,
+    /// Requested range, applied with its fader adjustment before sync so
+    /// the tempo stays where it is. Zero means no pending request.
+    pub(crate) rate_range_set: ControlHandle,
     /// Mixxx's `rate_dir`: which way the tempo fader changes the speed. `rate`
     /// is where the fader is (+1 at the top); the speed is
     /// `1 + rate * rateRange * rate_dir`. -1, the app's default, slows the
@@ -255,6 +258,10 @@ pub(crate) struct DeckControls {
     /// Clicks on each beat of the grid, louder on bar 1 (openDJ's own), to
     /// check the grid by ear.
     pub(crate) metronome: ControlHandle,
+    /// The deck's grid edit mode (openDJ's own): while on, the scrolling
+    /// waveform draws the grid louder and dragging it moves the grid. Turns
+    /// off when a new track loads.
+    pub(crate) beats_edit: ControlHandle,
     /// A live input played through the deck instead of a track (openDJ's
     /// own): 0 none, else 1 + the input (see [`crate::inputs`]), so 1 the
     /// microphone, 2 the auxiliary input, 3 the instrument.
@@ -403,6 +410,7 @@ impl DeckControls {
             sync_enabled: reg.toggle(g, "sync_enabled"),
             rate: reg.create(g, "rate", 0.0, -1.0, 1.0, Behavior::Linear),
             rate_range: reg.create(g, "rateRange", 0.08, 0.01, 1.0, Behavior::Linear),
+            rate_range_set: reg.create(g, "rate_range_set", 0.0, 0.0, 1.0, Behavior::Free),
             rate_dir: reg.create(g, "rate_dir", 1.0, -1.0, 1.0, Behavior::Free),
             rate_reset: reg.toggle(g, "rate_reset"),
             rate_set_zero: reg.push(g, "rate_set_zero"),
@@ -530,12 +538,13 @@ impl DeckControls {
             keylock: reg.toggle(g, "keylock"),
             bpmlock: reg.toggle(g, "bpmlock"),
             metronome: reg.toggle(g, "metronome"),
+            beats_edit: reg.toggle(g, "beats_edit"),
             live_input: reg.create(
                 g,
                 "live_input",
                 0.0,
                 0.0,
-                crate::inputs::NUM_INPUTS as f64,
+                crate::inputs::MIXER as f64,
                 Behavior::Free,
             ),
             live_trim: reg.create(g, "live_trim", 0.0, -12.0, 24.0, Behavior::Linear),
@@ -753,8 +762,9 @@ pub(crate) struct MasterControls {
     pub(crate) key_match_on_load: ControlHandle,
     /// What loading a track puts back to normal on its deck: `[Controls]`
     /// auto_reset_fx (effects off), auto_reset_eq (EQ, kills, filter and
-    /// sculpt) and auto_reset_gain (the gain knob). All on to start.
-    pub(crate) auto_reset: [ControlHandle; 3],
+    /// sculpt), auto_reset_gain (the gain knob) and auto_reset_tempo (the
+    /// tempo fader back to 0%). All on to start.
+    pub(crate) auto_reset: [ControlHandle; 4],
     /// `[Controls] pfl_on_load`: loading a track cues its deck in the
     /// headphones and takes the other decks out of the cue. On to start;
     /// automix loads leave the cue alone.
@@ -774,7 +784,7 @@ pub(crate) struct MasterControls {
     /// faders, crossfader, cue, master effects and limiter left out.
     pub(crate) external_mixer: ControlHandle,
     /// `[Master] record_source`: what recording, going on air and the
-    /// loudness meter take: 0 the main mix, 1 to 3 Auxiliary input 1 to 3
+    /// loudness meter take: 0 the main mix, 1 to 8 Auxiliary input 1 to 8
     /// as it comes in (a hardware mixer's record out).
     pub(crate) record_source: ControlHandle,
 }
@@ -855,7 +865,14 @@ pub(crate) fn create_global_controls(reg: &ControlRegistry) -> MasterControls {
         ),
         deck_tap: reg.create("[Master]", "deck_tap", 1.0, 0.0, 2.0, Behavior::Free),
         external_mixer: reg.toggle("[Master]", "external_mixer"),
-        record_source: reg.create("[Master]", "record_source", 0.0, 0.0, 3.0, Behavior::Free),
+        record_source: reg.create(
+            "[Master]",
+            "record_source",
+            0.0,
+            0.0,
+            crate::inputs::NUM_AUXILIARIES as f64,
+            Behavior::Free,
+        ),
         vu_l: reg.indicator("[Master]", "VuMeterL", 1.0),
         vu_r: reg.indicator("[Master]", "VuMeterR", 1.0),
         // Mixxx keeps its ReplayGain switch in the [ReplayGain] group too.
@@ -883,7 +900,7 @@ pub(crate) fn create_global_controls(reg: &ControlRegistry) -> MasterControls {
             2.0,
             Behavior::Free,
         ),
-        auto_reset: ["fx", "eq", "gain"].map(|k| {
+        auto_reset: ["fx", "eq", "gain", "tempo"].map(|k| {
             let c = reg.toggle("[Controls]", &format!("auto_reset_{k}"));
             c.set_bool(true);
             c

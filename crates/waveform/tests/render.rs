@@ -4,7 +4,8 @@
 use std::sync::Arc;
 
 use opendj_waveform::{
-    steady_grid, wgpu, Frame, GpuTrack, Mode, PhraseKind, Style, WaveformRenderer, WaveformView,
+    steady_grid, wgpu, Extras, Frame, GpuTrack, Mode, Palette, PhraseKind, Style, WaveformRenderer,
+    WaveformView,
 };
 
 /// Builds the coarser levels the way the analyser does (peaks by maximum;
@@ -90,7 +91,7 @@ fn renders_scrolling_and_overview() {
         1000.0,
     ));
     for mode in [Mode::Scrolling, Mode::Overview] {
-        for style in [Style::Rgb, Style::Bands] {
+        for style in [Style::Rgb, Style::Bands, Style::Blue] {
             let mut view = WaveformView::new(&device, mode, 640, 96);
             view.set_style(style);
             view.set_track(&device, &renderer, Some(&track));
@@ -192,14 +193,15 @@ fn draws_beat_grid() {
     let mut view = WaveformView::new(&device, Mode::Scrolling, w, h);
     view.set_track(&device, &renderer, Some(&track));
     let frame = Frame {
-        // A quarter beat past a bar, so the playhead doesn't cover a bar line,
-        // less half a pixel so the lines fall on pixel centres (scrolling,
-        // lines are not snapped to pixels).
-        play_seconds: 40.25 - 0.5 * 8.0 / 640.0,
+        // A quarter beat past a bar, so the playhead doesn't cover a bar line.
+        play_seconds: 40.25,
         visible_seconds: 8.0,
         duration: 200.0,
         first_bar_beat: 0.0,
-        grid: steady_grid(120.0, 0.0),
+        // The grid half a pixel late, so its lines fall on pixel centres (the
+        // scrolling picture moves in whole pixels; lines between two pixels
+        // light both half).
+        grid: steady_grid(120.0, 0.5 * 8.0 / 640.0),
         cue: None,
         loop_range: None,
         loop_marking: None,
@@ -355,6 +357,53 @@ fn draws_phrase_bars() {
     let x60 = (60.0 / 100.0 * w as f64) as u32;
     let dot = (0..4).map(|dx| px(x60 - 2 + dx, h - 9)[0]).max().unwrap();
     assert!(dot > 120, "minute dot above the bar: {dot}");
+}
+
+/// An overview too short for its strips (a placeholder size, as when the
+/// deck it is measured on hides its overview) draws no phrase bar, so it
+/// never shows up stretched as solid phrase colour.
+#[test]
+fn short_overview_draws_no_phrase_bar() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let renderer = WaveformRenderer::new(&device, &queue);
+    let track = Arc::new(GpuTrack::new(
+        &device,
+        &queue,
+        &renderer,
+        1,
+        &levels(vec![[0; 8]; 100_000]),
+        1000.0,
+    ));
+    let (w, h) = (512u32, 4u32);
+    let mut view = WaveformView::new(&device, Mode::Overview, w, h);
+    view.set_track(&device, &renderer, Some(&track));
+    let frame = Frame {
+        play_seconds: 0.0,
+        visible_seconds: 8.0,
+        duration: 100.0,
+        first_bar_beat: 0.0,
+        grid: steady_grid(120.0, 0.0),
+        cue: None,
+        loop_range: None,
+        loop_marking: None,
+        hotcues: [None; 8],
+        slip: None,
+        gain: 1.0,
+        phrases: vec![(0.0, PhraseKind::Intro), (50.0, PhraseKind::Drop)],
+    };
+    view.render(&device, &queue, &renderer, Some(&frame), 1.0);
+    let data = read_back(&device, &queue, &view);
+    for y in 0..h {
+        let i = ((y * w + 384) * 4) as usize; // under the drop
+        let c = [data[i], data[i + 1], data[i + 2]];
+        // The same under the intro and under the drop: the waveform only.
+        let j = ((y * w + 128) * 4) as usize;
+        let intro = [data[j], data[j + 1], data[j + 2]];
+        assert_eq!(c, intro, "no phrase colour at row {y}");
+    }
 }
 
 /// The Mono style, the Player's scrubber: lilac up to the play position,
@@ -760,5 +809,402 @@ fn peaks_keep_their_height_between_pixels() {
             between.abs_diff(on_pixel) <= 1,
             "peak top at row {between} {offset} s on, row {on_pixel} on a pixel"
         );
+    }
+}
+
+/// A half overview grows from the bottom edge: the top rows stay empty for a
+/// quiet track that a full overview draws round the middle, and the band
+/// palettes and the Blue style draw.
+#[test]
+fn draws_half_overview_from_the_bottom() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let renderer = WaveformRenderer::new(&device, &queue);
+    // Quiet: about a third of the height.
+    let base = (0..10_000)
+        .map(|_| [40, 40, 40, 40, 30, 30, 30, 30])
+        .collect();
+    let track = Arc::new(GpuTrack::new(
+        &device,
+        &queue,
+        &renderer,
+        1,
+        &levels(base),
+        1000.0,
+    ));
+    let (w, h) = (256u32, 60u32); // rows of 256 px meet the copy alignment
+    let lit = |px: &[u8], y: u32| -> bool {
+        let row = &px[(y * w * 4) as usize..((y + 1) * w * 4) as usize];
+        row.chunks(4)
+            .filter(|c| c[0] as u32 + c[1] as u32 + c[2] as u32 > 120)
+            .count()
+            > w as usize / 2
+    };
+    for style in [Style::Bands, Style::Blue] {
+        let mut full = WaveformView::new(&device, Mode::Overview, w, h);
+        full.set_style(style);
+        full.set_palette(Palette::bands(1));
+        full.set_track(&device, &renderer, Some(&track));
+        full.render(&device, &queue, &renderer, None, 1.0);
+        let mut half = WaveformView::new(&device, Mode::Overview, w, h);
+        half.set_style(style);
+        half.set_palette(Palette::bands(1));
+        half.set_half(true);
+        half.set_track(&device, &renderer, Some(&track));
+        half.render(&device, &queue, &renderer, None, 1.0);
+        let full_px = read_back(&device, &queue, &full);
+        let half_px = read_back(&device, &queue, &half);
+        // Full: the middle is drawn, the bottom edge is not.
+        assert!(lit(&full_px, h / 2), "{style:?} full middle");
+        assert!(!lit(&full_px, h - 2), "{style:?} full bottom");
+        // Half: the bottom is drawn, the middle and top are not.
+        assert!(lit(&half_px, h - 3), "{style:?} half bottom");
+        assert!(!lit(&half_px, 3), "{style:?} half top");
+    }
+}
+
+/// Vocals › Bar marks the sung half of a track with a cyan bar along the
+/// bottom of the large waveform, and only while on; the overview has none.
+#[test]
+fn tints_the_sung_parts() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let renderer = WaveformRenderer::new(&device, &queue);
+    // 10 s of the same level; vocals in the second half only.
+    let base = (0..10_000)
+        .map(|_| [200, 120, 60, 200, 160, 100, 50, 160])
+        .collect();
+    let vocals: Vec<u8> = (0..100).map(|i| if i < 50 { 0 } else { 255 }).collect();
+    let track = Arc::new(GpuTrack::with_extras(
+        &device,
+        &queue,
+        &renderer,
+        1,
+        &levels(base),
+        1000.0,
+        Extras {
+            vocals: &vocals,
+            vocal_rate: 10.0,
+            ..Extras::default()
+        },
+    ));
+    let (w, h) = (256u32, 60u32);
+    // How cyan (green over red) a pixel is: on the bar along the bottom
+    // edge or in the middle of the waveform.
+    let green = |px: &[u8], x: u32, y: u32| {
+        let i = ((y * w + x) * 4) as usize;
+        px[i + 1] as i32 - px[i] as i32
+    };
+    for (show, style, mode) in [
+        (false, Style::Rgb, Mode::Scrolling),
+        (true, Style::Rgb, Mode::Scrolling),
+        (true, Style::Bands, Mode::Scrolling),
+        (true, Style::Stems, Mode::Scrolling),
+        (true, Style::Rgb, Mode::Overview),
+    ] {
+        let mut view = WaveformView::new(&device, mode, w, h);
+        view.set_style(style);
+        view.set_show_vocals(show);
+        view.set_track(&device, &renderer, Some(&track));
+        // The scrolling view shows 0..10 s with the play line at 5 s.
+        let frame = Frame {
+            play_seconds: if mode == Mode::Scrolling { 5.0 } else { 0.0 },
+            visible_seconds: 10.0,
+            duration: 10.0,
+            first_bar_beat: 0.0,
+            grid: steady_grid(0.0, 0.0),
+            cue: None,
+            loop_range: None,
+            loop_marking: None,
+            hotcues: [None; 8],
+            slip: None,
+            gain: 1.0,
+            phrases: Vec::new(),
+        };
+        view.render(&device, &queue, &renderer, Some(&frame), 1.0);
+        let px = read_back(&device, &queue, &view);
+        let (sung, not) = (green(&px, w * 7 / 8, h - 2), green(&px, w / 8, h - 2));
+        if show && mode == Mode::Scrolling {
+            assert!(sung > not + 40, "{style:?}: sung {sung}, not {not}");
+        } else {
+            assert!(
+                (sung - not).abs() < 5,
+                "{style:?} {mode:?}: sung {sung}, not {not}"
+            );
+        }
+        // Nothing along the top any more, and the waveform keeps its colours.
+        for y in [1, h / 2] {
+            let (a, b) = (green(&px, w * 7 / 8, y), green(&px, w / 8, y));
+            assert!((a - b).abs() < 5, "{style:?} {mode:?} row {y}: {a} vs {b}");
+        }
+    }
+}
+
+/// The Stems look draws each stem in its colour where it is the loudest,
+/// and RGB for a track without stem levels.
+#[test]
+fn draws_each_stem_in_its_color() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let renderer = WaveformRenderer::new(&device, &queue);
+    let base: Vec<[u8; 8]> = (0..10_000)
+        .map(|_| [200, 120, 60, 220, 160, 100, 50, 180])
+        .collect();
+    // Bass alone in the first half, vocals alone in the second.
+    let stems: Vec<[u8; 5]> = (0..100)
+        .map(|i| {
+            if i < 50 {
+                [0, 230, 0, 0, 0]
+            } else {
+                [0, 0, 0, 230, 0]
+            }
+        })
+        .collect();
+    let colors = [0x2E4E75, 0xD01010, 0xA26018, 0x10D010];
+    let (w, h) = (256u32, 60u32);
+    let frame = Frame {
+        play_seconds: 0.0,
+        visible_seconds: 8.0,
+        duration: 10.0,
+        first_bar_beat: 0.0,
+        grid: steady_grid(0.0, 0.0),
+        cue: None,
+        loop_range: None,
+        loop_marking: None,
+        hotcues: [None; 8],
+        slip: None,
+        gain: 1.0,
+        phrases: Vec::new(),
+    };
+    let draw = |track: &Arc<GpuTrack>| {
+        let mut view = WaveformView::new(&device, Mode::Overview, w, h);
+        view.set_style(Style::Stems);
+        view.set_track(&device, &renderer, Some(track));
+        view.render(&device, &queue, &renderer, Some(&frame), 1.0);
+        read_back(&device, &queue, &view)
+    };
+    let at = |px: &[u8], x: u32| {
+        let i = ((h / 2 * w + x) * 4) as usize;
+        (px[i] as i32, px[i + 1] as i32)
+    };
+    let with = Arc::new(GpuTrack::with_extras(
+        &device,
+        &queue,
+        &renderer,
+        1,
+        &levels(base.clone()),
+        1000.0,
+        Extras {
+            stems: &stems,
+            stem_rate: 10.0,
+            stem_colors: &colors,
+            ..Extras::default()
+        },
+    ));
+    let px = draw(&with);
+    let (r, g) = at(&px, w / 4);
+    assert!(r > g + 60, "bass half: r {r} g {g}");
+    let (r, g) = at(&px, w * 3 / 4);
+    assert!(g > r + 60, "vocal half: r {r} g {g}");
+    // Without stem levels it is drawn, as RGB.
+    let without = Arc::new(GpuTrack::new(
+        &device,
+        &queue,
+        &renderer,
+        2,
+        &levels(base),
+        1000.0,
+    ));
+    let px = draw(&without);
+    let i = ((h / 2 * w + w / 2) * 4) as usize;
+    assert!(px[i..i + 3].iter().any(|&c| c > 60), "drawn without stems");
+}
+
+/// 3-Band layers as rekordbox does: equal bands draw the lows widest, the
+/// overlap of low and mids in a darker mid, and the highs as a small core
+/// on top rather than the whole shape.
+#[test]
+fn three_band_keeps_the_highs_small() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let renderer = WaveformRenderer::new(&device, &queue);
+    let base = (0..10_000)
+        .map(|_| [200, 200, 200, 220, 200, 200, 200, 220])
+        .collect();
+    let track = Arc::new(GpuTrack::new(
+        &device,
+        &queue,
+        &renderer,
+        1,
+        &levels(base),
+        1000.0,
+    ));
+    let (w, h) = (256u32, 100u32);
+    let mut view = WaveformView::new(&device, Mode::Scrolling, w, h);
+    view.set_style(Style::Bands);
+    view.set_palette(Palette::bands(0));
+    view.set_track(&device, &renderer, Some(&track));
+    let frame = Frame {
+        play_seconds: 5.0,
+        visible_seconds: 4.0,
+        duration: 10.0,
+        first_bar_beat: 0.0,
+        grid: steady_grid(120.0, 0.0),
+        cue: None,
+        loop_range: None,
+        loop_marking: None,
+        hotcues: [None; 8],
+        slip: None,
+        gain: 1.0,
+        phrases: vec![],
+    };
+    view.render(&device, &queue, &renderer, Some(&frame), 1.0);
+    let px = read_back(&device, &queue, &view);
+    let at = |y: u32| -> [u8; 3] {
+        let i = ((y * w + 60) * 4) as usize;
+        [px[i], px[i + 1], px[i + 2]]
+    };
+    // Rows above the centre, from the edge in: background, low (blue),
+    // the low-and-mid overlap (dark orange), then the highs (cream).
+    let blue = |c: [u8; 3]| c[2] > 150 && c[0] < 60;
+    let orange = |c: [u8; 3]| c[0] > 120 && c[2] < 60;
+    let cream = |c: [u8; 3]| c[0] > 200 && c[1] > 200 && c[2] > 170;
+    let top = (0..h / 2)
+        .find(|&y| !(at(y)[0] < 40 && at(y)[2] < 40))
+        .unwrap();
+    let rows: Vec<u32> = (top..h / 2).collect();
+    let count = |f: &dyn Fn([u8; 3]) -> bool| rows.iter().filter(|&&y| f(at(y))).count();
+    assert!(blue(at(top + 1)), "lows outermost: {:?}", at(top + 1));
+    assert!(count(&orange) > 0, "overlap drawn");
+    let highs = count(&cream);
+    assert!(highs > 0, "highs drawn");
+    assert!(
+        highs * 3 < rows.len(),
+        "highs a small core: {highs} of {}",
+        rows.len()
+    );
+}
+
+/// Scrolling by part of a pixel draws, in every look, one of the frames a
+/// whole pixel either side, crisp: nothing about the shapes bobs up and
+/// down or goes soft between pixels. (Stems once sampled each pixel around
+/// its own position, so their outlines changed as they scrolled; and
+/// blending two frames kept the shapes' size but softened their outline
+/// halfway between pixels, a shimmer in loud passages.)
+#[test]
+fn scrolling_stays_crisp_in_every_look() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let renderer = WaveformRenderer::new(&device, &queue);
+    // Busy music: a loud hit every beat over a noisy bed, and noisy stems.
+    let mut seed = 12345u32;
+    let mut noise = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        (seed % 1000) as f32 / 1000.0
+    };
+    let base: Vec<[u8; 8]> = (0..60_000)
+        .map(|i| {
+            let beat = if i % 469 < 30 { 1.0 } else { 0.45 };
+            let mut s = [0u8; 8];
+            for k in 0..4 {
+                s[k] = (255.0 * beat * (0.5 + 0.5 * noise())) as u8;
+                s[k + 4] = (s[k] as f32 * 0.7) as u8;
+            }
+            s
+        })
+        .collect();
+    let stems: Vec<[u8; opendj_waveform::MAX_STEMS]> = (0..6000)
+        .map(|_| std::array::from_fn(|_| (255.0 * noise()) as u8))
+        .collect();
+    let colors = [0xff0000, 0x00ff00, 0x0000ff, 0xffff00];
+    let track = Arc::new(GpuTrack::with_extras(
+        &device,
+        &queue,
+        &renderer,
+        1,
+        &levels(base),
+        1000.0,
+        Extras {
+            stems: &stems,
+            stem_rate: 100.0,
+            stem_colors: &colors,
+            ..Extras::default()
+        },
+    ));
+    // 10 s across 1408 pixels (rows a multiple of 256 bytes, for reading back).
+    let (w, h) = (1408u32, 200u32);
+    let visible = 10.0;
+    for (style, half) in [
+        (Style::Rgb, false),
+        (Style::Rgb, true),
+        (Style::Bands, false),
+        (Style::Blue, false),
+        (Style::Stems, false),
+    ] {
+        let mut view = WaveformView::new(&device, Mode::Scrolling, w, h);
+        view.set_style(style);
+        view.set_half(half);
+        view.set_track(&device, &renderer, Some(&track));
+        // How much each column right of the play line differs from the
+        // background, summed down the column, `pixels` on from 30 s.
+        let mut ink = |pixels: f64| -> Vec<f64> {
+            let frame = Frame {
+                play_seconds: 30.0 + pixels * visible / w as f64,
+                visible_seconds: visible,
+                duration: 60.0,
+                first_bar_beat: 0.0,
+                grid: steady_grid(0.0, 0.0),
+                cue: None,
+                loop_range: None,
+                loop_marking: None,
+                hotcues: [None; 8],
+                slip: None,
+                gain: 1.0,
+                phrases: Vec::new(),
+            };
+            view.render(&device, &queue, &renderer, Some(&frame), 1.0);
+            let px = read_back(&device, &queue, &view);
+            (760..w - 30)
+                .map(|x| {
+                    (0..h)
+                        .map(|y| {
+                            let i = ((y * w + x) * 4) as usize;
+                            (0..3)
+                                .map(|c| px[i + c].abs_diff(px[c]) as f64)
+                                .sum::<f64>()
+                        })
+                        .sum()
+                })
+                .collect()
+        };
+        let (before, after) = (ink(0.0), ink(1.0));
+        for k in 1..8 {
+            let t = k as f64 / 8.0;
+            let between = ink(t);
+            let off = |frame: &[f64]| {
+                let diff: f64 = (0..frame.len())
+                    .map(|x| (between[x] - frame[x]).abs())
+                    .sum();
+                diff / frame.iter().sum::<f64>()
+            };
+            let nearest = off(&before).min(off(&after));
+            assert!(
+                nearest < 0.01,
+                "{style:?} (half {half}) {t} px on: {:.1}% off a whole-pixel frame",
+                100.0 * nearest
+            );
+        }
     }
 }

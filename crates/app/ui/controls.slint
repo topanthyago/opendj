@@ -24,6 +24,9 @@ export global Controls {
     callback set-value(index: int, value: float);
     callback toggle(index: int);
     callback reset(index: int);
+    // The tempo fader ranges, as fractions of normal speed (the same as
+    // Settings › Decks › Tempo fader range).
+    in property <[float]> rate-ranges;
     // True on the half-seconds a paused deck's PLAY outline shows:
     // only with a track loaded, all decks in step. blink and tick are
     // passed in so callers redraw when either changes.
@@ -40,7 +43,7 @@ export component Caption inherits Text {
     font-size: 9px;
     font-weight: 500;
     letter-spacing: 0.5px;
-    color: #6e6e73;
+    color: Theme.n-6e6e73;
     horizontal-alignment: center;
 }
 
@@ -109,7 +112,7 @@ export component PickupDot inherits Rectangle {
         width: d;
         height: d;
         border-radius: d / 2;
-        background: #050506;
+        background: Theme.n-050506;
         border-width: 1.5px;
         border-color: tint;
     }
@@ -153,7 +156,7 @@ export component ControlKnob inherits Rectangle {
         width: size;
         height: size;
         border-radius: self.width / 2;
-        background: #050506;
+        background: Theme.n-050506;
     }
     cap := Rectangle {
         x: 4px;
@@ -164,12 +167,12 @@ export component ControlKnob inherits Rectangle {
         background: look == 1
             ? (touch.has-hover ? @linear-gradient(180deg, #ffffff 0%, #d4d4d8 100%) : @linear-gradient(180deg, #f2f2f4 0%, #c8c8cc 100%))
             : look == 2
-            ? (touch.has-hover ? #1c1c1e : #0e0e10)
+            ? (touch.has-hover ? Theme.n-1c1c1e : Theme.n-0e0e10)
             : touch.has-hover
             ? @linear-gradient(180deg, #505055 0%, #303034 100%)
             : @linear-gradient(180deg, #46464b 0%, #2a2a2e 100%);
         border-width: look == 2 ? max(2px, size / 12) : 1px;
-        border-color: look == 2 ? #e4e4e8 : #141416;
+        border-color: look == 2 ? Theme.n-e4e4e8 : Theme.n-141416;
     }
     // Hidden at the origin, where the arc would be a dot.
     if abs(param - origin) > 0.004: KnobArc {
@@ -190,7 +193,7 @@ export component ControlKnob inherits Rectangle {
         height: cap.height;
         viewbox-width: 100;
         viewbox-height: 100;
-        stroke: look == 1 ? #1c1c1e : root.tint == Theme.text ? #e4e4e8 : root.tint;
+        stroke: look == 1 ? Theme.n-1c1c1e : root.tint == Theme.text ? Theme.n-e4e4e8 : root.tint;
         stroke-width: max(1.5px, size / 14);
         stroke-line-cap: round;
         MoveTo { x: 50 + 8 * sin(value-angle); y: 50 - 8 * cos(value-angle); }
@@ -236,13 +239,51 @@ export component ControlKnob inherits Rectangle {
         double-clicked => {
             Controls.reset(index);
         }
+        // Up and down turn it; a mostly sideways swipe goes on to what's
+        // behind (the Mixer's strips scroll sideways).
         scroll-event(e) => {
+            if e.delta-y == 0 || abs(e.delta-x / 1px) >= abs(e.delta-y / 1px) {
+                return reject;
+            }
             Controls.set-parameter(index, max(0, min(1, param + (e.delta-y > 0 ? 0.02 : -0.02))));
             accept
         }
     }
     TourMark { id: root.tour-id; }
     MapMark { key: root.group + "," + root.key; }
+}
+
+// The headphone icon, openDJ's own: a round headband with two cups
+// tilted outward. Drawn on a 24-unit grid; strokes scale with `size`.
+export component HeadphoneIcon inherits Rectangle {
+    in property <length> size: 16px;
+    in property <color> tint: Theme.text;
+    property <float> k: size / 24px;
+    width: size;
+    height: size;
+    Path {
+        width: root.size;
+        height: root.size;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        stroke: root.tint;
+        stroke-width: 1.6px * k;
+        stroke-line-cap: round;
+        fill: transparent;
+        commands: "M 4.2 19 A 10 10 0 1 1 19.8 19";
+    }
+    // Each cup a rounded bar 3.55 wide and 10 tall, tilted 14°.
+    Path {
+        width: root.size;
+        height: root.size;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        stroke: root.tint;
+        stroke-width: 3.55px * k;
+        stroke-line-cap: round;
+        fill: transparent;
+        commands: "M 5.87 14.37 L 7.43 20.63 M 18.13 14.37 L 16.57 20.63";
+    }
 }
 
 // Flat dark button with a thin border. When its light is on, the label and
@@ -298,7 +339,7 @@ export component ControlButton inherits Rectangle {
     background: lit && fill-when-lit ? root.tint
         : touch.pressed ? Theme.control-pressed
         : lit && !outline-when-lit ? root.tint.with-alpha(0.14)
-        : touch.has-hover ? #1d1d20 : Theme.control;
+        : touch.has-hover ? Theme.n-1d1d20 : Theme.control;
     border-width: (lit && outline-when-lit) || outline ? 2px : 1px;
     border-color: lit || outline ? root.tint : Theme.border;
 
@@ -326,25 +367,7 @@ export component ControlButton inherits Rectangle {
         fill: label-color;
         commands: lit-icon;
     }
-    // Headband and ear cups.
-    if headphones: Path {
-        width: 18px;
-        height: 18px;
-        viewbox-width: 20;
-        viewbox-height: 20;
-        stroke: label-color;
-        stroke-width: 1.8px;
-        fill: transparent;
-        commands: "M 4 13 L 4 10 A 6 6 0 0 1 16 10 L 16 13";
-    }
-    if headphones: Path {
-        width: 18px;
-        height: 18px;
-        viewbox-width: 20;
-        viewbox-height: 20;
-        fill: label-color;
-        commands: "M 1.6 14 A 2.9 2.9 0 1 0 7.4 14 A 2.9 2.9 0 1 0 1.6 14 Z M 12.6 14 A 2.9 2.9 0 1 0 18.4 14 A 2.9 2.9 0 1 0 12.6 14 Z";
-    }
+    if headphones: HeadphoneIcon { size: min(16px, root.height - 4px); tint: label-color; }
 
     touch := TouchArea {
         pointer-event(e) => {
@@ -449,7 +472,7 @@ export component ControlFader inherits Rectangle {
         y: vertical ? along : 0px;
         width: vertical ? root.width : 1px;
         height: vertical ? 1px : root.height;
-        background: major ? #55555a : Theme.tick;
+        background: major ? Theme.n-55555a : Theme.tick;
     }
     // Slot
     Rectangle {
@@ -458,9 +481,9 @@ export component ControlFader inherits Rectangle {
         width: vertical ? 4px : travel;
         height: vertical ? travel : 4px;
         border-radius: 2px;
-        background: glowing && !locked ? glow : #050506;
+        background: glowing && !locked ? glow : Theme.n-050506;
         border-width: 1px;
-        border-color: locked ? Theme.automix.with-alpha(0.6) : glowing ? glow : #2a2a2d;
+        border-color: locked ? Theme.automix.with-alpha(0.6) : glowing ? glow : Theme.n-2a2a2d;
     }
     // Locked: the slot lights green from the centre (or the bottom) to the
     // handle.
@@ -495,13 +518,13 @@ export component ControlFader inherits Rectangle {
             ? @linear-gradient(180deg, #b0b0b5 0%, #8a8a8f 45%, #5f5f64 100%)
             : @linear-gradient(90deg, #b0b0b5 0%, #8a8a8f 45%, #5f5f64 100%);
         border-width: 1px;
-        border-color: locked ? Theme.automix : touch.pressed ? root.tint : #2a2a2d;
+        border-color: locked ? Theme.automix : touch.pressed ? root.tint : Theme.n-2a2a2d;
         drop-shadow-blur: 4px;
-        drop-shadow-color: #000000a0;
+        drop-shadow-color: Theme.s-000000a0;
         Rectangle {
             width: vertical ? parent.width - 8px : 1px;
             height: vertical ? 1px : parent.height - 8px;
-            background: #2a2a2d;
+            background: Theme.n-2a2a2d;
         }
     }
     touch := TouchArea {
@@ -592,7 +615,7 @@ export component Crossfader inherits Rectangle {
             border-width: 1px;
             border-color: Theme.border;
             drop-shadow-blur: 8px;
-            drop-shadow-color: #00000080;
+            drop-shadow-color: Theme.s-00000080;
         }
         VerticalLayout {
             padding: 4px;
@@ -642,26 +665,7 @@ export component CueHeadphones inherits Rectangle {
     border-width: 1px;
     border-color: lit ? root.tint : Theme.border;
     background: lit ? root.tint : touch.pressed ? Theme.control-pressed : Theme.control;
-    // Headband, mirrored about x = 10.
-    Path {
-        width: 16px;
-        height: 16px;
-        viewbox-width: 20;
-        viewbox-height: 20;
-        stroke: icon-color;
-        stroke-width: 1.6px;
-        fill: transparent;
-        commands: "M 4.5 12 L 4.5 10 A 5.5 5.5 0 0 1 15.5 10 L 15.5 12";
-    }
-    // Round ear cups.
-    Path {
-        width: 16px;
-        height: 16px;
-        viewbox-width: 20;
-        viewbox-height: 20;
-        fill: icon-color;
-        commands: "M 1.6 14 A 2.9 2.9 0 1 0 7.4 14 A 2.9 2.9 0 1 0 1.6 14 Z M 12.6 14 A 2.9 2.9 0 1 0 18.4 14 A 2.9 2.9 0 1 0 12.6 14 Z";
-    }
+    HeadphoneIcon { size: 16px; tint: icon-color; }
     touch := TouchArea {
         mouse-cursor: pointer;
         clicked => { Controls.set-value(index, lit ? 0 : 1); }
@@ -690,7 +694,7 @@ export component VuMeter inherits Rectangle {
         width: vertical ? root.width : seg;
         height: vertical ? seg : root.height;
         border-radius: 1px;
-        background: level < at ? #2c2c2f : (at > 0.9 ? #ff453a : (at > 0.72 ? #ffd60a : #30d158));
+        background: level < at ? Theme.n-2c2c2f : (at > 0.9 ? #ff453a : (at > 0.72 ? #ffd60a : #30d158));
     }
 }
 
@@ -721,17 +725,17 @@ export component HoverTipView inherits Rectangle {
         y: HoverTip.y - root.absolute-position.y;
         width: tip.preferred-width;
         height: tip.preferred-height;
-        background: #0b0b0c;
+        background: Theme.n-0b0b0c;
         border-radius: 4px;
         border-width: 1px;
-        border-color: #6a6a70;
+        border-color: Theme.n-6a6a70;
         drop-shadow-blur: 8px;
-        drop-shadow-color: #000000a0;
+        drop-shadow-color: Theme.s-000000a0;
         tip := VerticalLayout {
             padding: 8px;
             spacing: 2px;
             Text { text: HoverTip.title; color: Theme.text; font-size: 12px; font-weight: 700; }
-            Text { text: HoverTip.body; color: Theme.text-dim; font-size: 12px; }
+            if HoverTip.body != "": Text { text: HoverTip.body; color: Theme.text-dim; font-size: 12px; }
         }
     }
 }
@@ -839,7 +843,7 @@ export component SyncButton inherits Rectangle {
             border-width: 1px;
             border-color: Theme.border;
             drop-shadow-blur: 12px;
-            drop-shadow-color: #000000a0;
+            drop-shadow-color: Theme.s-000000a0;
         }
         VerticalLayout {
             padding: 8px;
@@ -850,14 +854,14 @@ export component SyncButton inherits Rectangle {
                     width: 32px;
                     height: 18px;
                     border-radius: 9px;
-                    background: lit ? Theme.accent : #48484c;
+                    background: lit ? Theme.accent : Theme.n-48484c;
                     Rectangle {
                         x: lit ? parent.width - self.width - 2px : 2px;
                         y: 2px;
                         width: 14px;
                         height: 14px;
                         border-radius: 7px;
-                        background: #ffffff;
+                        background: Theme.n-ffffff;
                     }
                     TouchArea { mouse-cursor: pointer; clicked => { Controls.toggle(index); } }
                 }
@@ -880,7 +884,7 @@ export component SyncButton inherits Rectangle {
                         property <bool> on: abs(beats - size.beats) < 0.001;
                         horizontal-stretch: 1;
                         border-radius: 3px;
-                        background: on ? Theme.accent : sta.has-hover ? #3a3a3d : transparent;
+                        background: on ? Theme.accent : sta.has-hover ? Theme.n-3a3a3d : transparent;
                         Text { text: size.label; color: on ? #000000 : Theme.text; font-size: 12px; font-weight: on ? 700 : 400; }
                         sta := TouchArea {
                             mouse-cursor: pointer;
@@ -913,11 +917,11 @@ export component MasterBadge inherits Rectangle {
     preferred-width: label.preferred-width + (root.font-size >= 10px ? 12px : 10px);
     border-radius: self.height / 2;
     border-width: 1px;
-    border-color: leading ? Theme.accent : touch.has-hover ? #48484c : Theme.border;
+    border-color: leading ? Theme.accent : touch.has-hover ? Theme.n-48484c : Theme.border;
     background: pinned ? Theme.accent : leading ? Theme.accent.with-alpha(0.14) : transparent;
     label := Text {
         text: "MASTER";
-        color: pinned ? #000000 : leading ? Theme.accent : touch.has-hover ? Theme.text : Theme.text-dim;
+        color: pinned ? #000000 : leading ? Theme.lilac-text : touch.has-hover ? Theme.text : Theme.text-dim;
         font-size: root.font-size;
         font-weight: 700;
         letter-spacing: 0.4px;
@@ -948,5 +952,31 @@ export component MasterBadge inherits Rectangle {
             HoverTip.y = root.absolute-position.y + root.height + 6px;
             HoverTip.shown = true;
         }
+    }
+}
+
+// A switch.
+export component Switch inherits Rectangle {
+    in property <bool> on;
+    callback toggled(on: bool);
+    width: 38px;
+    height: 22px;
+    border-radius: 11px;
+    background: on ? Theme.accent : Theme.n-3a3a3e;
+    animate background { duration: 120ms; }
+    Rectangle {
+        x: on ? parent.width - self.width - 2px : 2px;
+        y: 2px;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: Theme.n-f2f2f7;
+        drop-shadow-blur: 2px;
+        drop-shadow-color: Theme.s-00000060;
+        animate x { duration: 120ms; easing: ease-out; }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(!on); }
     }
 }
