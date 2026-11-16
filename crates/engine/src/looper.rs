@@ -148,6 +148,7 @@ impl LooperControls {
     fn new(reg: &ControlRegistry, deck: usize) -> Self {
         let g = looper_group(deck);
         let g = g.as_str();
+        reg.indicator(g, "stop_recording_supported", 1.0).set_bool(true);
         Self {
             stop_recording: reg.push(g, "stop_recording"),
             stop_recording_edge: Edge::default(),
