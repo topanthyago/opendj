@@ -45,6 +45,10 @@ struct MaschineSurface {
     browsing: bool,
     multi_select: bool,
     duplicate_from: Option<(u8, usize)>,
+    duplicate_sent: Option<(u8, usize, Instant)>,
+    feedback_epoch: Instant,
+    feedback_base: HashMap<u8, Vec<u8>>,
+    feedback_active: HashSet<u8>,
     pattern_bank: usize,
     pattern_pinned: bool,
     scene_bank: usize,
@@ -71,6 +75,10 @@ impl MaschineSurface {
             browsing: false,
             multi_select: false,
             duplicate_from: None,
+            duplicate_sent: None,
+            feedback_epoch: Instant::now(),
+            feedback_base: HashMap::new(),
+            feedback_active: HashSet::new(),
             pattern_bank: 0,
             pattern_pinned: false,
             scene_bank: 0,
@@ -175,6 +183,26 @@ impl MaschineSurface {
                 self.erase_sounds.insert(pad, target);
                 return Some(vec![A::Events("erase_sound_window", target as i64)]);
             }
+            if self.held.contains(&29)
+                && self.mode == 0
+                && !self.sampling
+                && ![30, 31, 33].iter().any(|key| self.held.contains(key))
+            {
+                let to = usize::from(pad - 1);
+                let valid = view
+                    .groups
+                    .get(view.group)
+                    .is_some_and(|g| to < g.sounds.len());
+                if !valid {
+                    return Some(Vec::new());
+                }
+                if let Some((0, from)) = self.duplicate_from.take() {
+                    return Some(vec![A::CopySound { from, to }]);
+                }
+                self.duplicate_from = Some((0, to));
+                self.duplicate_sent = None;
+                return Some(Vec::new());
+            }
             if self.held.contains(&29) && (self.mode == 2 || self.mode == 3) {
                 let slot = if self.mode == 2 {
                     self.pattern_bank
@@ -190,10 +218,12 @@ impl MaschineSurface {
                     (slot < view.scenes.len()).then_some(slot)
                 };
                 let Some((mode, from)) = self.duplicate_from else {
+                    self.duplicate_sent = None;
                     self.duplicate_from = index.map(|index| (self.mode, index));
                     return Some(Vec::new());
                 };
                 if mode != self.mode {
+                    self.duplicate_sent = None;
                     self.duplicate_from = index.map(|index| (self.mode, index));
                     return Some(Vec::new());
                 }
@@ -367,6 +397,7 @@ impl MaschineSurface {
                 self.duplicate_from = None;
                 return Some(vec![A::CopyGroup { from, to }]);
             }
+            self.duplicate_sent = None;
             self.duplicate_from = Some((4, to));
             return Some(Vec::new());
         }
@@ -480,6 +511,141 @@ impl MaschineSurface {
         None
     }
 
+    /// Feedback follows requests actually queued for the document thread.
+    /// The provider has asynchronous dispatch, so this reports SENT, not completion.
+    fn copy_feedback(
+        &mut self,
+        actions: &[deckard_surface::Action],
+        view: &deckard_surface::View,
+        now: Instant,
+    ) {
+        use deckard_surface::Action as A;
+        for action in actions {
+            let target = match action {
+                A::CopySound { to, .. } => Some((0, *to)),
+                A::CopyPattern { group, to, .. } => {
+                    // NewPatternAt can insert a destination before the next snapshot.
+                    let slot = actions
+                        .iter()
+                        .find_map(|a| match a {
+                            A::NewPatternAt { group: g, slot } if g == group => Some(*slot),
+                            _ => None,
+                        })
+                        .or_else(|| view.groups.get(*group)?.patterns.get(*to).map(|p| p.slot));
+                    slot.map(|slot| (2, slot))
+                }
+                A::CopyScene { to, .. } => Some((3, *to)),
+                A::CopyGroup { to, .. } => Some((4, *to)),
+                _ => None,
+            };
+            if let Some((mode, to)) = target {
+                self.duplicate_sent = Some((mode, to, now));
+            }
+        }
+        if self.duplicate_sent.is_some_and(|(_, _, at)| {
+            now.saturating_duration_since(at) >= Duration::from_millis(1000)
+        }) {
+            self.duplicate_sent = None;
+        }
+    }
+
+    fn feedback_lights(
+        &mut self,
+        view: &deckard_surface::View,
+        now: Instant,
+        native: &[Vec<u8>],
+    ) -> Vec<Vec<u8>> {
+        for packet in native {
+            if packet.len() == 9 && packet[..4] == [0xf0, 0x7d, 0x44, 0x4b] {
+                self.feedback_base.insert(packet[4], packet.clone());
+            }
+        }
+        let mut lights = Vec::new();
+        if self.held.contains(&31) || self.held.contains(&33) {
+            for (index, group) in view.groups.iter().take(8).enumerate() {
+                let rgb = if group.muted {
+                    group.rgb.map(|v| v / 16)
+                } else {
+                    group.rgb
+                };
+                lights.push(maschine_light(index as u8, rgb));
+            }
+            if let Some(group) = view.groups.get(view.group) {
+                for (index, sound) in group.sounds.iter().take(16).enumerate() {
+                    let rgb = if group.muted || sound.muted {
+                        sound.rgb.map(|v| v / 16)
+                    } else {
+                        sound.rgb
+                    };
+                    lights.push(maschine_light(48 + index as u8, rgb));
+                }
+            }
+        }
+        let source = self.duplicate_from.and_then(|(mode, index)| {
+            let slot = if mode == 2 {
+                view.groups.get(view.group)?.patterns.get(index)?.slot
+            } else {
+                index
+            };
+            Some((mode, slot))
+        });
+        let target = self.duplicate_sent.map(|(mode, slot, _)| (mode, slot));
+        // Only LEDs animate. LCD regions remain differential and acknowledged.
+        let bright = now
+            .saturating_duration_since(
+                self.duplicate_sent
+                    .map_or(self.feedback_epoch, |(_, _, at)| at),
+            )
+            .as_millis()
+            / 200
+            % 2
+            == 0;
+        for (mode, slot) in source.into_iter().chain(target) {
+            let id = if mode == 4 {
+                (slot < 8).then_some(slot as u8)
+            } else {
+                let bank = if mode == 2 {
+                    self.pattern_bank
+                } else if mode == 3 {
+                    self.scene_bank
+                } else {
+                    0
+                };
+                (slot / 16 == bank && (mode == self.mode)).then_some(48 + (slot % 16) as u8)
+            };
+            if let Some(id) = id {
+                let rgb = if mode == 0 {
+                    view.groups
+                        .get(view.group)
+                        .and_then(|g| g.sounds.get(slot))
+                        .map(|s| s.rgb)
+                        .unwrap_or([127; 3])
+                } else {
+                    view.groups
+                        .get(if mode == 4 { slot } else { view.group })
+                        .map(|g| g.rgb)
+                        .unwrap_or([127; 3])
+                };
+                lights.push(maschine_light(
+                    id,
+                    if bright {
+                        rgb.map(|v| v.max(40))
+                    } else {
+                        [0; 3]
+                    },
+                ));
+            }
+        }
+        let active = lights.iter().map(|p| p[4]).collect::<HashSet<_>>();
+        for id in self.feedback_active.difference(&active) {
+            if let Some(packet) = self.feedback_base.get(id) {
+                lights.push(packet.clone());
+            }
+        }
+        self.feedback_active = active;
+        lights
+    }
+
     fn overlay(
         &self,
         view: &deckard_surface::View,
@@ -488,7 +654,8 @@ impl MaschineSurface {
     ) -> serde_json::Value {
         let mode = [4, 10, 27, 30, 31, 33]
             .into_iter()
-            .find(|key| self.held.contains(key));
+            .find(|key| self.held.contains(key))
+            .or_else(|| (self.held.contains(&29) || self.duplicate_sent.is_some()).then_some(29));
         let Some(mode) = mode else {
             return serde_json::Value::Null;
         };
@@ -505,6 +672,7 @@ impl MaschineSurface {
                 ],
             ),
             30 => ("SELECT", vec!["PIN", "", "", "", "", "", "MULTI"]),
+            29 => ("DUPLICATE", vec!["", "", "", "", "", "", "", ""]),
             31 => ("SOLO", vec!["PIN", "", "", "", "", "", "", ""]),
             _ => ("MUTE", vec!["PIN", "", "", "", "", "", "", ""]),
         };
@@ -581,7 +749,15 @@ impl MaschineSurface {
         };
         serde_json::json!({"mode":mode,"title":name,"buttons":buttons,"knobs":knobs,
             "group":view.groups.get(view.group).map(|g| g.name.as_str()).unwrap_or(""),
-            "sound":current.map(|s| s.name.as_str()).unwrap_or(""),"keyboard":keyboard,"multi":self.multi_select,"quantize":quantize})
+            "sound":current.map(|s| s.name.as_str()).unwrap_or(""),"keyboard":keyboard,"multi":self.multi_select,"quantize":quantize,
+            "focus_group":view.group,"focus_sound":view.sound,
+            "sounds":view.groups.get(view.group).map(|g| g.sounds.iter().take(16).map(|s| serde_json::json!({"name":s.name,"muted":s.muted,"group_muted":g.muted})).collect::<Vec<_>>()).unwrap_or_default(),
+            "groups":view.groups.iter().take(8).map(|g| serde_json::json!({"name":g.name,"muted":g.muted})).collect::<Vec<_>>(),
+            "duplicate_source":self.duplicate_from.map(|(kind, index)| {
+                let slot = if kind == 2 { view.groups.get(view.group).and_then(|g| g.patterns.get(index)).map_or(index, |p| p.slot) } else { index };
+                serde_json::json!({"kind":kind,"index":slot})
+            }),
+            "duplicate_sent":self.duplicate_sent.map(|(kind, index, _)| serde_json::json!({"kind":kind,"index":index}))})
     }
 }
 
@@ -1290,6 +1466,10 @@ impl Host {
             }
         }
         let error = surface.device.error().or_else(|| source.error(deck));
+        surface.copy_feedback(&actions, &view, now);
+        if error.is_some() {
+            surface.duplicate_sent = None;
+        }
         let owned_repeat = surface.held.contains(&10);
         let overlay = surface.overlay(&view, keyboard, quantize);
         let pattern_state = surface.pattern_state(&view);
@@ -1364,6 +1544,8 @@ impl Host {
                 output.push(maschine_light(index as u8, group.rgb));
                 output.push(maschine_light(65 + index as u8, maschine_group_rgb(group)));
             }
+            let feedback = surface.feedback_lights(&view, now, &output);
+            output.extend(feedback);
         }
         if !actions.is_empty() {
             source.dispatch(deck, actions);
