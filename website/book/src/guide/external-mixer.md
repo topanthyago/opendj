@@ -11,7 +11,7 @@ interface.
 
 ## Set it up
 
-1. Open **Settings › Audio** and set **Mixer** to **External**.
+1. Open **Settings › Mixer** and set **Mixer** to **External**.
 2. The outputs change to a row for each deck, the headphones and the sampler.
    Pick the interface for **Deck 1** and **Deck 2** (and Deck 3 and 4 for a
    four-channel mixer), each on its own channels, for example Deck 1 on
@@ -34,7 +34,9 @@ interface.
   player.
 - Controllers keep working. EQ, fader and crossfader moves they send do
   nothing, so a deck-only controller pairs best.
-- Automix and the master limiter are off: they need openDJ's mixer.
+- Automix and the master limiter are off: they need openDJ's mixer. Each
+  deck's output still bends its loudest peaks (above −1.5 dBFS) under full
+  scale instead of clipping them.
 - The mic and Auxiliary inputs aren't mixed into anything (the mixer has its
   own). The sampler plays on its own output if it has one, else on Deck 1's.
 - Master and booth are not used, so their channels are free for the decks.

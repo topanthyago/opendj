@@ -23,7 +23,7 @@ component PerformanceTab inherits Rectangle {
     callback clicked();
     height: 24px;
     border-radius: 4px;
-    background: on ? tint.with-alpha(0.22) : ta.has-hover ? #ffffff10 : transparent;
+    background: on ? tint.with-alpha(0.22) : ta.has-hover ? Theme.n-ffffff10 : transparent;
     Text { text: root.text; color: on ? Theme.text : Theme.text-dim; font-size: 9px; font-weight: 700; letter-spacing: 0.4px; }
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
 }
@@ -35,7 +35,7 @@ export component GrooveMenuItem inherits Rectangle {
     callback clicked();
     height: detail == "" ? 24px : 36px;
     border-radius: 5px;
-    background: gmta.has-hover ? #3a3a3d : transparent;
+    background: gmta.has-hover ? Theme.n-3a3a3d : transparent;
     VerticalLayout {
         x: 22px;
         width: parent.width - 28px;
@@ -43,7 +43,7 @@ export component GrooveMenuItem inherits Rectangle {
         Text { text: root.text; color: Theme.text; font-size: 12px; }
         if detail != "": Text { text: root.detail; color: Theme.text-dim; font-size: 10px; overflow: elide; }
     }
-    if checked: Text { x: 7px; text: "✓"; color: Theme.accent; font-size: 12px; vertical-alignment: center; }
+    if checked: Text { x: 7px; text: "✓"; color: Theme.lilac-text; font-size: 12px; vertical-alignment: center; }
     gmta := TouchArea { clicked => { root.clicked(); } }
 }
 
@@ -53,7 +53,7 @@ export component GrooveMenuBackground inherits Rectangle {
     border-width: 1px;
     border-color: Theme.border;
     drop-shadow-blur: 16px;
-    drop-shadow-color: #000000b0;
+    drop-shadow-color: Theme.s-000000b0;
 }
 
 export component GrooveTempo inherits PerformanceButton {
@@ -188,13 +188,13 @@ export component GrooveFillBar inherits HorizontalLayout {
         border-radius: Theme.radius;
         border-width: 1px;
         border-color: level > 0 ? tint : Theme.border;
-        background: #00000040;
+        background: Theme.s-00000040;
         HorizontalLayout {
             padding: 3px;
             spacing: 2px;
             for i in 16: Rectangle {
                 border-radius: 2px;
-                background: i < level ? tint.with-alpha(0.35 + 0.6 * (i + 1) / 16) : #ffffff10;
+                background: i < level ? tint.with-alpha(0.35 + 0.6 * (i + 1) / 16) : Theme.n-ffffff10;
             }
         }
         Text {
@@ -250,7 +250,7 @@ export component PerformanceStatus inherits HorizontalLayout {
             + (!playing ? "STOPPED" : breaking ? "BREAK PAUSE" : filling ? "FILL / REMIX" : "PLAYING")
             + (!looper && follows-breaks && !breaking ? " · BREAK FOLLOW" : "")
             + (looper ? " · " + ["MIX", "MIC", "AUX", "INSTR.", "AUX 2", "AUX 3"][input] + " · " + bars + " BARS" : "");
-        color: breaking ? #ff9f0a : following ? tint : Theme.text-dim;
+        color: breaking ? Theme.c-ff9f0a : following ? tint : Theme.text-dim;
         font-size: 9px;
         vertical-alignment: center;
         overflow: elide;

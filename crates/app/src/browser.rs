@@ -11,6 +11,7 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
 use opendj_control::{ControlHandle, ControlRegistry};
@@ -50,8 +51,10 @@ mod pages;
 mod picks;
 mod playlist_files;
 mod prep;
+mod rail_order;
 mod rekordbox_xml;
 mod sets;
+mod side_tabs;
 mod spotify_export;
 mod staging;
 mod streamed;
@@ -59,10 +62,11 @@ mod tag_chips;
 mod track_menu;
 mod up_next;
 mod usb;
+mod views;
 mod wanted;
 
-pub use filters::DEFAULT_PINNED;
-pub use lyrics::wave::{set_shown as set_wave_lyrics, SHOWN as WAVE_LYRICS};
+pub use filters::{with_crates, DEFAULT_PINNED};
+pub use lyrics::wave::set_shown as set_wave_lyrics;
 
 use crate::analysis_queue::AnalysisQueue;
 use crate::art::Art;
@@ -428,6 +432,9 @@ fn is_browsed(t: &Track) -> bool {
     (BROWSED_BASE..opendj_library::ID_BASE).contains(&t.id)
 }
 
+/// A file picked for a missing track, and the track's id.
+type Located = (usize, PathBuf);
+
 fn file_path(t: &Track) -> Option<&Path> {
     match &t.source {
         opendj_engine::Source::File(p) => Some(p),
@@ -583,6 +590,11 @@ pub struct Browser {
     tree: i32,
     /// The other sources' trees, selections and sort orders while not shown.
     parked: HashMap<i32, Parked>,
+    /// Where each list was left, the list shown now, and the place a list
+    /// just picked goes back to once its tracks are in.
+    views: HashMap<views::ViewKey, views::View>,
+    shown_view: Option<views::ViewKey>,
+    waiting_view: Option<views::View>,
     /// Keys in Camelot notation rather than notes.
     camelot: bool,
     /// The key notation the rows were written with, to redo them on a change.
@@ -629,9 +641,11 @@ pub struct Browser {
     area_start: std::cell::RefCell<HashMap<Area, usize>>,
     /// The review card's place among the listed tracks, while it's open.
     review_at: Option<usize>,
-    /// Audio files in the stage and music folders by lower-case name, for
-    /// the Fix column of missing files; read when first needed.
-    relink_files: OnceCell<HashMap<String, Vec<PathBuf>>>,
+    /// Audio files in the stage and music folders, and what the collection
+    /// knows of them, to find missing files in; read when first needed.
+    relink_files: OnceCell<opendj_library::relocate::Index>,
+    /// Files picked with "Find file…" for a missing track (by id).
+    located: (Sender<Located>, Receiver<Located>),
     /// The node selected on the other tab, to go back to.
     other_tab_node: usize,
     /// The list or history session the sort was last set up for: each
@@ -1249,6 +1263,9 @@ impl Browser {
             collection_stale: false,
             tree: COLLECTION,
             parked: HashMap::new(),
+            views: HashMap::new(),
+            shown_view: None,
+            waiting_view: None,
             camelot: crate::settings::camelot_keys(),
             notation: opendj_engine::key::notation(),
             art: Art::start(),
@@ -1282,6 +1299,7 @@ impl Browser {
             area_start: Default::default(),
             review_at: None,
             relink_files: OnceCell::new(),
+            located: std::sync::mpsc::channel(),
             other_tab_node: 0,
             sorted_list: None,
             view_sort: (1, true),
@@ -1374,6 +1392,7 @@ impl Browser {
         app.on_select_folder(move |i| {
             w(Box::new(move |b| {
                 if let Some(&n) = b.visible_nodes.get(i as usize) {
+                    b.park_view();
                     b.current_node = n;
                     // An artist opens to show their albums too.
                     if b.nodes[n].kind == KIND_ARTIST {
@@ -1577,6 +1596,8 @@ impl Browser {
             .map(|n| !hidden.iter().any(|h| h == n))
             .collect();
         app.set_sources_shown(std::rc::Rc::new(slint::VecModel::from(shown)).into());
+        side_tabs::install(app);
+        rail_order::install(app);
         // Collection Health's rail button hides the same way.
         app.global::<HealthUi>()
             .set_rail_shown(!hidden.iter().any(|h| h == HEALTH_RAIL_NAME));
@@ -2046,6 +2067,7 @@ impl Browser {
         if !usable || source == self.tree {
             return;
         }
+        self.park_view();
         // Health's checks aren't kept: the collection comes back as itself.
         if self.tree == COLLECTION && self.health_view {
             self.health_view = false;
@@ -2111,6 +2133,7 @@ impl Browser {
         if self.health_view == on {
             return;
         }
+        self.park_view();
         self.health_view = on;
         self.nodes.clear();
         self.current_node = 0;
@@ -2974,7 +2997,18 @@ impl Browser {
     /// into the rows showing them. Called every frame; does nothing while
     /// the list is still and nothing has arrived.
     pub fn poll_waves(&mut self) {
-        let arrived = self.waves.poll();
+        let restyled = crate::waves::take_restyled();
+        if restyled {
+            // Drawn again in the new style.
+            for i in std::mem::take(&mut self.wave_rows) {
+                if let Some(mut row) = self.list.row_data(i) {
+                    row.wave = Default::default();
+                    row.has_wave = false;
+                    self.list.set_row_data(i, row);
+                }
+            }
+        }
+        let arrived = self.waves.poll() || restyled;
         let Some(app) = self.app.upgrade() else {
             return;
         };
@@ -2984,7 +3018,7 @@ impl Browser {
             self.shown_rows = shown;
             self.fill_waves();
         }
-        if arrived && !app.global::<TrackInfo>().get_has_wave() {
+        if restyled || arrived && !app.global::<TrackInfo>().get_has_wave() {
             self.fill_info_wave(&app);
         }
     }
@@ -3407,7 +3441,8 @@ impl Browser {
         crates.separator = true;
         sections.push(crates);
         let mut depth: HashMap<i64, i32> = HashMap::new();
-        let mut locked: HashSet<i64> = HashSet::new();
+        // Each imported list's import, by the source of its top folder.
+        let mut locked: HashMap<i64, Option<String>> = HashMap::new();
         let mut in_crates: HashSet<i64> = HashSet::new();
         let mut sessions = Vec::new();
         let mut smart = Vec::new();
@@ -3423,9 +3458,13 @@ impl Browser {
             if Some(p.id) == inbox {
                 continue;
             }
-            let lock = is_imported(p) || p.parent.is_some_and(|id| locked.contains(&id));
-            if lock {
-                locked.insert(p.id);
+            let root = match p.parent.and_then(|id| locked.get(&id)) {
+                Some(root) => Some(root.clone()),
+                None => is_imported(p).then(|| p.source.clone()),
+            };
+            let lock = root.is_some();
+            if let Some(root) = &root {
+                locked.insert(p.id, root.clone());
             }
             let crate_side = match p.parent {
                 None => is_crate(p) || p.source.as_deref() == Some(CRATE_FOLDER),
@@ -3466,9 +3505,10 @@ impl Browser {
             };
             let node = Node {
                 locked: lock,
-                import_root: (lock && p.parent.is_none())
-                    .then(|| p.source.clone())
-                    .flatten(),
+                // Every row of an import offers to make the whole import
+                // the DJ's own, and reads dimmer than the DJ's own lists.
+                import_root: root.flatten(),
+                dim: node.dim || lock,
                 ..node
             };
             if lock {
@@ -3763,7 +3803,7 @@ impl Browser {
         n.playlist.filter(|_| !n.locked)
     }
 
-    /// Makes the import whose top folder is at `row` the DJ's own: its
+    /// Makes the import with a list or folder at `row` the DJ's own: its
     /// lists stay, become editable, and its next import leaves them be.
     fn adopt_import_at(&mut self, row: usize) {
         let Some(source) = self
@@ -3967,6 +4007,7 @@ impl Browser {
         if on == self.history_tab {
             return;
         }
+        self.park_view();
         self.history_tab = on;
         std::mem::swap(&mut self.current_node, &mut self.other_tab_node);
         if self
@@ -4243,6 +4284,7 @@ impl Browser {
                 .position(|&n| n == self.current_node)
                 .unwrap_or(0) as i64;
             let to = (at + folder_steps).clamp(0, self.visible_nodes.len() as i64 - 1) as usize;
+            self.park_view();
             self.current_node = self.visible_nodes[to];
             app.set_current_track(-1);
             self.refresh_tree();
@@ -5421,6 +5463,11 @@ impl Browser {
     }
 
     fn refresh_rows(&mut self) {
+        self.fill_rows();
+        self.follow_view();
+    }
+
+    fn fill_rows(&mut self) {
         if let Some(app) = self.app.upgrade() {
             app.global::<WantedUi>().set_shown(self.shows_wanted());
         }

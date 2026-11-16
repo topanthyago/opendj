@@ -142,7 +142,7 @@ const FROM_SPLEETER: [usize; 4] = [1, 2, 3, 0];
 
 /// Cached networks keep the CPU implementation ready for recovery before a
 /// failed GPU window can publish any audio chunks.
-struct FastNet {
+pub(crate) struct FastNet {
     cpu: spleeter::cpu::Net,
     gpu: Option<spleeter::gpu::Net<opendj_separation::Gpu>>,
     gpu_failed: std::sync::atomic::AtomicBool,
@@ -173,6 +173,14 @@ impl spleeter::Net for FastNet {
     }
 }
 
+impl spleeter::OneStem for FastNet {
+    fn estimate_stem(&self, stem: usize, magnitudes: &[f32]) -> Vec<f32> {
+        // The vocal-only pass uses the single CPU U-Net. Full separation
+        // keeps the GPU path and its validated CPU recovery above.
+        self.cpu.estimate_stem(stem, magnitudes)
+    }
+}
+
 // Zero estimates on audible input become uniform masks, hiding a failed GPU
 // behind four copies of the mixture. Reject them before the masking stage.
 fn usable_estimates(input: &[f32], output: &[f32]) -> bool {
@@ -184,7 +192,7 @@ fn usable_estimates(input: &[f32], output: &[f32]) -> bool {
 
 /// The Spleeter networks, loaded once. Vulkan/Metal is requested by default;
 /// `OPENDJ_SPLEETER_BACKEND=cpu` selects the native CPU implementation.
-fn spleeter_net() -> Result<Arc<FastNet>, String> {
+pub(crate) fn spleeter_net() -> Result<Arc<FastNet>, String> {
     use opendj_separation::burn::prelude::Backend;
     static NET: Mutex<Option<Arc<FastNet>>> = Mutex::new(None);
     let mut net = NET.lock().unwrap_or_else(|e| e.into_inner());
@@ -229,7 +237,7 @@ fn spleeter_net() -> Result<Arc<FastNet>, String> {
 }
 
 /// The track's channels, whole.
-fn channels(audio: &Audio) -> [Vec<f32>; 2] {
+pub(crate) fn channels(audio: &Audio) -> [Vec<f32>; 2] {
     let mut l = Vec::with_capacity(audio.len());
     let mut r = Vec::with_capacity(audio.len());
     for f in audio.decoded_chunks().flatten() {

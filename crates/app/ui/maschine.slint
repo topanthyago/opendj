@@ -169,7 +169,7 @@ component MaschineKnob inherits Rectangle {
             border-radius: 13px;
             border-width: 1px;
             border-color: Theme.border;
-            background: ta.has-hover ? #44464b : #2b2d31;
+            background: ta.has-hover ? Theme.n-44464b : Theme.n-2b2d31;
             Path {
                 width: 26px;
                 height: 26px;
@@ -301,7 +301,7 @@ component MaschinePads inherits Rectangle {
                 height: 12px;
                 Text { text: pad + 1; color: item.loaded ? item.color : Theme.text-dim; font-size: 9px; font-weight: 600; }
                 Rectangle { horizontal-stretch: 1; }
-                if item.muted: Text { text: "M"; color: #ff9f0a; font-size: 9px; }
+                if item.muted: Text { text: "M"; color: Theme.c-ff9f0a; font-size: 9px; }
             }
             Text { text: item.name; color: item.loaded ? Theme.text : Theme.text-dim; font-size: 9px; overflow: elide; vertical-stretch: 1; vertical-alignment: bottom; }
         }
@@ -343,7 +343,7 @@ component MaschineNotes inherits Rectangle {
             width: parent.width;
             property <int> pitch: root.pitch-low + root.rows - 1 - row;
             property <int> key: Math.mod(pitch, 12);
-            background: piano && (key == 1 || key == 3 || key == 6 || key == 8 || key == 10) ? #292b30 : row == sound && !piano ? tint.with-alpha(0.15) : Theme.panel;
+            background: piano && (key == 1 || key == 3 || key == 6 || key == 8 || key == 10) ? Theme.n-292b30 : row == sound && !piano ? tint.with-alpha(0.15) : Theme.panel;
             border-width: 0.5px;
             border-color: Theme.separator;
             Text {
@@ -365,12 +365,12 @@ component MaschineNotes inherits Rectangle {
             x: step / (beats * 4) * parent.width;
             width: 1px;
             height: parent.height;
-            background: Math.mod(step, 16) == 0 ? #ffffff26 : Math.mod(step, 4) == 0 ? #ffffff16 : #ffffff08;
+            background: Math.mod(step, 16) == 0 ? Theme.n-ffffff26 : Math.mod(step, 4) == 0 ? Theme.n-ffffff16 : Theme.n-ffffff08;
         }
         for row in root.rows + 1: Rectangle {
             y: row * parent.height / root.rows;
             height: 1px;
-            background: #ffffff0c;
+            background: Theme.n-ffffff0c;
         }
         TouchArea {
             mouse-cursor: crosshair;
@@ -538,7 +538,7 @@ component MaschineSampling inherits Rectangle {
                 border-color: tint;
             }
             if !MaschineUi.sample-loaded: Text { text: "Load a sample into the selected Sound"; color: Theme.text-dim; font-size: 11px; }
-            for marker in MaschineUi.sample-markers: Rectangle { x: marker * parent.width; width: 1px; height: parent.height; background: #ffd60a; }
+            for marker in MaschineUi.sample-markers: Rectangle { x: marker * parent.width; width: 1px; height: parent.height; background: Theme.c-ffd60a; }
             property <float> range-start;
             TouchArea {
                 enabled: MaschineUi.sample-loaded;
@@ -745,7 +745,7 @@ export component MaschinePanel inherits Rectangle {
             height: 28px;
             spacing: 4px;
             ControlButton { group: channel; key: "play"; text: "▶"; width: 34px; height: 28px; tint: tint; fill-when-lit: true; }
-            ControlButton { group: group; key: "record"; text: "●"; width: 28px; height: 28px; tint: #ff453a; fill-when-lit: true; }
+            ControlButton { group: group; key: "record"; text: "●"; width: 28px; height: 28px; tint: Theme.c-ff453a; fill-when-lit: true; }
             Text { text: MaschineUi.project-name; color: Theme.text; font-size: 12px; font-weight: 600; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; min-width: 0px; }
             MaschineButton { text: "OPEN"; width: 42px; clicked => { MaschineUi.open-project(); } }
             MaschineButton { text: "SAVE"; width: 42px; clicked => { MaschineUi.save-project(); } }
@@ -931,10 +931,10 @@ export component MaschinePanel inherits Rectangle {
             for parameter[i] in MaschineUi.parameters: MaschineKnob { horizontal-stretch: 1; min-width: 0px; parameter: parameter; tint: tint; changed(value) => { MaschineUi.set-parameter(i, value); } }
         }
         GrooveFillBar { g: "[Groove" + (deck + 1) + "]"; tint: tint; show-four: false; }
-        if MaschineUi.status != "": Text { text: MaschineUi.status; color: #ff9f0a; font-size: 10px; overflow: elide; height: 14px; }
+        if MaschineUi.status != "": Text { text: MaschineUi.status; color: Theme.c-ff9f0a; font-size: 10px; overflow: elide; height: 14px; }
     }
     if MaschineUi.instrument-menu-open: Rectangle {
-        background: #00000088;
+        background: Theme.s-00000088;
         TouchArea { clicked => { MaschineUi.instrument-menu-open = false; } }
         Rectangle {
             x: (parent.width - self.width) / 2;

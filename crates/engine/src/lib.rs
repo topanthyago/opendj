@@ -66,6 +66,7 @@ pub mod synth;
 pub mod tags;
 pub mod track;
 mod visual;
+pub mod vocals;
 pub mod word_timing;
 
 use std::cell::RefCell;
@@ -712,6 +713,26 @@ impl AudioEngine {
     /// what is wrong with it, or empty when it has none.
     pub fn input_status(&self) -> Vec<String> {
         self.output.borrow().input_status()
+    }
+
+    /// The peak (0 to 1 and up, linear) of each channel of each open input
+    /// device since the last call, by the device's name as
+    /// [`InputRoute::device`] gives it: the input picker's meters.
+    pub fn input_levels(&self) -> Vec<(String, Vec<f32>)> {
+        self.output.borrow().input_levels()
+    }
+
+    /// How far behind each input is heard, in ms, by [`InputRole::index`]:
+    /// its queue plus one device callback; `None` while it isn't open.
+    pub fn input_delays(&self) -> Vec<Option<f64>> {
+        self.output.borrow().input_delays()
+    }
+
+    /// Meters every channel of the input device called `device` (empty for
+    /// the system default) while the input picker shows it, opening it if
+    /// no input uses it; `None` once the picker closes.
+    pub fn watch_input(&self, device: Option<&str>) {
+        self.output.borrow_mut().watch_input(device);
     }
 
     /// Prepares high-quality stems for `track` in the background (see

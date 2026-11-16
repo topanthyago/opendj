@@ -8,10 +8,10 @@ import { SamplerPanel } from "sampler.slint";
 import { MaschinePanel } from "maschine.slint";
 import { GrooveMenuItem, GrooveMenuBackground, GrooveTempo, GrooveFillBar, PerformanceStatus } from "performance.slint";
 import { Theme, KeyNotation, EdgeLine, EdgeVLine, CloseIcon } from "theme.slint";
-import { Caption, ControlButton, ControlFader, ControlKnob, Controls, HoverTip, MasterBadge, PitchReset, SyncButton } from "controls.slint";
+import { Caption, ControlButton, ControlFader, ControlKnob, Controls, HoverTip, MasterBadge, PitchReset, Switch, SyncButton, VuMeter } from "controls.slint";
 import { TourMark } from "tourmark.slint";
 import { MapMark } from "mapmark.slint";
-import { InstrumentsUi, LiveIcon, PresetUi, TagChip } from "instruments.slint";
+import { InstrumentsUi, LiveIcon, MixerStripInfo, PickerRow, PresetUi, TagChip } from "instruments.slint";
 import { LineEdit } from "std-widgets.slint";
 import { ListView, ScrollView } from "scroll.slint";
 
@@ -118,7 +118,7 @@ component GridMenuItem inherits Rectangle {
     in property <string> text;
     height: 26px;
     border-radius: 4px;
-    background: ta.has-hover ? #3a3a3d : transparent;
+    background: ta.has-hover ? Theme.n-3a3a3d : transparent;
     Text { x: 10px; text: root.text; color: Theme.text; font-size: 13px; vertical-alignment: center; }
     ta := TouchArea {
         clicked => {
@@ -144,11 +144,28 @@ component GridNudge inherits HorizontalLayout {
     ControlButton { group: group; key: more-key; text: more-text; momentary: true; font-size: 13px; width: 44px; }
 }
 
+// An on/off line in the beat grid menu, with the same switch as Settings.
+component GridSwitch inherits HorizontalLayout {
+    in property <string> group;
+    in property <string> key;
+    in property <string> label;
+    in property <bool> on;
+    height: 26px;
+    padding-left: 10px;
+    padding-right: 4px;
+    Text { text: label; color: Theme.text; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
+    Switch {
+        y: (parent.height - self.height) / 2;
+        on: root.on;
+        toggled(on) => { Controls.set-value(Controls.resolve(group, key), on ? 1 : 0); }
+    }
+}
+
 // Beat grid editing, opened from the tempo on the jog: move the grid,
 // adjust the tempo, and add or remove tempo sections for tracks whose
 // tempo drifts. Shows where the grid came from, clicks along with it,
 // locks it, and goes back to the detected grid.
-component GridMenu inherits PopupWindow {
+export component GridMenu inherits PopupWindow {
     in property <string> group;
     in property <DeckInfo> info;
     width: 240px;
@@ -159,7 +176,7 @@ component GridMenu inherits PopupWindow {
         border-width: 1px;
         border-color: Theme.border;
         drop-shadow-blur: 12px;
-        drop-shadow-color: #000000a0;
+        drop-shadow-color: Theme.s-000000a0;
     }
     property <bool> locked: Controls.value(Controls.resolve(group, "bpmlock"), Controls.tick) > 0;
     property <bool> clicking: Controls.value(Controls.resolve(group, "metronome"), Controls.tick) > 0;
@@ -178,22 +195,12 @@ component GridMenu inherits PopupWindow {
             height: 18px;
             x: 10px;
             text: info.grid-unsure && info.grid-source == "Detected" ? "Detected · may be off, check by ear" : info.grid-source;
-            color: info.grid-unsure && info.grid-source == "Detected" ? #e0b050 : Theme.text-dim;
+            color: info.grid-unsure && info.grid-source == "Detected" ? Theme.c-e0b050 : Theme.text-dim;
             font-size: 12px;
             vertical-alignment: center;
         }
-        HorizontalLayout {
-            height: 26px;
-            padding-left: 10px;
-            Text { text: "Metronome"; color: Theme.text; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
-            ControlButton { group: group; key: "metronome"; text: clicking ? "On" : "Off"; font-size: 13px; width: 44px; }
-        }
-        HorizontalLayout {
-            height: 26px;
-            padding-left: 10px;
-            Text { text: "Lock grid"; color: Theme.text; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
-            ControlButton { group: group; key: "bpmlock"; text: locked ? "On" : "Off"; font-size: 13px; width: 44px; }
-        }
+        GridSwitch { group: group; key: "metronome"; label: "Metronome"; on: clicking; }
+        GridSwitch { group: group; key: "bpmlock"; label: "Lock grid"; on: locked; }
         Rectangle { height: 9px; Rectangle { height: 1px; background: Theme.border; } }
         if locked: Text {
             height: 26px;
@@ -208,6 +215,13 @@ component GridMenu inherits PopupWindow {
         if !locked: GridNudge { group: group; label: "Move grid"; less-key: "beats_translate_earlier"; more-key: "beats_translate_later"; less-text: "‹"; more-text: "›"; }
         if !locked: GridNudge { group: group; label: "Tempo here"; less-key: "beats_adjust_slower"; more-key: "beats_adjust_faster"; less-text: "−"; more-text: "+"; }
         if !locked: GridNudge { group: group; label: "Tempo × ½ / × 2"; less-key: "beats_scale_half"; more-key: "beats_scale_double"; less-text: "½"; more-text: "2"; }
+        // Tap along to set the tempo by ear.
+        if !locked: HorizontalLayout {
+            height: 26px;
+            padding-left: 10px;
+            Text { text: "Tap tempo"; color: Theme.text; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
+            ControlButton { group: group; key: "bpm_tap"; text: "TAP"; momentary: true; font-size: 12px; width: 92px; }
+        }
         if !locked: Rectangle { height: 9px; Rectangle { height: 1px; background: Theme.border; } }
         if !locked: GridMenuItem { group: group; key: "beats_section_add"; text: "New tempo section from here"; }
         if !locked && info.grid-sections > 1: GridMenuItem { group: group; key: "beats_section_remove"; text: "Remove this tempo section"; }
@@ -284,11 +298,11 @@ export component Jog inherits Rectangle {
     }
     Rectangle {
         border-radius: self.width / 2;
-        background: #0a0a0b;
+        background: Theme.n-0a0a0b;
         border-width: 1px;
-        border-color: #000000;
+        border-color: Theme.edge;
     }
-    Arc { width: parent.width; height: parent.height; from: 0deg; to: 359.9deg; stroke: #232326; stroke-width: 3px; }
+    Arc { width: parent.width; height: parent.height; from: 0deg; to: 359.9deg; stroke: Theme.n-232326; stroke-width: 3px; }
     if info.progress > 0.002 || info.end-flash-ring: Arc {
         width: parent.width;
         height: parent.height;
@@ -313,14 +327,14 @@ export component Jog inherits Rectangle {
         width: centre;
         height: centre;
         border-radius: self.width / 2;
-        background: #2a2a2d;
+        background: Theme.n-2a2a2d;
         border-width: 1px;
-        border-color: #00000000;
+        border-color: Theme.s-00000000;
     }
     // The small jogs carry the openDJ mark in light grey instead of text.
     if plain: Image {
         source: @image-url("icons/opendj-mark.svg");
-        colorize: #a1a1a6;
+        colorize: Theme.n-a1a1a6;
         width: centre * 0.62;
         height: self.width / 1.6;
     }
@@ -333,7 +347,7 @@ export component Jog inherits Rectangle {
         height: 9px * scale;
         width: parent.width;
         text: info.rate;
-        color: #9e9ea3;
+        color: Theme.n-9e9ea3;
         font-size: 7.5px * scale;
         font-weight: 500;
         horizontal-alignment: center;
@@ -346,7 +360,7 @@ export component Jog inherits Rectangle {
         height: 20px * scale;
         width: parent.width;
         text: info.loaded ? info.bpm : "--";
-        color: bta.has-hover && info.loaded ? Theme.accent : Theme.text;
+        color: bta.has-hover && info.loaded ? Theme.lilac-text : Theme.text;
         font-size: 16px * scale;
         font-weight: 600;
         horizontal-alignment: center;
@@ -374,7 +388,7 @@ export component Jog inherits Rectangle {
         y: parent.height / 2 + 3px * scale;
         width: 44px * scale;
         height: 1px;
-        background: #48484c;
+        background: Theme.n-48484c;
     }
     // Elapsed over remaining, right-aligned to each other so the digits
     // line up, and centred in the jog as one block.
@@ -385,7 +399,7 @@ export component Jog inherits Rectangle {
         Text {
             height: 10px * scale;
             text: info.loaded ? info.elapsed : "00:00.0";
-            color: #9e9ea3;
+            color: Theme.n-9e9ea3;
             font-size: 8.5px * scale;
             font-weight: 500;
             horizontal-alignment: right;
@@ -425,6 +439,10 @@ export component Cover inherits Rectangle {
     in property <int> live: 0;
     // Its menu opens leftward, for a cover on the deck's right.
     in property <bool> menu-left: false;
+    // The deck holds something (a track, a Groove Box, a Looper or a live
+    // input), so its menu offers Unload deck; not while it plays.
+    in property <bool> occupied: false;
+    in property <bool> playing: false;
     property <bool> live-art: live > 0 && InstrumentsUi.has-art(live);
     width: size;
     height: size;
@@ -441,7 +459,7 @@ export component Cover inherits Rectangle {
         source: InstrumentsUi.art(live);
         image-fit: cover;
     }
-    if live > 0: TouchArea {
+    if occupied && !info.loaded: TouchArea {
         pointer-event(e) => {
             if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
                 art-menu.show();
@@ -452,11 +470,20 @@ export component Cover inherits Rectangle {
         x: menu-left ? root.width - self.width : 0;
         y: root.height + 2px;
         width: 200px;
-        height: (InstrumentsUi.own-art(live) ? 2 : 1) * 36px + 8px;
+        height: (occupied ? (playing ? 36px : 24px) : 0px) + (live > 0 ? (InstrumentsUi.own-art(live) ? 2 : 1) * 36px : 0px) + 8px;
         GrooveMenuBackground { }
         VerticalLayout {
             padding: 4px;
-            GrooveMenuItem {
+            if occupied: GrooveMenuItem {
+                text: "Unload deck";
+                detail: playing ? "Pause the deck first" : "";
+                clicked => {
+                    if !playing {
+                        DeckActions.eject(deck);
+                    }
+                }
+            }
+            if live > 0: GrooveMenuItem {
                 text: "Choose image…";
                 detail: "Or drop one on the deck";
                 clicked => { InstrumentsUi.choose-art(live, InstrumentsUi.instrument()); }
@@ -478,7 +505,82 @@ export component Cover inherits Rectangle {
         data: TrackDrag.deck-payload(deck);
         allow-copy: true;
         changed dragging => { TrackDrag.active = self.dragging; }
-        TouchArea { mouse-cursor: grab; }
+        TouchArea {
+            mouse-cursor: grab;
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                    art-menu.show();
+                }
+            }
+        }
+    }
+}
+
+// The eject mark: a triangle over a bar, in a 12 by 12 box.
+component EjectMark inherits Path {
+    viewbox-width: 12;
+    viewbox-height: 12;
+    commands: "M 6 1.5 L 11 7 L 1 7 Z M 1 8.5 L 11 8.5 L 11 10.5 L 1 10.5 Z";
+}
+
+// A deck's cover with ⏏ on its outer corner while the pointer is on it and
+// the deck holds something that isn't playing: a click unloads the deck,
+// whatever it holds.
+component DeckCover inherits TouchArea {
+    in property <int> deck;
+    in property <color> tint;
+    in property <DeckInfo> info;
+    in property <int> live;
+    in property <bool> mirrored;
+    in property <bool> compact;
+    in property <bool> occupied;
+    in property <bool> playing;
+    width: compact ? 40px : 96px;
+    height: self.width;
+    property <bool> badge: occupied && !playing && root.has-hover;
+    // The badge's tooltip is up: it goes with the badge, however that goes.
+    property <bool> tip-mine;
+    changed badge => {
+        if !badge && tip-mine {
+            tip-mine = false;
+            HoverTip.shown = false;
+        }
+    }
+    Cover { deck: deck; tint: tint; info: info; live: live; menu-left: mirrored; size: root.width; occupied: occupied; playing: playing; }
+    if badge: Rectangle {
+        property <length> inset: compact ? 2px : 4px;
+        property <length> size: compact ? 16px : 22px;
+        x: mirrored ? parent.width - self.width - inset : inset;
+        y: inset;
+        width: size;
+        height: size;
+        border-radius: size / 2;
+        border-width: 1px;
+        border-color: eta.has-hover ? Theme.accent : #ffffff40;
+        background: eta.has-hover ? Theme.accent : #000000b0;
+        EjectMark { width: size * 0.55; height: size * 0.55; fill: eta.has-hover ? Theme.on-selection : #ffffff; }
+        eta := TouchArea {
+            mouse-cursor: pointer;
+            changed has-hover => {
+                if self.has-hover {
+                    HoverTip.title = "Unload deck";
+                    HoverTip.body = "";
+                    HoverTip.right-aligned = mirrored;
+                    HoverTip.x = mirrored ? self.absolute-position.x + self.width : self.absolute-position.x;
+                    HoverTip.y = self.absolute-position.y + self.height + 4px;
+                    HoverTip.shown = true;
+                    tip-mine = true;
+                } else {
+                    tip-mine = false;
+                    HoverTip.shown = false;
+                }
+            }
+            clicked => {
+                tip-mine = false;
+                HoverTip.shown = false;
+                DeckActions.eject(deck);
+            }
+        }
     }
 }
 
@@ -490,7 +592,7 @@ component KeyStep inherits Rectangle {
     property <int> index: Controls.resolve(group, key);
     width: 14px;
     height: 13px;
-    Text { text: root.text; color: ta.pressed ? Theme.accent : ta.has-hover ? Theme.text : Theme.text-dim; font-size: 14px; font-weight: 600; vertical-alignment: center; horizontal-alignment: center; }
+    Text { text: root.text; color: ta.pressed ? Theme.lilac-text : ta.has-hover ? Theme.text : Theme.text-dim; font-size: 14px; font-weight: 600; vertical-alignment: center; horizontal-alignment: center; }
     ta := TouchArea {
         mouse-cursor: pointer;
         clicked => {
@@ -523,7 +625,7 @@ component KeyBox inherits VerticalLayout {
         Text {
             text: info.loaded ? info.key : "--";
             // A shifted key is shown in the accent color.
-            color: info.key-shift != "" ? Theme.accent : Theme.key;
+            color: info.key-shift != "" ? Theme.lilac-text : Theme.key;
             font-size: 18px;
             font-weight: 600;
             vertical-alignment: center;
@@ -532,7 +634,7 @@ component KeyBox inherits VerticalLayout {
                 clicked => { KeyNotation.camelot = !KeyNotation.camelot; }
             }
         }
-        if info.key-shift != "": Text { text: info.key-shift; color: Theme.accent; font-size: 10px; font-weight: 600; vertical-alignment: top; }
+        if info.key-shift != "": Text { text: info.key-shift; color: Theme.lilac-text; font-size: 10px; font-weight: 600; vertical-alignment: top; }
         // Opens the key menu.
         Rectangle {
             width: 14px;
@@ -575,7 +677,7 @@ component KeyBox inherits VerticalLayout {
             border-width: 1px;
             border-color: Theme.border;
             drop-shadow-blur: 12px;
-            drop-shadow-color: #000000a0;
+            drop-shadow-color: Theme.s-000000a0;
         }
         VerticalLayout {
             padding: 6px;
@@ -583,7 +685,7 @@ component KeyBox inherits VerticalLayout {
             for item in more ? info.key-menu-all : info.key-menu: Rectangle {
                 height: 26px;
                 border-radius: 4px;
-                background: ita.has-hover ? #3a3a3d : transparent;
+                background: ita.has-hover ? Theme.n-3a3a3d : transparent;
                 HorizontalLayout {
                     padding-left: 6px;
                     padding-right: 6px;
@@ -602,7 +704,7 @@ component KeyBox inherits VerticalLayout {
             if !more: Rectangle {
                 height: 26px;
                 border-radius: 4px;
-                background: mta.has-hover ? #3a3a3d : transparent;
+                background: mta.has-hover ? Theme.n-3a3a3d : transparent;
                 Text { x: 26px; text: "More…"; color: Theme.text; font-size: 13px; }
                 mta := TouchArea { clicked => { more = true; } }
             }
@@ -610,7 +712,7 @@ component KeyBox inherits VerticalLayout {
             Rectangle {
                 height: 26px;
                 border-radius: 4px;
-                background: sta.has-hover ? #3a3a3d : transparent;
+                background: sta.has-hover ? Theme.n-3a3a3d : transparent;
                 Text { x: 26px; text: "Match key to the other deck"; color: Theme.text; font-size: 13px; }
                 sta := TouchArea {
                     clicked => {
@@ -667,7 +769,7 @@ component BeatBox inherits HorizontalLayout {
                 width: cell;
                 height: cell;
                 border-radius: 2px;
-                background: i != count.beat ? #2c2c2f
+                background: i != count.beat ? Theme.n-2c2c2f
                     : (i == 0 ? Theme.text : tint).with-alpha(count.playing ? 1 : 0.5);
             }
         }
@@ -677,7 +779,7 @@ component BeatBox inherits HorizontalLayout {
                 width: cell;
                 height: 3px;
                 border-radius: 1px;
-                background: count.last-bar ? Theme.accent : i <= count.bar ? tint.with-alpha(0.75) : #2c2c2f;
+                background: count.last-bar ? Theme.accent : i <= count.bar ? tint.with-alpha(0.75) : Theme.n-2c2c2f;
             }
         }
     }
@@ -704,7 +806,7 @@ component TimeKey inherits HorizontalLayout {
         Text { text: info.loaded ? "-" + info.remaining-seconds : "-0:00"; color: info.end-flash-time ? Theme.danger : Theme.text; font-size: 23px; font-weight: 500; horizontal-alignment: right; }
         Text { text: info.loaded ? info.total : ""; color: Theme.text-dim; font-size: 11px; horizontal-alignment: right; }
     }
-    if show-time: EdgeVLine { top: 6px; bottom: 6px; line-color: #2c2c2f; }
+    if show-time: EdgeVLine { top: 6px; bottom: 6px; line-color: Theme.n-2c2c2f; }
     KeyBox { group: group; info: info; tint: tint; compact: !show-time; }
 }
 
@@ -809,7 +911,7 @@ component PresetStep inherits Rectangle {
     callback clicked;
     width: 24px;
     border-radius: 4px;
-    background: ta.pressed ? Theme.control-pressed : ta.has-hover ? #2a2b2e : Theme.control;
+    background: ta.pressed ? Theme.control-pressed : ta.has-hover ? Theme.n-2a2b2e : Theme.control;
     Text { text: root.text; color: Theme.text; font-size: 16px; }
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
 }
@@ -847,7 +949,7 @@ component PresetBar inherits Rectangle {
             border-radius: 4px;
             border-width: 1px;
             border-color: tint;
-            background: sta.pressed ? Theme.control-pressed : sta.has-hover ? #2a2b2e : Theme.control;
+            background: sta.pressed ? Theme.control-pressed : sta.has-hover ? Theme.n-2a2b2e : Theme.control;
             Text { text: "SAVE"; color: Theme.text; font-size: 11px; font-weight: 600; }
             sta := TouchArea { mouse-cursor: pointer; clicked => { menu.show(); } }
         }
@@ -966,7 +1068,7 @@ component MidiChannel inherits Rectangle {
     property <bool> picked: InstrumentsUi.midi-channel == channel;
     height: 22px;
     border-radius: 4px;
-    background: picked ? Theme.accent.with-alpha(0.25) : mcta.has-hover ? #3a3a3d : Theme.control;
+    background: picked ? Theme.accent.with-alpha(0.25) : mcta.has-hover ? Theme.n-3a3a3d : Theme.control;
     border-width: 1px;
     border-color: picked ? Theme.accent : transparent;
     Text { text: channel == 0 ? "Any channel" : channel; color: Theme.text; font-size: 11px; }
@@ -989,7 +1091,7 @@ component MidiFromButton inherits Rectangle {
     border-radius: Theme.radius;
     border-width: 1px;
     border-color: picked ? tint : Theme.border;
-    background: mfta.pressed ? Theme.control-pressed : mfta.has-hover ? #2a2b2e : Theme.control;
+    background: mfta.pressed ? Theme.control-pressed : mfta.has-hover ? Theme.n-2a2b2e : Theme.control;
     HorizontalLayout {
         padding-left: 3px;
         padding-right: 4px;
@@ -1148,7 +1250,7 @@ export component Header inherits Rectangle {
     in property <bool> compact: false;
     // The deck number lit: a two-deck controller's side is on this deck.
     in property <bool> number-lit: false;
-    // The beat and phrase counter; 2-Deck leaves it out.
+    // The beat and phrase counter; 2-Deck Basic leaves it out.
     in property <bool> beat-counter: true;
     callback number-clicked();
     out property <length> overview-width: ov.width;
@@ -1169,6 +1271,10 @@ export component Header inherits Rectangle {
     // microphone, 2 the aux input, 3 the instrument plugin, 4 and 5 aux
     // inputs 2 and 3.
     property <int> live: info.loaded || groove || looper ? 0 : InstrumentsUi.live(deck);
+    // Something is on the deck, which ⏏ on the cover unloads.
+    property <bool> occupied: info.loaded || groove || looper || live > 0;
+    // On an empty deck: what it held before it was unloaded, to put back.
+    property <string> put-back: occupied ? "" : DeckActions.put-back-names[deck];
     property <int> instrument: InstrumentsUi.instrument();
     property <bool> instrument-ready: Controls.value(Controls.resolve("[Instrument1]", "input_configured"), Controls.tick) > 0;
     property <string> live-name: InstrumentsUi.live-name(live,
@@ -1178,9 +1284,6 @@ export component Header inherits Rectangle {
     // Where a press on the overview started, and whether it became a drag.
     property <length> press-x;
     property <bool> scrubbing;
-    // Where the overview's right-click menu opens.
-    property <length> menu-x;
-    property <length> menu-y;
     // The phrase under the pointer, named in a tooltip below the overview
     // while the pointer rests there.
     property <PhraseTip> phrase-tip: PhraseView.visible && info.loaded && ota.has-hover
@@ -1217,7 +1320,11 @@ export component Header inherits Rectangle {
             HoverTip.shown = false;
         }
     }
-    height: compact ? 92px : 108px;
+    // The header's fixed height. A deck that hides the header sets its own
+    // height from this, never from preferred-height: that follows the
+    // overview image's pixel size, so the header grew with each render.
+    out property <length> fixed-height: compact ? 92px : 108px;
+    height: fixed-height;
     // Cover, title, info and overview share one black box.
     background: Theme.well;
 
@@ -1239,7 +1346,7 @@ export component Header inherits Rectangle {
         }
         if !mirrored: VerticalLayout {
             alignment: start;
-            Cover { deck: deck; tint: tint; info: info; live: live; menu-left: mirrored; size: compact ? 40px : 96px; }
+            DeckCover { deck: deck; tint: tint; info: info; live: live; mirrored: mirrored; compact: compact; occupied: occupied; playing: playing; }
         }
         VerticalLayout {
             spacing: 4px;
@@ -1258,7 +1365,31 @@ export component Header inherits Rectangle {
                         alignment: start;
                         FormatChip { text: InstrumentsUi.format(); tint: tint; compact: compact; }
                     }
-                    if live != 3: Text {
+                    if put-back != "": HorizontalLayout {
+                        alignment: start;
+                        spacing: 6px;
+                        if !compact: Text {
+                            text: "Drop a track here  ·";
+                            color: Theme.text-dim;
+                            font-size: 13px;
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            pbt := Text {
+                                width: parent.width;
+                                text: "↺ Put back " + put-back;
+                                color: pba.has-hover ? Theme.text : Theme.lilac-text;
+                                font-size: compact ? 11px : 13px;
+                                font-weight: 600;
+                                overflow: elide;
+                            }
+                            pba := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { DeckActions.put-back(deck); }
+                            }
+                        }
+                    }
+                    if live != 3 && put-back == "": Text {
                         text: groove ? GrooveUi.kits[groove-kit].name + " kit   |   " + round(groove-bpm * 10) / 10 + (groove-following ? " BPM, in time with the mix" : " BPM")
                             : looper ? round(looper-bpm * 10) / 10 + (looper-following ? " BPM, in time with the mix" : " BPM, its own tempo")
                             : live > 0 ? (InstrumentsUi.route(live) != "" ? InstrumentsUi.route(live) : "Live input")
@@ -1285,7 +1416,7 @@ export component Header inherits Rectangle {
                 if !groove && !looper && live == 0: TimeKey { group: group; info: info; tint: tint; show-time: !compact; }
             }
             // Out to the header's edge on the side away from the cover.
-            EdgeLine { left: mirrored ? 6px : 0px; right: mirrored ? 0px : 6px; line-color: #2c2c2f; }
+            EdgeLine { left: mirrored ? 6px : 0px; right: mirrored ? 0px : 6px; line-color: Theme.n-2c2c2f; }
             // Overview waveform, rendered on the GPU. Click to jump; drag to
             // move through the track, the deck gliding after the pointer and
             // playing what it passes.
@@ -1353,12 +1484,6 @@ export component Header inherits Rectangle {
                         if e.kind == PointerEventKind.down {
                             hide-tip();
                         }
-                        if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
-                            menu-x = self.mouse-x;
-                            menu-y = self.mouse-y;
-                            phrase-menu.show();
-                            return;
-                        }
                         if e.button != PointerEventButton.left && e.kind != PointerEventKind.cancel {
                             return;
                         }
@@ -1396,41 +1521,6 @@ export component Header inherits Rectangle {
                         show-tip();
                     }
                 }
-                phrase-menu := PopupWindow {
-                    x: min(menu-x, ov.width - 130px);
-                    y: menu-y;
-                    width: 130px;
-                    Rectangle {
-                        background: Theme.panel-raised;
-                        border-radius: Theme.radius;
-                        border-width: 1px;
-                        border-color: Theme.border;
-                        drop-shadow-blur: 8px;
-                        drop-shadow-color: #00000080;
-                    }
-                    VerticalLayout {
-                        padding: 4px;
-                        Rectangle {
-                            height: 24px;
-                            background: pta.has-hover ? Theme.panel-raised.brighter(0.3) : transparent;
-                            border-radius: 4px;
-                            Text {
-                                x: 10px;
-                                text: PhraseView.visible ? "Hide phrases" : "Show phrases";
-                                color: Theme.text;
-                                font-size: 11px;
-                                font-weight: 600;
-                                vertical-alignment: center;
-                            }
-                            pta := TouchArea {
-                                clicked => {
-                                    PhraseView.visible = !PhraseView.visible;
-                                    PhraseView.changed(PhraseView.visible);
-                                }
-                            }
-                        }
-                    }
-                }
             }
             if compact: Text {
                 text: info.loaded ? "-" + info.remaining-seconds : "-0:00";
@@ -1445,22 +1535,19 @@ export component Header inherits Rectangle {
         }
         if mirrored: VerticalLayout {
             alignment: start;
-            Cover { deck: deck; tint: tint; info: info; live: live; menu-left: mirrored; size: compact ? 40px : 96px; }
+            DeckCover { deck: deck; tint: tint; info: info; live: live; mirrored: mirrored; compact: compact; occupied: occupied; playing: playing; }
         }
     }
 }
 
 // The effects every slot can hold, in loaded_effect order (1 = the first);
 // set once from the engine's list.
-// Phrase bars on the deck overviews: shown or hidden from an overview's
-// right-click menu, for every deck at once.
+// Phrase bars on the deck overviews and phrase flags on the large
+// waveforms (a line and a name at each phrase start), for every deck at
+// once; picked with Phrases in the waveforms button's drop-down.
 export global PhraseView {
-    in-out property <bool> visible: true;
-    callback changed(on: bool);
-    // Phrase flags on the scrolling waveforms (a line and a name at each
-    // phrase start), switched from a scrolling waveform's right-click menu.
-    in-out property <bool> waveform-visible: true;
-    callback waveform-changed(on: bool);
+    in property <bool> visible: true;
+    in property <bool> waveform-visible: true;
     // The phrase at `seconds` into the track on `deck`, for the overview's
     // tooltip; an empty title where there is none.
     pure callback describe(deck: int, seconds: float) -> PhraseTip;
@@ -1468,7 +1555,7 @@ export global PhraseView {
 
 // Deck actions that aren't controls.
 // Whether the pad grid shows in the decks (the PADS button in the top
-// bar). Hidden, 2-Deck keeps its tempo, loop and jog, and 4-Deck strips
+// bar). Hidden, 2-Deck Basic keeps its tempo, loop and jog, and 4-Deck strips
 // get shorter.
 export global PadsUi {
     in-out property <bool> visible: true;
@@ -1478,6 +1565,16 @@ export global DeckActions {
     // Prepares high-quality stems for the track on `deck` in the
     // background; they take over from the quick ones when ready.
     callback prepare-hq-stems(deck: int);
+    // What each deck held before it was last unloaded, offered on the
+    // empty deck as Put back ("" for nothing); see put_back.rs.
+    in property <[string]> put-back-names;
+    callback put-back(deck: int);
+    // Unloads `deck`, as its eject button: the engine leaves a playing deck
+    // alone.
+    public function eject(deck: int) {
+        Controls.set-value(Controls.resolve("[Channel" + (deck + 1) + "]", "eject"), 1);
+        Controls.set-value(Controls.resolve("[Channel" + (deck + 1) + "]", "eject"), 0);
+    }
 }
 
 // A line of the effect menu: an effect (`index` into EffectList.names,
@@ -1531,7 +1628,7 @@ export component EffectMenu inherits VerticalLayout {
         for t[i] in ["openDJ FX", "Plugins"]: Rectangle {
             horizontal-stretch: 1;
             border-radius: 4px;
-            background: tab == i ? Theme.control-pressed : tta.has-hover ? #2a2b2e : transparent;
+            background: tab == i ? Theme.control-pressed : tta.has-hover ? Theme.n-2a2b2e : transparent;
             Text {
                 text: t;
                 color: tab == i ? Theme.text : Theme.text-dim;
@@ -1552,7 +1649,7 @@ export component EffectMenu inherits VerticalLayout {
                 property <bool> current: !heading && loaded == row.index + 1;
                 height: heading ? 22px : 26px;
                 border-radius: 4px;
-                background: current ? tint.with-alpha(0.35) : !heading && eta.has-hover ? #3a3a3d : transparent;
+                background: current ? tint.with-alpha(0.35) : !heading && eta.has-hover ? Theme.n-3a3a3d : transparent;
                 HorizontalLayout {
                     padding-left: 8px;
                     padding-right: 8px;
@@ -1603,7 +1700,7 @@ export component FxSlot inherits HorizontalLayout {
         horizontal-stretch: 1;
         min-width: 0px;
         preferred-width: 0px;
-        background: on ? tint : nta.pressed || ata.pressed ? Theme.control-pressed : nta.has-hover || ata.has-hover ? #1d1d20 : Theme.control;
+        background: on ? tint : nta.pressed || ata.pressed ? Theme.control-pressed : nta.has-hover || ata.has-hover ? Theme.n-1d1d20 : Theme.control;
         border-radius: Theme.radius;
         border-width: 1px;
         border-color: on ? tint : Theme.border;
@@ -1714,7 +1811,7 @@ export component FxSlot inherits HorizontalLayout {
             border-width: 1px;
             border-color: Theme.border;
             drop-shadow-blur: 12px;
-            drop-shadow-color: #000000a0;
+            drop-shadow-color: Theme.s-000000a0;
         }
         EffectMenu {
             loaded: loaded;
@@ -1765,7 +1862,7 @@ component PadFxButton inherits Rectangle {
     property <string> unit: "[EffectRack1_EffectUnit" + (deck + 6) + "]";
     property <string> slot: "[EffectRack1_EffectUnit" + (deck + 6) + "_Effect1]";
     property <bool> held: touch.pressed;
-    background: held ? tint.with-alpha(0.25) : touch.has-hover ? #1d1d20 : Theme.control;
+    background: held ? tint.with-alpha(0.25) : touch.has-hover ? Theme.n-1d1d20 : Theme.control;
     Text { text: fx.text; color: held ? tint : Theme.text; font-size: 12px; font-weight: 700; }
     touch := TouchArea {
         pointer-event(e) => {
@@ -1797,7 +1894,7 @@ component PanelMenuItem inherits Rectangle {
     Text {
         x: 10px;
         text: root.text;
-        color: current ? Theme.accent : Theme.text;
+        color: current ? Theme.lilac-text : Theme.text;
         font-size: 11px;
         font-weight: 600;
         vertical-alignment: center;
@@ -1905,7 +2002,7 @@ component StemPad inherits Rectangle {
         echo(m3, f3, on3, !rest);
         echo(m5, f5, on5 && count >= 5, !rest);
     }
-    background: !available ? Theme.control : ta.pressed ? Theme.control-pressed : lit ? tint.with-alpha(0.2) : ta.has-hover ? #1d1d20 : Theme.control;
+    background: !available ? Theme.control : ta.pressed ? Theme.control-pressed : lit ? tint.with-alpha(0.2) : ta.has-hover ? Theme.n-1d1d20 : Theme.control;
     Text {
         y: (parent.height - self.height) / 2 - 3px;
         width: parent.width - 6px;
@@ -1924,7 +2021,7 @@ component StemPad inherits Rectangle {
         font-size: 8px;
         font-weight: 700;
         letter-spacing: 0.5px;
-        color: sent ? Theme.accent : Theme.text-dim.with-alpha(0.7);
+        color: sent ? Theme.lilac-text : Theme.text-dim.with-alpha(0.7);
     }
     if stem == StemPads.fx && available: Text {
         x: 4px;
@@ -1933,7 +2030,7 @@ component StemPad inherits Rectangle {
         font-size: 8px;
         font-weight: 700;
         letter-spacing: 0.5px;
-        color: fx-mode ? Theme.accent : Theme.text-dim.with-alpha(0.7);
+        color: fx-mode ? Theme.lilac-text : Theme.text-dim.with-alpha(0.7);
     }
     if show-quality && count > 0: Text {
         x: parent.width - self.width - 4px;
@@ -1942,7 +2039,7 @@ component StemPad inherits Rectangle {
         font-size: 8px;
         font-weight: 700;
         letter-spacing: 0.5px;
-        color: info.stem-hq ? Theme.accent : Theme.text-dim.with-alpha(0.7);
+        color: info.stem-hq ? Theme.lilac-text : Theme.text-dim.with-alpha(0.7);
     }
     // The stem's color, under its name.
     Rectangle {
@@ -1990,7 +2087,7 @@ component StemPad inherits Rectangle {
             border-width: 1px;
             border-color: Theme.border;
             drop-shadow-blur: 8px;
-            drop-shadow-color: #00000080;
+            drop-shadow-color: Theme.s-00000080;
         }
         VerticalLayout {
             padding: 4px;
@@ -2038,7 +2135,7 @@ component PadCell inherits Rectangle {
     in property <color> tint;
     property <int> index: Controls.resolve(group, key);
     property <bool> lit: Controls.value(Controls.resolve(group, light-key), Controls.tick) > 0;
-    background: touch.pressed ? Theme.control-pressed : lit ? tint.with-alpha(0.18) : touch.has-hover ? #1d1d20 : Theme.control;
+    background: touch.pressed ? Theme.control-pressed : lit ? tint.with-alpha(0.18) : touch.has-hover ? Theme.n-1d1d20 : Theme.control;
     Text { text: root.text; color: lit ? tint : Theme.text; font-size: 12px; font-weight: 700; overflow: elide; }
     touch := TouchArea {
         pointer-event(e) => {
@@ -2072,7 +2169,7 @@ component KeyPad inherits Rectangle {
     property <bool> instrument: keyboard && Controls.value(Controls.resolve("[Instrument1]", "keyboard_pads"), Controls.tick) > 0;
     property <int> octave: Controls.value(Controls.resolve("[Instrument1]", "octave"), Controls.tick);
     property <bool> lit: !instrument && abs(Controls.value(pitch-index, Controls.tick) - semitones) < 0.01;
-    background: touch.pressed ? Theme.control-pressed : lit ? tint.with-alpha(0.18) : touch.has-hover ? #1d1d20 : Theme.control;
+    background: touch.pressed ? Theme.control-pressed : lit ? tint.with-alpha(0.18) : touch.has-hover ? Theme.n-1d1d20 : Theme.control;
     Text {
         text: instrument ? ["C", "D", "E", "F", "G", "A", "B", "C"][number - 1] + (4 + octave + (number == 8 ? 1 : 0))
             : semitones == 0 ? "±0" : semitones > 0 ? "+" + semitones : "−" + abs(semitones);
@@ -2121,7 +2218,7 @@ component HotcueCell inherits Rectangle {
     property <int> secs: floor(mod(seconds, 60));
     property <string> time: (minutes < 10 ? "0" : "") + minutes + ":" + (secs < 10 ? "0" : "") + secs;
     background: touch.pressed ? (set ? tint.with-alpha(0.3) : Theme.control-pressed)
-        : touch.has-hover ? #1d1d20 : Theme.control;
+        : touch.has-hover ? Theme.n-1d1d20 : Theme.control;
     if set: HorizontalLayout {
         alignment: center;
         spacing: 5px;
@@ -2197,7 +2294,7 @@ component PadTabs inherits Rectangle {
     // Square tabs on top of the pad grid, split by the same black lines:
     // the open one is lit like the pads, the others sit back darker.
     height: 23px;
-    background: #000000;
+    background: Theme.n-000000;
     HorizontalLayout {
         padding: 1px;
         padding-bottom: 0px;
@@ -2239,7 +2336,7 @@ component PadTabs inherits Rectangle {
             border-width: 1px;
             border-color: Theme.border;
             drop-shadow-blur: 8px;
-            drop-shadow-color: #00000080;
+            drop-shadow-color: Theme.s-00000080;
         }
         VerticalLayout {
             padding: 4px;
@@ -2263,7 +2360,7 @@ component PadPager inherits Rectangle {
     in property <int> current;
     callback pick(page: int);
     width: 18px;
-    background: #000000;
+    background: Theme.n-000000;
     VerticalLayout {
         padding: 1px;
         spacing: 1px;
@@ -2272,10 +2369,10 @@ component PadPager inherits Rectangle {
             property <bool> on: numbers && current == p;
             property <bool> can: numbers || (p == 0 ? current > 0 : current < count - 1);
             vertical-stretch: 1;
-            background: on ? Theme.accent.with-alpha(0.22) : ta.has-hover && can ? #1d1d20 : Theme.control;
+            background: on ? Theme.accent.with-alpha(0.22) : ta.has-hover && can ? Theme.n-1d1d20 : Theme.control;
             Text {
                 text: numbers ? p + 1 : p == 0 ? "‹" : "›";
-                color: on ? Theme.accent : can ? Theme.text : Theme.text-dim.with-alpha(0.4);
+                color: on ? Theme.lilac-text : can ? Theme.text : Theme.text-dim.with-alpha(0.4);
                 font-size: numbers ? 11px : 15px;
                 font-weight: 700;
             }
@@ -2344,11 +2441,11 @@ export component Pads inherits HorizontalLayout {
         { stem: 4, text: "Vocal", tint: #09AD18 },
         { stem: 3, text: "Instru", tint: #A26018 },
         { stem: 2, text: "Bass", tint: #A21418 },
-        { stem: 0, text: "Acapella", tint: #A9AAAB },
+        { stem: 0, text: "Acapella", tint: Theme.n-a9aaab },
         { stem: 1, text: "Kick", tint: #2E4E75 },
         { stem: 5, text: "HiHat", tint: #0960B1 },
-        { stem: -2, text: "Stems FX", tint: #5D5D5E },
-        { stem: -1, text: "Instrumental", tint: #A9AAAB },
+        { stem: -2, text: "Stems FX", tint: Theme.n-5d5d5e },
+        { stem: -1, text: "Instrumental", tint: Theme.n-a9aaab },
     ];
     property <[PadEffect]> pad-fx: [
         { effect: 1, meta: 0.6, text: "ECHO" },
@@ -2468,9 +2565,9 @@ export component Pads inherits HorizontalLayout {
         // The black background shows through the 1px gaps as the grid lines.
         if page != 3: Rectangle {
             vertical-stretch: 1;
-            background: #000000;
+            background: Theme.n-000000;
             border-width: 1px;
-            border-color: #000000;
+            border-color: Theme.edge;
             VerticalLayout {
                 padding: 1px;
                 spacing: 1px;
@@ -2580,7 +2677,7 @@ component StepperPart inherits Rectangle {
     in property <string> text;
     in property <length> font-size;
     in property <color> label-color: Theme.text;
-    background: ta.pressed ? Theme.control-pressed : ta.has-hover ? #1d1d20 : transparent;
+    background: ta.pressed ? Theme.control-pressed : ta.has-hover ? Theme.n-1d1d20 : transparent;
     Text { text: root.text; color: root.label-color; font-size: root.font-size; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
     ta := TouchArea {
         mouse-cursor: pointer;
@@ -2642,7 +2739,7 @@ export component LoopSection inherits VerticalLayout {
         height: 28px;
         // A loop of any length: IN on the nearest beat lights grey while the
         // waveform marks the loop out; OUT closes it, and it turns lilac.
-        ControlButton { group: group; key: "loop_in"; light-key: "loop_in_pending"; text: "IN"; momentary: true; tint: #d1d1d6; font-size: 11px; horizontal-stretch: 1; tour-id: group + ",loop_in"; }
+        ControlButton { group: group; key: "loop_in"; light-key: "loop_in_pending"; text: "IN"; momentary: true; tint: Theme.n-d1d1d6; font-size: 11px; horizontal-stretch: 1; tour-id: group + ",loop_in"; }
         ControlButton { group: group; key: "loop_out"; light-key: "loop_enabled"; text: "OUT"; momentary: true; tint: Theme.lilac; font-size: 11px; horizontal-stretch: 1; tour-id: group + ",loop_out"; }
     }
 }
@@ -2695,9 +2792,161 @@ export component TempoStep inherits Rectangle {
     }
 }
 
-// The tempo column, everything on its centre line: SYNC (Shift-click to
-// sync once, right-click for quantize) over the fader, and the tempo with
-// the fine − and + either side under it.
+// A ▾ like a menu's, after a tempo or a range.
+component TempoChevron inherits Path {
+    in property <bool> hover;
+    width: 6px;
+    height: 4px;
+    commands: "M 0 0 L 3 3.5 L 6 0";
+    stroke: hover ? Theme.text : Theme.text-dim;
+    stroke-width: 1.2px;
+    fill: transparent;
+}
+
+// The Range row of a tempo menu, "Range  8% ▾": a click lists the tempo
+// fader ranges with the deck's own ticked. Picking one keeps the tempo
+// where it is (rate_range_set): the fader moves to match.
+export component TempoRangeRow inherits Rectangle {
+    in property <string> group;
+    // The deck's range as shown, e.g. "8%".
+    in property <string> range;
+    // Open the list leftwards, towards the middle, for a deck on the right.
+    in property <bool> mirrored;
+    property <int> set-index: Controls.resolve(group, "rate_range_set");
+    property <float> current: Controls.value(Controls.resolve(group, "rateRange"), Controls.tick);
+    height: 26px;
+    border-radius: Theme.radius;
+    background: ta.has-hover ? Theme.n-1d1d20 : transparent;
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        spacing: 4px;
+        Text { text: "Range"; color: Theme.text-dim; font-size: 11px; vertical-alignment: center; horizontal-stretch: 1; }
+        Text { text: range; color: Theme.text; font-size: 11px; font-family: "Inter Tabular"; vertical-alignment: center; }
+        TempoChevron { hover: ta.has-hover; y: (parent.height - self.height) / 2; }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { list.show(); } }
+    list := PopupWindow {
+        // Beside the tempo menu, its bottom level with this row.
+        x: mirrored ? -72px - 14px : root.width + 14px;
+        y: root.height - (Controls.rate-ranges.length * 24px + 8px);
+        width: 72px;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: Theme.panel-raised;
+            border-radius: Theme.radius + 1px;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: Theme.s-000000a0;
+        }
+        VerticalLayout {
+            padding: 4px;
+            for option in Controls.rate-ranges: Rectangle {
+                property <bool> selected: abs(root.current - option) < 0.0001;
+                height: 24px;
+                border-radius: Theme.radius;
+                background: selected ? Theme.accent : choice.has-hover ? Theme.control : transparent;
+                Text {
+                    x: 6px;
+                    text: (selected ? "✓ " : "") + round(option * 100) + "%";
+                    color: selected ? #000000 : Theme.text;
+                    font-size: 11px;
+                    font-weight: selected ? 600 : 400;
+                    font-family: "Inter Tabular";
+                    vertical-alignment: center;
+                }
+                choice := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        Controls.set-value(root.set-index, option);
+                        list.close();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The tempo % with ▾ (2-Deck under the BPM, 2-Deck Basic beside SYNC).
+// A click opens the tempo panel: a short tempo slider with fine − and +,
+// key lock, quantize, reset and the fader's range. It opens towards the
+// middle of the screen.
+export component TempoPanelMenu inherits Rectangle {
+    in property <string> group;
+    in property <DeckInfo> info;
+    in property <color> tint;
+    // Deck B: the panel opens leftwards.
+    in property <bool> mirrored;
+    property <int> rate-index: Controls.resolve(group, "rate");
+    height: 14px;
+    HorizontalLayout {
+        alignment: center;
+        spacing: 3px;
+        Text { text: info.rate; color: ta.has-hover ? Theme.text : Theme.text-dim; font-size: 10px; font-family: "Inter Tabular"; vertical-alignment: center; }
+        TempoChevron { hover: ta.has-hover; y: (parent.height - self.height) / 2; }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { panel.show(); } }
+    panel := PopupWindow {
+        x: mirrored ? root.width - 176px : 0px;
+        y: root.height + 6px;
+        width: 176px;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: Theme.panel-raised;
+            border-radius: Theme.radius + 2px;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: Theme.s-000000a0;
+        }
+        VerticalLayout {
+            padding: 8px;
+            spacing: 6px;
+            HorizontalLayout {
+                Text { text: "TEMPO"; color: Theme.text-dim; font-size: 10px; font-weight: 700; }
+                Rectangle { horizontal-stretch: 1; }
+                Text { text: info.rate; color: Theme.text; font-size: 11px; font-family: "Inter Tabular"; }
+            }
+            HorizontalLayout {
+                spacing: 2px;
+                height: 24px;
+                TempoStep { group: group; key: "rate_perm_down_small"; text: "−"; tint: tint; width: 18px; y: (parent.height - self.height) / 2; }
+                ControlFader {
+                    horizontal-stretch: 1;
+                    height: 24px;
+                    group: group;
+                    key: "rate";
+                    vertical: false;
+                    center-mark: true;
+                    ticks: 9;
+                    tint: tint;
+                }
+                TempoStep { group: group; key: "rate_perm_up_small"; text: "+"; tint: tint; width: 18px; y: (parent.height - self.height) / 2; }
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                ControlButton { group: group; key: "keylock"; text: "KEY LOCK"; tint: tint; fill-when-lit: true; font-size: 11px; height: 26px; horizontal-stretch: 1; }
+                ControlButton { group: group; key: "quantize"; text: "QUANTIZE"; tint: tint; fill-when-lit: true; font-size: 11px; height: 26px; horizontal-stretch: 1; }
+            }
+            Rectangle {
+                height: 26px;
+                border-radius: Theme.radius;
+                background: rta.pressed ? Theme.control-pressed : rta.has-hover ? Theme.n-1d1d20 : Theme.control;
+                border-width: 1px;
+                border-color: Theme.border;
+                Text { text: "RESET"; color: Theme.text; font-size: 11px; font-weight: 700; }
+                rta := TouchArea { clicked => { Controls.set-value(rate-index, 0); } }
+            }
+            TempoRangeRow { group: group; range: info.range; mirrored: mirrored; }
+        }
+    }
+}
+
+// The tempo column, everything on its centre line, in djay Pro's order:
+// SYNC (Shift-click to sync once, right-click for quantize), the BPM, the
+// tempo % (a click opens the tempo panel, see TempoPanelMenu), the fader,
+// then the fine − and +.
 // Pitch reset sits in the margin on the fader's outer side. Key lock shows
 // as the fader's line lit lilac, and a right-click on it switches it.
 component Pitch inherits VerticalLayout {
@@ -2707,15 +2956,23 @@ component Pitch inherits VerticalLayout {
     // Deck B: pitch reset goes on the fader's right, its outer side.
     in property <bool> mirrored;
     property <int> keylock-index: Controls.resolve(group, "keylock");
-    width: 64px;
-    spacing: 5px;
-    SyncButton { group: group; tint: tint; font-size: 13px; height: 30px; menu-right-aligned: mirrored; tour-id: group + ",sync_enabled"; }
+    width: 72px;
+    spacing: 3px;
+    SyncButton { group: group; tint: tint; font-size: 13px; height: 26px; menu-right-aligned: mirrored; tour-id: group + ",sync_enabled"; }
+    VerticalLayout {
+        spacing: 1px;
+        Text { text: info.loaded ? info.bpm : "--"; color: Theme.text; font-size: 12px; font-weight: 600; font-family: "Inter Tabular"; horizontal-alignment: center; height: 14px; vertical-alignment: center; }
+        TempoPanelMenu { group: group; info: info; tint: tint; mirrored: mirrored; }
+    }
     Rectangle {
         vertical-stretch: 1;
+        // The handle's half at each end reaches into the gaps above and
+        // below, so the fader runs as far up and down as the column allows.
         ControlFader {
             x: (parent.width - self.width) / 2;
-            width: 32px;
-            height: parent.height;
+            y: -6px;
+            width: 48px;
+            height: parent.height + 12px;
             group: group;
             key: "rate";
             center-mark: true;
@@ -2732,12 +2989,12 @@ component Pitch inherits VerticalLayout {
             mirrored: mirrored;
         }
     }
-    // The fine − and + either side of the tempo, to leave the fader as
-    // much height as the deck allows.
+    // The fine − and + under the fader.
     HorizontalLayout {
-        TempoStep { group: group; key: "rate_perm_down_small"; text: "−"; tint: tint; width: 15px; }
-        Text { text: info.rate; color: Theme.text; font-size: 11px; font-weight: 500; horizontal-alignment: center; vertical-alignment: center; horizontal-stretch: 1; }
-        TempoStep { group: group; key: "rate_perm_up_small"; text: "+"; tint: tint; width: 15px; }
+        alignment: space-around;
+        height: 16px;
+        TempoStep { group: group; key: "rate_perm_down_small"; text: "−"; tint: tint; height: 16px; }
+        TempoStep { group: group; key: "rate_perm_up_small"; text: "+"; tint: tint; height: 16px; }
     }
 }
 
@@ -2893,8 +3150,8 @@ export component SlipToggle inherits Rectangle {
     height: 12px;
     Text {
         text: "SLIP";
-        color: on ? (slipping && !Controls.blink ? Theme.text-dim : Theme.lilac)
-            : ta.has-hover ? Theme.text : #a1a1a6;
+        color: on ? (slipping && !Controls.blink ? Theme.text-dim : Theme.lilac-text)
+            : ta.has-hover ? Theme.text : Theme.n-a1a1a6;
         font-size: 9px;
         font-weight: 700;
         letter-spacing: 0.3px;
@@ -3042,7 +3299,7 @@ component GrooveToggle inherits Rectangle {
     property <int> index: Controls.resolve(group, key);
     property <bool> on: Controls.value(index, Controls.tick) > 0;
     border-radius: 3px;
-    background: on ? tint : gtta.has-hover ? #ffffff1c : #00000040;
+    background: on ? tint : gtta.has-hover ? Theme.n-ffffff1c : Theme.s-00000040;
     Text { text: root.text; color: on ? #000000 : Theme.text-dim; font-size: 9px; font-weight: 700; }
     gtta := TouchArea { mouse-cursor: pointer; clicked => { Controls.toggle(index); } }
 }
@@ -3232,7 +3489,7 @@ component GrooveTrack inherits HorizontalLayout {
         background: on ? (here ? lit.brighter(0.7) : lit)
             : tint.with-alpha((empty ? 0.07 : 0.15) + (here ? 0.12 : 0) + (mod(s, 4) == 0 ? 0.04 : 0) + (cta.has-hover ? 0.12 : 0));
         border-width: on && (is-accent || is-maybe) ? 1px : 0px;
-        border-color: is-maybe ? tint : #ffffffa0;
+        border-color: is-maybe ? tint : Theme.n-ffffffa0;
         // A step that plays half the time.
         if on && is-maybe: Text { text: "50%"; color: Theme.text; font-size: 8px; font-weight: 700; }
         cta := TouchArea {
@@ -3288,7 +3545,7 @@ component GrooveKickKey inherits Rectangle {
     border-radius: 4px;
     border-width: 1px;
     border-color: choice > 0 ? tint : Theme.border;
-    background: kkta.has-hover ? #ffffff1c : #00000040;
+    background: kkta.has-hover ? Theme.n-ffffff1c : Theme.s-00000040;
     Text {
         text: "KEY " + (choice == 1 ? "ROOT" : choice == 2 ? "5TH" : "OFF") + (choice > 0 && note > 0 ? " · " + names[note - 1] : "");
         color: choice > 0 ? tint : Theme.text-dim;
@@ -3417,7 +3674,7 @@ component GrooveStrip inherits VerticalLayout {
         Rectangle {
             width: 5px;
             border-radius: 2px;
-            background: #050506;
+            background: Theme.n-050506;
             Rectangle {
                 y: parent.height * (1 - min(1, meter));
                 height: parent.height * min(1, meter);
@@ -3443,7 +3700,7 @@ component GrooveTab inherits Rectangle {
     callback clicked();
     height: 24px;
     border-radius: 4px;
-    background: on ? tint.with-alpha(0.22) : gtba.has-hover ? #ffffff10 : transparent;
+    background: on ? tint.with-alpha(0.22) : gtba.has-hover ? Theme.n-ffffff10 : transparent;
     Text { text: root.text; color: on ? Theme.text : Theme.text-dim; font-size: 9px; font-weight: 700; letter-spacing: 0.4px; }
     gtba := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
 }
@@ -3518,8 +3775,8 @@ component GroovePads inherits HorizontalLayout {
                 background: on ? (here ? tint.brighter(0.7) : is-accent ? tint.brighter(0.45) : is-soft ? tint.with-alpha(0.5) : is-maybe ? tint.with-alpha(0.35) : tint)
                     : tint.with-alpha(0.1 + (here ? 0.2 : 0) + (mod(s, 4) == 0 ? 0.05 : 0) + (sta.has-hover ? 0.1 : 0));
                 border-width: here ? 2px : on && (is-accent || is-maybe) ? 1px : 0px;
-                border-color: here ? Theme.text : is-maybe ? tint : #ffffffa0;
-                Text { x: 6px; y: 4px; text: s + 1; color: on ? #000000a0 : Theme.text-dim; font-size: 9px; font-weight: 700; }
+                border-color: here ? Theme.text : is-maybe ? tint : Theme.n-ffffffa0;
+                Text { x: 6px; y: 4px; text: s + 1; color: on ? Theme.s-000000a0 : Theme.text-dim; font-size: 9px; font-weight: 700; }
                 if on && is-maybe: Text { text: "50%"; color: Theme.text; font-size: 10px; font-weight: 700; }
                 sta := TouchArea {
                     mouse-cursor: pointer;
@@ -3792,7 +4049,7 @@ component OctaveStep inherits Rectangle {
     width: 20px;
     height: 18px;
     border-radius: 3px;
-    background: ta.pressed ? Theme.control-pressed : ta.has-hover ? #2a2b2e : Theme.control;
+    background: ta.pressed ? Theme.control-pressed : ta.has-hover ? Theme.n-2a2b2e : Theme.control;
     Text { text: root.text; color: Theme.text; font-size: 12px; }
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
 }
@@ -3899,7 +4156,7 @@ component InstrumentKnobs inherits HorizontalLayout {
             width: 22px;
             height: 16px;
             border-radius: 3px;
-            background: p == shown ? root.tint.with-alpha(0.25) : pta.has-hover ? #2a2b2e : Theme.control;
+            background: p == shown ? root.tint.with-alpha(0.25) : pta.has-hover ? Theme.n-2a2b2e : Theme.control;
             border-width: 1px;
             border-color: p == shown ? root.tint : transparent;
             Text { text: p + 1; color: p == shown ? Theme.text : Theme.text-dim; font-size: 10px; }
@@ -3913,8 +4170,8 @@ component InstrumentKnobs inherits HorizontalLayout {
 component InstrumentScope inherits Rectangle {
     in property <color> tint;
     border-radius: 4px;
-    background: #0c0c0e;
-    Rectangle { y: parent.height / 2; height: 1px; background: #26262a; }
+    background: Theme.n-0c0c0e;
+    Rectangle { y: parent.height / 2; height: 1px; background: Theme.n-26262a; }
     Path {
         // The same shape as the scope (160 by 40), so it fills it: a path
         // keeps its viewbox's proportions.
@@ -3947,7 +4204,7 @@ component InstrumentKeyboard inherits Rectangle {
         width: root.key-width - 1px;
         height: root.height;
         border-radius: 2px;
-        background: InstrumentsUi.held[note] ? root.tint : mask == 0 || in-scale ? #d8d8dc : #6a6a70;
+        background: InstrumentsUi.held[note] ? root.tint : mask == 0 || in-scale ? Theme.n-d8d8dc : Theme.n-6a6a70;
         if mask != 0 && in-scale && !InstrumentsUi.held[note]: Rectangle {
             x: 2px;
             y: parent.height - 4px;
@@ -3967,7 +4224,7 @@ component InstrumentKeyboard inherits Rectangle {
         width: root.key-width * 0.6;
         height: root.height * 0.62;
         border-radius: 2px;
-        background: InstrumentsUi.held[note] ? root.tint : mask == 0 || in-scale ? #1a1a1c : #3c3c40;
+        background: InstrumentsUi.held[note] ? root.tint : mask == 0 || in-scale ? Theme.n-1a1a1c : Theme.n-3c3c40;
         if mask != 0 && in-scale && !InstrumentsUi.held[note]: Rectangle {
             x: 2px;
             y: parent.height - 4px;
@@ -4015,7 +4272,7 @@ component ScaleButton inherits GrooveButton {
                     property <int> r: row * 6 + k;
                     property <bool> on: mode == 2 && picked-root == r;
                     border-radius: 4px;
-                    background: on ? Theme.accent.with-alpha(0.25) : rta.has-hover ? #3a3a3d : Theme.control;
+                    background: on ? Theme.accent.with-alpha(0.25) : rta.has-hover ? Theme.n-3a3a3d : Theme.control;
                     border-width: 1px;
                     border-color: on ? Theme.accent : transparent;
                     Text { text: notes[r]; color: Theme.text; font-size: 11px; }
@@ -4095,7 +4352,7 @@ component ChoiceChip inherits Rectangle {
     callback clicked();
     height: 22px;
     border-radius: 4px;
-    background: picked ? Theme.accent.with-alpha(0.25) : ccta.has-hover ? #3a3a3d : Theme.control;
+    background: picked ? Theme.accent.with-alpha(0.25) : ccta.has-hover ? Theme.n-3a3a3d : Theme.control;
     border-width: 1px;
     border-color: picked ? Theme.accent : transparent;
     Text { text: root.text; color: Theme.text; font-size: 11px; }
@@ -4244,12 +4501,12 @@ component LooperLayer inherits Rectangle {
     property <int> tap-index: Controls.resolve(g, n + "_tap");
     property <int> clear-index: Controls.resolve(g, n + "_clear");
     // Empty, armed, recording, playing, overdubbing.
-    property <color> state-color: state == 1 || state == 2 ? #ff453a : state == 4 ? #ff9f0a : state == 3 ? tint : Theme.text-dim;
+    property <color> state-color: state == 1 || state == 2 ? Theme.c-ff453a : state == 4 ? Theme.c-ff9f0a : state == 3 ? tint : Theme.text-dim;
     property <bool> blink: Controls.blink;
     height: 36px;
     horizontal-stretch: 1;
     border-radius: Theme.radius;
-    background: #0000002a;
+    background: Theme.s-0000002a;
     HorizontalLayout {
         padding: 3px;
         spacing: 5px;
@@ -4297,7 +4554,7 @@ component LooperLayer inherits Rectangle {
                 width: 22px;
                 height: 22px;
                 border-radius: 3px;
-                background: cta.has-hover ? #ffffff1c : #00000040;
+                background: cta.has-hover ? Theme.n-ffffff1c : Theme.s-00000040;
                 CloseIcon { size: 9px; color: Theme.text-dim; }
                 cta := TouchArea {
                     mouse-cursor: pointer;
@@ -4349,13 +4606,13 @@ component LooperLayers inherits VerticalLayout {
                 width: 10px;
                 height: 10px;
                 border-radius: 5px;
-                background: playing && floor(bar-beat) == beat ? (beat == 0 ? tint : Theme.text) : #ffffff1a;
+                background: playing && floor(bar-beat) == beat ? (beat == 0 ? tint : Theme.text) : Theme.n-ffffff1a;
             }
         }
         Text {
             horizontal-stretch: 1;
             text: !ready ? "Getting ready…" : too-long ? "Too long to fit: pick fewer bars." : "";
-            color: too-long ? #ff9f0a : Theme.text-dim;
+            color: too-long ? Theme.c-ff9f0a : Theme.text-dim;
             font-size: 11px;
             vertical-alignment: center;
             overflow: elide;
@@ -4415,19 +4672,815 @@ component LooperPanel inherits Rectangle {
     }
 }
 
+// A Mixer strip's meter column: a dB scale, one bar (mono) or two
+// (stereo), a line at the peak, and the strip's fader as an arrow on the
+// scale (as Ableton's), dragged up and down, with its level above.
+component StripMeter inherits Rectangle {
+    in property <string> group;
+    in property <bool> stereo;
+    in property <color> tint;
+    // The meter's range in dB below full scale, as the engine's meters.
+    property <float> range: 40;
+    property <int> volume-index: Controls.resolve(group, "volume");
+    property <float> volume: Controls.value(volume-index, Controls.tick);
+    property <float> peak-db: Controls.value(Controls.resolve(group, "peak_db"), Controls.tick);
+    // Where on the scale a level in dB sits, 0 the bottom and 1 the top.
+    pure function at(db: float) -> float { clamp((db + range) / range, 0, 1) }
+    property <float> fader-db: volume <= 0.0001 ? -100 : 20 * log(volume, 10);
+    property <length> top: 12px;
+    property <length> scale-height: self.height - top - 2px;
+    in property <length> bars-x: 15px;
+    property <length> bar: stereo ? 5px : 8px;
+    // The fader's level, over the bars: "-inf" when it is right down.
+    Text {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: top;
+        text: fader-db < -range ? "-inf" : (round(fader-db * 10) / 10) + "";
+        color: Theme.text;
+        font-size: 9px;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+    // The scale: 0, -12, -24 and -40 dB.
+    for mark in [0, -12, -24, -40]: Rectangle {
+        y: top + (1 - at(mark)) * scale-height - 5px;
+        x: 0;
+        width: bars-x - 2px;
+        height: 10px;
+        Text {
+            text: mark == 0 ? "0" : -mark;
+            color: Theme.text-dim;
+            font-size: 7px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            width: parent.width;
+            height: parent.height;
+        }
+    }
+    if !stereo: VuMeter { x: bars-x; y: top; width: bar; height: scale-height; group: group; key: "VuMeter"; segments: 20; }
+    if stereo: VuMeter { x: bars-x; y: top; width: bar; height: scale-height; group: group; key: "VuMeterL"; segments: 20; }
+    if stereo: VuMeter { x: bars-x + bar + 1px; y: top; width: bar; height: scale-height; group: group; key: "VuMeterR"; segments: 20; }
+    // The peak, as a line across the bars while it holds.
+    if peak-db > -range: Rectangle {
+        x: bars-x;
+        y: top + (1 - at(peak-db)) * scale-height;
+        width: stereo ? 2 * bar + 1px : bar;
+        height: 1px;
+        background: peak-db > 0 ? #ff453a : Theme.text;
+    }
+    // The fader: an arrow pointing at the bars, at its level.
+    property <length> arrow-x: bars-x + (stereo ? 2 * bar + 1px : bar) + 2px;
+    Path {
+        x: arrow-x;
+        y: top + (1 - at(fader-db)) * scale-height - 5px;
+        width: 9px;
+        height: 10px;
+        viewbox-width: 9;
+        viewbox-height: 10;
+        fill: drag.pressed || drag.has-hover ? tint : Theme.text;
+        commands: "M 0 5 L 9 0 L 9 10 Z";
+    }
+    drag := TouchArea {
+        x: arrow-x - 2px;
+        width: root.width - self.x;
+        mouse-cursor: ns-resize;
+        // A click on the scale moves the arrow there; dragging follows.
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                set-at(self.mouse-y);
+            }
+        }
+        moved => { set-at(self.mouse-y); }
+        double-clicked => { Controls.set-value(volume-index, 1); }
+        // Up and down move it; a mostly sideways swipe scrolls the strips.
+        scroll-event(e) => {
+            if e.delta-y == 0 || abs(e.delta-x / 1px) >= abs(e.delta-y / 1px) {
+                return reject;
+            }
+            let db = max(-range, fader-db) + (e.delta-y > 0 ? 1 : -1);
+            Controls.set-value(volume-index, db <= -range ? 0 : min(1, pow(10, db / 20)));
+            accept
+        }
+    }
+    function set-at(y: length) {
+        let p = clamp(1 - (y - top) / scale-height, 0, 1);
+        let db = p * range - range;
+        Controls.set-value(volume-index, p <= 0 ? 0 : min(1, pow(10, db / 20)));
+    }
+    MapMark { key: root.group + ",volume"; }
+}
+
+// A Mixer strip's input picker: the interface's channel pairs, then its
+// single channels, each with a live meter, so the input that moves is the
+// one to pick; then Settings › Audio for another interface.
+component InputPicker inherits PopupWindow {
+    width: 190px;
+    close-policy: close-on-click-outside;
+    Rectangle {
+        background: Theme.panel-raised;
+        border-radius: Theme.radius;
+        border-width: 1px;
+        border-color: Theme.border;
+        drop-shadow-blur: 12px;
+        drop-shadow-color: Theme.s-000000a0;
+    }
+    // Fresh meters while it is open.
+    Timer {
+        interval: 50ms;
+        running: true;
+        triggered => { InstrumentsUi.picker-tick(); }
+    }
+    VerticalLayout {
+        padding: 4px;
+        spacing: 0px;
+        Text {
+            height: 22px;
+            x: 8px;
+            text: InstrumentsUi.picker-device;
+            color: Theme.text-dim;
+            font-size: 10px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if InstrumentsUi.picker-rows.length == 0: Text {
+            x: 8px;
+            width: parent.width - 16px;
+            text: "Not connected. Plug it in, or choose another interface in Settings › Audio.";
+            color: Theme.text-dim;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+        for row[i] in InstrumentsUi.picker-rows: VerticalLayout {
+            if row.gap: Rectangle { height: 5px; Rectangle { y: 2px; height: 1px; background: Theme.separator; } }
+            Rectangle {
+                height: 22px;
+                border-radius: 4px;
+                background: ta.has-hover ? Theme.selection : transparent;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 8px;
+                    Text {
+                        width: 14px;
+                        text: row.current ? "✓" : "";
+                        color: ta.has-hover ? Theme.n-ffffff : Theme.lilac-text;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        width: 40px;
+                        text: row.label;
+                        color: ta.has-hover ? Theme.n-ffffff : Theme.text;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    // The live meters: one bar for one channel, two for a pair.
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        horizontal-stretch: 1;
+                        for level in row.r < 0 ? [row.l] : [row.l, row.r]: Rectangle {
+                            height: 3px;
+                            border-radius: 1px;
+                            background: Theme.n-2c2c2f;
+                            Rectangle {
+                                x: 0;
+                                width: parent.width * clamp(level, 0, 1);
+                                height: parent.height;
+                                border-radius: 1px;
+                                background: level > 0.97 ? #ff453a : level > 0.8 ? #ffd60a : #30d158;
+                            }
+                        }
+                    }
+                }
+                ta := TouchArea { clicked => { InstrumentsUi.pick(i); root.close(); } }
+            }
+        }
+        // Adding a strip: the instrument plugin or the mic can join too.
+        if InstrumentsUi.picker-adding: Rectangle { height: 5px; Rectangle { y: 2px; height: 1px; background: Theme.separator; } }
+        for source in InstrumentsUi.picker-adding ? [{ group: "[Instrument1]", label: "Instrument plugin" }, { group: "[Microphone]", label: "Mic" }] : []: Rectangle {
+            property <bool> joined: InstrumentsUi.in-mixer(source.group, Controls.tick);
+            height: 22px;
+            border-radius: 4px;
+            background: add.has-hover ? Theme.selection : transparent;
+            Text {
+                x: 8px;
+                text: (joined ? "✓  " : "+  ") + source.label;
+                color: add.has-hover ? #ffffff : Theme.text;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            add := TouchArea {
+                clicked => {
+                    Controls.set-value(Controls.resolve(source.group, "mixer"), joined ? 0 : 1);
+                    root.close();
+                }
+            }
+        }
+        // The Mixer deck's own Groove Box, on this channel.
+        Rectangle { height: 5px; Rectangle { y: 2px; height: 1px; background: Theme.separator; } }
+        Rectangle {
+            height: 22px;
+            border-radius: 4px;
+            background: groove.has-hover ? Theme.selection : transparent;
+            Text {
+                x: 8px;
+                text: (InstrumentsUi.picker-groove ? "✓  " : "") + "Groove Box";
+                color: groove.has-hover ? #ffffff : Theme.text;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            groove := TouchArea { clicked => { InstrumentsUi.pick-groove(); root.close(); } }
+        }
+        Rectangle { height: 5px; Rectangle { y: 2px; height: 1px; background: Theme.separator; } }
+        Rectangle {
+            height: 22px;
+            border-radius: 4px;
+            background: more.has-hover ? Theme.selection : transparent;
+            Text {
+                x: 8px;
+                text: "Settings › Audio…";
+                color: more.has-hover ? Theme.n-ffffff : Theme.text;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            more := TouchArea { clicked => { InstrumentsUi.open-settings(InstrumentsUi.audio-page, 0); root.close(); } }
+        }
+    }
+}
+
+// A small clock beside a Mixer channel's name: it comes from another
+// interface than the main output's, on that interface's own clock, so it
+// can drift (its input picker says so).
+component ClockMark inherits Path {
+    width: 10px;
+    height: 10px;
+    viewbox-width: 30;
+    viewbox-height: 30;
+    stroke: Theme.text-dim;
+    stroke-width: 1.2px;
+    stroke-line-cap: round;
+    fill: transparent;
+    commands: "M 15 3 A 12 12 0 1 1 14.99 3 Z M 15 8 L 15 15 L 20 18";
+}
+
+// Each Mixer channel's own color, by its number.
+global StripColors {
+    // A channel's own color: the palette in order, Ch 1 the first.
+    pure public function of(number: int) -> color {
+        palette(number - 1)
+    }
+    // The 16 a channel can take from its menu: 8 by hue, then 8 softer
+    // ones (lilac among them).
+    pure public function palette(index: int) -> color {
+        [#ff6b5e, #ff9f0a, #ffd60a, #30d158, #64d2ff, #5e5ce6, #bf5af2, #ff375f,
+         #ff8fab, #c9a27e, #b4e05a, #63e6be, #7cc4ff, #b69cff, #ff7ae1, #98989d][Math.mod(index, 16)]
+    }
+    // A strip's color: the one picked for it, else its own by number.
+    pure public function of-strip(number: int, picked: int) -> color {
+        picked >= 0 ? palette(picked) : of(number)
+    }
+}
+
+// A Mixer strip's number square: lilac while it is on, grey when off; a
+// click switches it.
+component StripOn inherits Rectangle {
+    in property <string> group;
+    in property <int> number;
+    // What it reads: the number, or MIC / INST.
+    in property <string> badge: number;
+    in property <string> on-key: "main_mix";
+    in property <length> font-size: 14px;
+    property <int> on-index: Controls.resolve(group, on-key);
+    property <bool> on: Controls.value(on-index, Controls.tick) > 0;
+    border-radius: 4px;
+    background: on ? Theme.accent : Theme.n-3a3a3e;
+    Text {
+        text: badge;
+        color: on ? Theme.on-selection : Theme.text-dim;
+        font-size: badge.character-count > 2 ? root.font-size * 0.6 : root.font-size;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { Controls.set-value(on-index, on ? 0 : 1); }
+    }
+    MapMark { key: root.group + "," + root.on-key; }
+}
+
+// A Mixer strip's S: solo inside the Mixer; Cmd/Ctrl solos it alone.
+component StripSolo inherits Rectangle {
+    in property <string> group;
+    in property <int> number;
+    property <int> solo-index: Controls.resolve(group, "solo");
+    property <bool> solo: Controls.value(solo-index, Controls.tick) > 0;
+    border-radius: 4px;
+    background: solo ? #ffd60a : Theme.control;
+    border-width: 1px;
+    border-color: solo ? #ffd60a : Theme.border;
+    Text {
+        text: "S";
+        color: solo ? #1c1c1e : Theme.text;
+        font-size: 10px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                if e.modifiers.control || e.modifiers.meta {
+                    InstrumentsUi.solo-alone(number);
+                } else {
+                    Controls.set-value(solo-index, solo ? 0 : 1);
+                }
+            }
+        }
+    }
+    MapMark { key: root.group + ",solo"; }
+}
+
+// One strip of the Mixer deck (2-Deck), at almost the deck's full height:
+// its color bar with its name (double-click renames it; right-click for
+// Rename and its color), the input box under it (its channels, "Groove
+// Box"; a click picks another); then, centered, a column with the peak
+// readout (red over 0 dB), TRIM, PAN and FX, and at its foot the number
+// square (on, lilac, or off, grey), S (solo, Cmd/Ctrl solos it alone) and
+// the headphone cue, beside a meter with the fader as an arrow on its scale.
+component MixerStrip inherits Rectangle {
+    in property <MixerStripInfo> info;
+    in property <color> tint;
+    property <string> group: info.group;
+    property <int> on-index: Controls.resolve(group, info.on-key);
+    property <bool> on: Controls.value(on-index, Controls.tick) > 0;
+    property <float> peak-db: Controls.value(Controls.resolve(group, "peak_db"), Controls.tick);
+    property <color> strip-color: StripColors.of-strip(info.number, info.color);
+    // The buttons' width: the number square is as tall.
+    property <length> column: 31px;
+    width: 78px;
+    border-radius: 6px;
+    background: Theme.panel-raised;
+    clip: true;
+    property <bool> renaming;
+    // The name and its buttons on the color bar: white on every color.
+    property <color> name-color: #ffffff;
+    // Buttons at the end of the color bar: the panel's, and × off the Mixer.
+    property <int> side-buttons: (info.view > 0 ? 1 : 0) + (info.aux ? 0 : 1);
+    VerticalLayout {
+        spacing: 0px;
+        // The color bar with the name: double-click to rename (Return
+        // keeps it, Esc or a click elsewhere leaves it as it was),
+        // right-click for the menu.
+        Rectangle {
+            height: 20px;
+            background: on ? strip-color : strip-color.with-alpha(0.45);
+            if !root.renaming: Text {
+                x: 6px;
+                width: parent.width - 12px - (root.side-buttons * 18px);
+                height: parent.height;
+                text: info.name;
+                // White on a dark color, or while the channel is off and
+                // its bar dimmed.
+                color: root.name-color;
+                font-size: 11px;
+                font-weight: 700;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            if !root.renaming: TouchArea {
+                double-clicked => { root.renaming = info.aux; }
+                pointer-event(e) => {
+                    if info.aux && e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                        strip-menu.show();
+                    }
+                }
+            }
+            // At the bar's end: the button for its panel (the Groove
+            // Box's or the instrument's), and × for the mic and the
+            // instrument to leave the Mixer.
+            if !root.renaming && info.view > 0: Rectangle {
+                x: parent.width - 18px - (info.aux ? 0px : 18px);
+                y: 2px;
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+                background: root.name-color.with-alpha(open-view.has-hover ? 0.4 : 0.15);
+                LiveIcon { x: 2px; y: 2px; kind: info.view == 2 ? 1 : 2; size: 12px; tint: root.name-color; }
+                open-view := TouchArea { clicked => { InstrumentsUi.mixer-view = info.view; } }
+            }
+            if !root.renaming && !info.aux: Rectangle {
+                x: parent.width - 18px;
+                y: 2px;
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+                background: root.name-color.with-alpha(out.has-hover ? 0.4 : 0.15);
+                Text {
+                    text: "×";
+                    color: root.name-color;
+                    font-size: 12px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                out := TouchArea { clicked => { Controls.set-value(Controls.resolve(group, "mixer"), 0); } }
+            }
+            if root.renaming: Rectangle {
+                x: 3px;
+                y: 2px;
+                width: parent.width - 6px;
+                height: parent.height - 4px;
+                border-radius: 3px;
+                background: #ffffff;
+                border-width: 1px;
+                border-color: #101112;
+                name-input := TextInput {
+                    x: 3px;
+                    width: parent.width - 6px;
+                    text: info.name;
+                    color: #101112;
+                    font-size: 11px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    single-line: true;
+                    init => { self.focus(); self.select-all(); }
+                    accepted => {
+                        InstrumentsUi.rename-strip(info.number, self.text);
+                        root.renaming = false;
+                    }
+                    key-pressed(e) => {
+                        if e.text == Key.Escape {
+                            root.renaming = false;
+                            return accept;
+                        }
+                        reject
+                    }
+                    changed has-focus => {
+                        if !self.has-focus { root.renaming = false; }
+                    }
+                }
+            }
+        }
+        // Its input under the name.
+        HorizontalLayout {
+            padding: 4px;
+            padding-bottom: 0px;
+            spacing: 3px;
+            height: 22px;
+            Rectangle {
+                horizontal-stretch: 1;
+                border-radius: 4px;
+                background: info.aux && box.has-hover ? Theme.panel-raised.brighter(0.3) : Theme.control;
+                HorizontalLayout {
+                    padding-left: 4px;
+                    padding-right: 3px;
+                    spacing: 3px;
+                    if info.own-clock: VerticalLayout { alignment: center; ClockMark { width: 9px; height: 9px; } }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: !info.aux ? (info.view == 1 ? "Plugin" : "Mic")
+                            : info.view == 2 ? "Groove Box"
+                            : info.channels == "" ? "Input" : info.channels;
+                        // Dim while its input is missing.
+                        color: info.problem != "" ? Theme.text-dim : Theme.text;
+                        // Smaller for a long one, so "Groove Box" fits.
+                        font-size: self.text.character-count > 8 ? 9px : 10px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    if info.aux: Text {
+                        text: "▼";
+                        color: box.has-hover ? Theme.text : Theme.text-dim;
+                        font-size: 7px;
+                        vertical-alignment: center;
+                    }
+                }
+                box := TouchArea {
+                    enabled: info.aux;
+                    clicked => {
+                        InstrumentsUi.open-picker(info.number);
+                        picker.show();
+                    }
+                }
+                picker := InputPicker { x: 0; y: parent.height + 2px; }
+            }
+        }
+        // The buttons and the meter as one group, centered.
+        HorizontalLayout {
+            padding-top: 5px;
+            padding-bottom: 5px;
+            spacing: 4px;
+            alignment: center;
+            vertical-stretch: 1;
+            VerticalLayout {
+                width: column;
+                spacing: 2px;
+                // The peak lately, in dB: red past full scale.
+                Rectangle {
+                    height: 14px;
+                    border-radius: 7px;
+                    background: peak-db > 0 ? #ff453a : Theme.control;
+                    border-width: peak-db > 0 ? 0px : 1px;
+                    border-color: Theme.border;
+                    Text {
+                        text: peak-db <= -59.9 ? "-inf" : (peak-db > 0 ? "+" : "") + (round(peak-db * 10) / 10);
+                        color: peak-db > 0 ? Theme.n-101112 : Theme.text;
+                        font-size: 8.5px;
+                        font-weight: peak-db > 0 ? 700 : 400;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                HorizontalLayout { alignment: center; ControlKnob { group: group; key: "pregain"; label: "TRIM"; size: 18px; } }
+                HorizontalLayout { alignment: center; ControlKnob { group: group; key: "pan"; label: "PAN"; size: 18px; bipolar: true; } }
+                ControlButton { group: group; key: "fx"; text: "FX"; tint: Theme.accent; height: 18px; font-size: 9px; fill-when-lit: true; }
+                Rectangle { vertical-stretch: 1; }
+                StripOn { group: group; number: info.number; badge: info.badge; on-key: info.on-key; height: column; }
+                StripSolo { group: group; number: info.number; height: 18px; }
+                ControlButton { group: group; key: "pfl"; headphones: true; tint: Theme.accent; fill-when-lit: true; height: 18px; }
+            }
+            StripMeter { group: group; stereo: info.stereo; tint: tint; width: 34px; bars-x: 12px; }
+        }
+    }
+    strip-menu := PopupWindow {
+        x: 12px;
+        y: 18px;
+        width: 204px;
+        GrooveMenuBackground { }
+        VerticalLayout {
+            padding: 4px;
+            spacing: 2px;
+            GrooveMenuItem {
+                text: "Rename…";
+                clicked => { root.renaming = true; }
+            }
+            Rectangle { height: 1px; background: Theme.border; }
+            Text { x: 10px; text: "Color"; color: Theme.text-dim; font-size: 10px; font-weight: 600; height: 20px; vertical-alignment: center; }
+            for row in 2: HorizontalLayout {
+                padding-left: 10px;
+                padding-bottom: 4px;
+                spacing: 4px;
+                for i in 8: Rectangle {
+                    property <int> index: row * 8 + i;
+                    width: 18px;
+                    height: 18px;
+                    border-radius: 4px;
+                    background: StripColors.palette(index);
+                    border-width: info.color == index ? 2px : 0px;
+                    border-color: Theme.text;
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { InstrumentsUi.color-strip(info.number, index); }
+                    }
+                }
+            }
+            Rectangle { height: 1px; background: Theme.border; }
+            GrooveMenuItem {
+                text: "Default color";
+                checked: info.color < 0;
+                clicked => { InstrumentsUi.color-strip(info.number, -1); }
+            }
+            Rectangle { height: 1px; background: Theme.border; }
+            GrooveMenuItem {
+                text: "Delete";
+                clicked => { InstrumentsUi.delete-strip(info.number); }
+            }
+        }
+    }
+}
+
+// The + after the strips: picks an input for the first free strip.
+component AddStrip inherits Rectangle {
+    width: InstrumentsUi.strips.length == 0 ? 180px : 40px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: add.has-hover ? Theme.text-dim : Theme.border;
+    VerticalLayout {
+        alignment: center;
+        spacing: 6px;
+        Text { text: "+"; color: add.has-hover ? Theme.text : Theme.text-dim; font-size: 22px; horizontal-alignment: center; }
+        if InstrumentsUi.strips.length == 0: Text {
+            text: "Add an input";
+            color: Theme.text-dim;
+            font-size: 11px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+    add := TouchArea {
+        clicked => {
+            InstrumentsUi.open-picker(0);
+            add-picker.show();
+        }
+    }
+    add-picker := InputPicker { x: 0; y: 40px; }
+}
+
+// The Mixer deck's strips side by side, scrolling sideways when they don't
+// fit, then + to pick another input. Not a Flickable: a Flickable takes a
+// press that moves a few pixels as its own drag, so the knobs and faders
+// stopped turning once the strips overflowed. Only a scroll (a trackpad
+// swipe, or the wheel over the strips' gaps) moves them; the knobs and
+// faders pass sideways scrolls on to here.
+component MixerStrips inherits Rectangle {
+    in property <color> tint;
+    clip: true;
+    // How far the strips are scrolled, 0 or less.
+    property <length> offset: 0;
+    property <length> min-offset: min(0px, self.width - row.preferred-width);
+    property <length> shown: max(min-offset, offset);
+    TouchArea {
+        scroll-event(e) => {
+            if min-offset == 0 {
+                return reject;
+            }
+            offset = max(min-offset, min(0px, shown + (abs(e.delta-x / 1px) >= abs(e.delta-y / 1px) ? e.delta-x : e.delta-y)));
+            accept
+        }
+        row := HorizontalLayout {
+            x: shown;
+            width: self.preferred-width;
+            height: parent.height;
+            spacing: 4px;
+            alignment: start;
+            for strip in InstrumentsUi.strips: MixerStrip { info: strip; tint: tint; }
+            if InstrumentsUi.in-mixer("[Instrument1]", Controls.tick): MixerStrip { info: InstrumentsUi.instrument-strip(Controls.tick); tint: tint; }
+            if InstrumentsUi.in-mixer("[Microphone]", Controls.tick): MixerStrip { info: InstrumentsUi.mic-strip(); tint: tint; }
+            if InstrumentsUi.strips.length < 8: AddStrip {}
+        }
+    }
+}
+
+// A small square button with a line icon or a glyph, for the Mixer's
+// title row.
+component TitleButton inherits Rectangle {
+    in property <string> text;
+    in property <string> icon;
+    // On: lilac, as the deck's lit buttons.
+    in property <bool> lit;
+    // A hover tip's title, right-aligned under the button's right edge.
+    in property <string> tip;
+    callback clicked();
+    height: 18px;
+    min-width: 22px;
+    horizontal-stretch: 0;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: lit ? Theme.accent : ta.pressed ? Theme.control-pressed : ta.has-hover ? Theme.panel-raised : Theme.control;
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        alignment: center;
+        if icon == "": Text { text: text; color: lit ? Theme.on-selection : Theme.text; font-size: text == "+" ? 13px : 9px; font-weight: 700; vertical-alignment: center; }
+        if icon != "": Path {
+            width: 12px;
+            height: 12px;
+            y: 3px;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            stroke: Theme.text;
+            stroke-width: 2.4px;
+            fill: transparent;
+            commands: icon;
+        }
+    }
+    ta := TouchArea {
+        changed has-hover => {
+            if root.tip != "" && self.has-hover {
+                HoverTip.title = root.tip;
+                HoverTip.body = "";
+                HoverTip.right-aligned = true;
+                HoverTip.x = self.absolute-position.x + self.width;
+                HoverTip.y = self.absolute-position.y + self.height + 4px;
+                HoverTip.shown = true;
+            } else if root.tip != "" && HoverTip.title == root.tip {
+                HoverTip.shown = false;
+            }
+        }
+        clicked => {
+            if root.tip != "" {
+                HoverTip.shown = false;
+            }
+            root.clicked();
+        }
+    }
+}
+
+// A Groove Box deck's slim title, as the Mixer's (see MixerTitle): GROOVE
+// BOX on the left, ⏏ (unload the deck) on the right while it is stopped.
+component GrooveTitle inherits Rectangle {
+    in property <int> deck;
+    in property <string> group;
+    property <bool> playing: Controls.value(Controls.resolve(group, "play"), Controls.tick) > 0;
+    // The ⏏ goes while the Groove Box plays: so does its tip.
+    changed playing => {
+        if playing && HoverTip.title == "Unload deck" {
+            HoverTip.shown = false;
+        }
+    }
+    height: 26px;
+    background: Theme.panel;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 8px;
+        spacing: 8px;
+        VerticalLayout { alignment: center; LiveIcon { kind: 1; tint: Theme.accent; size: 16px; } }
+        Text { text: "GROOVE BOX"; color: Theme.text; font-size: 12px; font-weight: 700; letter-spacing: 1px; vertical-alignment: center; }
+        Rectangle { horizontal-stretch: 1; }
+        if !playing: VerticalLayout {
+            alignment: center;
+            TitleButton {
+                icon: "M 5 13 L 12 5 L 19 13 Z M 5 18.5 L 19 18.5";
+                tip: "Unload deck";
+                clicked => { DeckActions.eject(root.deck); }
+            }
+        }
+    }
+}
+
+// A Mixer deck's slim title in place of the deck header: MIXER with its
+// interfaces and count on the left; CLEAR SOLO and ⏏ (unload the deck)
+// on the right. A channel is added with + after the strips.
+component MixerTitle inherits Rectangle {
+    in property <int> deck;
+    // Showing a channel's panel (see InstrumentsUi.mixer-view): the title
+    // reads MIXER › its name, and a click on MIXER comes back to the strips.
+    in property <bool> in-view;
+    // Which panel: 1 an instrument's (KEYS), 2 the Groove Box's.
+    in property <int> view;
+    property <int> instrument: InstrumentsUi.instrument();
+    property <string> view-name: view == 2 ? "GROOVE BOX"
+        : instrument > 0 && instrument <= EffectList.instruments.length ? EffectList.instruments[instrument - 1].to-uppercase() : "INSTRUMENT";
+    property <bool> any-solo: Controls.value(Controls.resolve("[Auxiliary1]", "solo"), Controls.tick) > 0
+        || Controls.value(Controls.resolve("[Auxiliary2]", "solo"), Controls.tick) > 0
+        || Controls.value(Controls.resolve("[Auxiliary3]", "solo"), Controls.tick) > 0
+        || Controls.value(Controls.resolve("[Auxiliary4]", "solo"), Controls.tick) > 0
+        || Controls.value(Controls.resolve("[Auxiliary5]", "solo"), Controls.tick) > 0
+        || Controls.value(Controls.resolve("[Auxiliary6]", "solo"), Controls.tick) > 0
+        || Controls.value(Controls.resolve("[Auxiliary7]", "solo"), Controls.tick) > 0
+        || Controls.value(Controls.resolve("[Auxiliary8]", "solo"), Controls.tick) > 0
+        || Controls.value(Controls.resolve("[Instrument1]", "solo"), Controls.tick) > 0
+        || Controls.value(Controls.resolve("[Microphone]", "solo"), Controls.tick) > 0;
+    height: 26px;
+    background: Theme.panel;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 8px;
+        spacing: 8px;
+        VerticalLayout { alignment: center; LiveIcon { kind: 7; tint: Theme.accent; size: 16px; } }
+        Text {
+            text: "MIXER";
+            color: root.in-view && back.has-hover ? Theme.lilac-text : root.in-view ? Theme.text-dim : Theme.text;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            vertical-alignment: center;
+            back := TouchArea {
+                enabled: root.in-view;
+                mouse-cursor: root.in-view ? pointer : default;
+                clicked => { InstrumentsUi.mixer-view = 0; }
+            }
+        }
+        if root.in-view: Text { text: "›"; color: Theme.text-dim; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        if root.in-view: VerticalLayout { alignment: center; LiveIcon { kind: root.view == 2 ? 1 : 2; tint: Theme.accent; size: 16px; } }
+        if root.in-view: Text { text: root.view-name; color: Theme.text; font-size: 12px; font-weight: 700; letter-spacing: 1px; vertical-alignment: center; overflow: elide; }
+        Rectangle { horizontal-stretch: 1; }
+        if any-solo: VerticalLayout { alignment: center; TitleButton { text: "CLEAR SOLO"; clicked => { InstrumentsUi.solo-alone(0); } } }
+        // Last, where the cover's ⏏ would be: the Mixer has no cover.
+        VerticalLayout {
+            alignment: center;
+            TitleButton {
+                icon: "M 5 13 L 12 5 L 19 13 Z M 5 18.5 L 19 18.5";
+                tip: "Unload deck";
+                clicked => { DeckActions.eject(root.deck); }
+            }
+        }
+    }
+}
+
 // A deck playing a live input: what it plays, its level, and for an
 // instrument plugin its window, the KEYBOARD pads switch and their octave.
 component LivePanel inherits Rectangle {
     in property <int> live;
     in property <string> group;
     in property <color> tint;
-    property <string> input-group: ["[Microphone]", "[Auxiliary1]", "[Instrument1]", "[Auxiliary2]", "[Auxiliary3]"][live - 1];
-    property <bool> ready: Controls.value(Controls.resolve(input-group, "input_configured"), Controls.tick) > 0;
+    property <string> input-group: ["[Microphone]", "[Auxiliary1]", "[Instrument1]", "[Auxiliary2]", "[Auxiliary3]", "[Auxiliary4]", "[Auxiliary5]", "[Auxiliary6]", "[Auxiliary7]", "[Auxiliary8]"][live - 1];
+    // The Mixer plays whatever strips are on, so it is never "not set up".
+    property <bool> ready: live == InstrumentsUi.mixer-live || Controls.value(Controls.resolve(input-group, "input_configured"), Controls.tick) > 0;
     property <float> level: Controls.value(Controls.resolve(group, "vu_meter"), Controls.tick);
     property <int> octave-index: Controls.resolve("[Instrument1]", "octave");
     property <int> octave: Controls.value(octave-index, Controls.tick);
     border-radius: 10px;
     background: Theme.well;
+    // The Mixer: its strips.
+    if live == InstrumentsUi.mixer-live: MixerStrips { x: 3px; y: 3px; width: parent.width - 6px; height: parent.height - 6px; tint: tint; }
     // Not set up yet: what it needs, and where to set it up.
     if !ready: VerticalLayout {
         alignment: center;
@@ -4439,7 +5492,7 @@ component LivePanel inherits Rectangle {
         }
         Text {
             text: live == 3 ? "Pick an instrument plugin to hear it." : "No input picked for it yet.";
-            color: #ff9f0a;
+            color: Theme.c-ff9f0a;
             font-size: 13px;
             horizontal-alignment: center;
             wrap: word-wrap;
@@ -4451,9 +5504,9 @@ component LivePanel inherits Rectangle {
                 width: 150px;
                 clicked => {
                     if live == 3 {
-                        InstrumentsUi.open-settings(7, 1);
+                        InstrumentsUi.open-settings(InstrumentsUi.plugins-page, 1);
                     } else {
-                        InstrumentsUi.open-settings(0, 0);
+                        InstrumentsUi.open-settings(InstrumentsUi.audio-page, 0);
                     }
                 }
             }
@@ -4463,7 +5516,7 @@ component LivePanel inherits Rectangle {
     // gear up before the channel and PAN places it (a safety limiter keeps
     // it from clipping whatever the trim); then for an instrument its own
     // knobs, its window, the KEYBOARD pads switch and their octave.
-    if ready: VerticalLayout {
+    if ready && live != InstrumentsUi.mixer-live: VerticalLayout {
       padding: 6px;
       spacing: 4px;
       HorizontalLayout {
@@ -4488,11 +5541,29 @@ component LivePanel inherits Rectangle {
                     text: InstrumentsUi.route(live) != "" ? InstrumentsUi.route(live) : "Live input";
                     width: 150px;
                     height: 22px;
-                    clicked => { InstrumentsUi.open-settings(0, 0); }
+                    clicked => { InstrumentsUi.open-settings(InstrumentsUi.audio-page, 0); }
+                }
+            }
+            // The Mixer's strips on and off, until the strips have their
+            // own screen: lit is on, dim has no input picked.
+            if live == InstrumentsUi.mixer-live: HorizontalLayout {
+                alignment: center;
+                spacing: 2px;
+                for n in 8: ControlButton {
+                    group: "[Auxiliary" + (n + 1) + "]";
+                    key: "main_mix";
+                    text: n + 1;
+                    tint: Theme.accent;
+                    fill-when-lit: true;
+                    width: 17px;
+                    height: 18px;
+                    font-size: 10px;
+                    opacity: Controls.value(Controls.resolve("[Auxiliary" + (n + 1) + "]", "input_configured"), Controls.tick) > 0 ? 1 : 0.4;
                 }
             }
             if live != 3: Text {
-                text: "Live through this deck's EQ, filter, effects and fader.";
+                text: live == InstrumentsUi.mixer-live ? "The aux inputs that are on, summed through this deck's EQ, filter, effects and fader."
+                    : "Live through this deck's EQ, filter, effects and fader.";
                 color: Theme.text-dim;
                 font-size: 11px;
                 horizontal-alignment: center;
@@ -4505,7 +5576,7 @@ component LivePanel inherits Rectangle {
                     width: live == 3 ? 80px : 150px;
                     height: 6px;
                     border-radius: 3px;
-                    background: #2a2a2d;
+                    background: Theme.n-2a2a2d;
                     Rectangle {
                         x: 0;
                         width: parent.width * clamp(level, 0, 1);
@@ -4530,7 +5601,7 @@ component LivePanel inherits Rectangle {
             ControlButton { group: "[Instrument1]"; key: "keyboard_pads"; text: "KEYS ON PADS"; tint: Theme.accent; width: 80px; height: 20px; font-size: 10px; }
         }
       }
-      // The notes it plays, on 2-Deck (4-Deck strips leave it out), beside
+      // The notes it plays, on 2-Deck Basic (4-Deck strips leave it out), beside
       // its scale, chord mode, arpeggiator and the octave the KEYBOARD pads play in.
       if live == 3: HorizontalLayout {
         spacing: 6px;
@@ -4560,17 +5631,122 @@ component LivePanel inherits Rectangle {
     }
 }
 
+// A slim Mixer channel for 4-Deck: its name (a click picks its input),
+// then the number square, S, Cue and FX beside the meter with the fader
+// as an arrow on its scale.
+component SlimMixerStrip inherits Rectangle {
+    in property <MixerStripInfo> info;
+    in property <color> tint;
+    property <string> group: info.group;
+    property <bool> on: Controls.value(Controls.resolve(group, info.on-key), Controls.tick) > 0;
+    property <color> strip-color: StripColors.of(info.number);
+    width: 70px;
+    border-radius: 5px;
+    background: Theme.panel-raised;
+    clip: true;
+    VerticalLayout {
+        spacing: 0px;
+        Rectangle { height: 2px; background: on ? strip-color : strip-color.with-alpha(0.35); }
+        Rectangle {
+            height: 16px;
+            background: name.has-hover ? Theme.control : transparent;
+            HorizontalLayout {
+                padding-left: 4px;
+                padding-right: 4px;
+                spacing: 2px;
+                Text {
+                    text: info.name;
+                    color: info.problem != "" ? Theme.text-dim : Theme.text;
+                    font-size: 10px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                if info.own-clock: VerticalLayout { alignment: center; ClockMark { width: 8px; height: 8px; } }
+                Text {
+                    text: info.aux ? "▼" : "×";
+                    color: name.has-hover ? Theme.text : Theme.text-dim;
+                    font-size: info.aux ? 7px : 10px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 0;
+                }
+            }
+            name := TouchArea {
+                clicked => {
+                    if info.aux {
+                        InstrumentsUi.open-picker(info.number);
+                        picker.show();
+                    } else {
+                        Controls.set-value(Controls.resolve(group, "mixer"), 0);
+                    }
+                }
+            }
+            picker := InputPicker { x: 0; y: parent.height + 2px; }
+        }
+        HorizontalLayout {
+            padding: 3px;
+            padding-top: 1px;
+            spacing: 3px;
+            vertical-stretch: 1;
+            VerticalLayout {
+                width: 26px;
+                spacing: 3px;
+                alignment: end;
+                StripOn { group: group; number: info.number; badge: info.badge; on-key: info.on-key; height: 20px; font-size: 11px; }
+                StripSolo { group: group; number: info.number; height: 16px; }
+                ControlButton { group: group; key: "pfl"; headphones: true; tint: Theme.accent; fill-when-lit: true; height: 16px; }
+                ControlButton { group: group; key: "fx"; text: "FX"; tint: Theme.accent; height: 16px; font-size: 8px; fill-when-lit: true; }
+            }
+            StripMeter { group: group; stereo: info.stereo; tint: tint; horizontal-stretch: 1; }
+        }
+    }
+}
+
+// The Mixer's channels in a 4-Deck strip, side by side, scrolling sideways
+// when they don't fit, then + to pick another input.
+// Scrolls as MixerStrips does, not as a Flickable.
+component SlimMixerStrips inherits Rectangle {
+    in property <color> tint;
+    clip: true;
+    property <length> offset: 0;
+    property <length> min-offset: min(0px, self.width - row.preferred-width);
+    property <length> shown: max(min-offset, offset);
+    TouchArea {
+        scroll-event(e) => {
+            if min-offset == 0 {
+                return reject;
+            }
+            offset = max(min-offset, min(0px, shown + (abs(e.delta-x / 1px) >= abs(e.delta-y / 1px) ? e.delta-x : e.delta-y)));
+            accept
+        }
+        row := HorizontalLayout {
+            x: shown;
+            width: self.preferred-width;
+            height: parent.height;
+            spacing: 3px;
+            alignment: start;
+            for strip in InstrumentsUi.strips: SlimMixerStrip { info: strip; tint: tint; }
+            if InstrumentsUi.in-mixer("[Instrument1]", Controls.tick): SlimMixerStrip { info: InstrumentsUi.instrument-strip(Controls.tick); tint: tint; }
+            if InstrumentsUi.in-mixer("[Microphone]", Controls.tick): SlimMixerStrip { info: InstrumentsUi.mic-strip(); tint: tint; }
+            if InstrumentsUi.strips.length < 8: AddStrip { }
+        }
+    }
+}
+
 // A 4-Deck strip's live input, in place of PLAY, the loop and the pads
 // (`DeckStrip` in fourdeck.slint): what it needs if it is not set up yet;
 // otherwise for an instrument a small scope, OPEN, its first four knobs and
-// TRIM, and for an input where it comes in, TRIM and PAN. The strip's header carries its
+// TRIM, for an input where it comes in, TRIM and PAN, and for the Mixer its
+// channels, slim. The strip's header carries its
 // image and presets, and its channel the meter. No keyboard here.
 export component LiveStrip inherits Rectangle {
     in property <int> live;
     in property <string> group;
     in property <color> tint;
-    property <string> input-group: ["[Microphone]", "[Auxiliary1]", "[Instrument1]", "[Auxiliary2]", "[Auxiliary3]"][live - 1];
-    property <bool> ready: Controls.value(Controls.resolve(input-group, "input_configured"), Controls.tick) > 0;
+    property <string> input-group: ["[Microphone]", "[Auxiliary1]", "[Instrument1]", "[Auxiliary2]", "[Auxiliary3]", "[Auxiliary4]", "[Auxiliary5]", "[Auxiliary6]", "[Auxiliary7]", "[Auxiliary8]"][live - 1];
+    // The Mixer plays whatever strips are on, so it is never "not set up".
+    property <bool> ready: live == InstrumentsUi.mixer-live || Controls.value(Controls.resolve(input-group, "input_configured"), Controls.tick) > 0;
     property <int> count: Controls.value(Controls.resolve("[Instrument1]", "num_parameters"), Controls.tick);
     border-radius: 8px;
     background: Theme.well;
@@ -4580,7 +5756,7 @@ export component LiveStrip inherits Rectangle {
         padding: 8px;
         Text {
             text: live == 3 ? "Pick an instrument plugin to hear it." : "No input picked for it yet.";
-            color: #ff9f0a;
+            color: Theme.c-ff9f0a;
             font-size: 12px;
             horizontal-alignment: center;
             wrap: word-wrap;
@@ -4592,15 +5768,16 @@ export component LiveStrip inherits Rectangle {
                 width: 140px;
                 clicked => {
                     if live == 3 {
-                        InstrumentsUi.open-settings(7, 1);
+                        InstrumentsUi.open-settings(InstrumentsUi.plugins-page, 1);
                     } else {
-                        InstrumentsUi.open-settings(0, 0);
+                        InstrumentsUi.open-settings(InstrumentsUi.audio-page, 0);
                     }
                 }
             }
         }
     }
-    if ready: VerticalLayout {
+    if live == InstrumentsUi.mixer-live: SlimMixerStrips { x: 3px; y: 3px; width: parent.width - 6px; height: parent.height - 6px; tint: tint; }
+    if ready && live != InstrumentsUi.mixer-live: VerticalLayout {
         padding: 6px;
         spacing: 6px;
         // The scope keeps its shape (see InstrumentScope), so it sits
@@ -4620,7 +5797,7 @@ export component LiveStrip inherits Rectangle {
                 text: InstrumentsUi.route(live) != "" ? InstrumentsUi.route(live) : "Live input";
                 width: 150px;
                 height: 22px;
-                clicked => { InstrumentsUi.open-settings(0, 0); }
+                clicked => { InstrumentsUi.open-settings(InstrumentsUi.audio-page, 0); }
             }
         }
         HorizontalLayout {
@@ -4658,9 +5835,21 @@ export component Deck inherits Rectangle {
     property <bool> narrow: self.width < 650px;
     property <int> layer-index: Controls.resolve("[Controller]", Math.mod(deck, 2) == 0 ? "deck3" : "deck4");
     property <bool> groove: Controls.value(Controls.resolve("[Groove" + (deck + 1) + "]", "enabled"), Controls.tick) > 0;
-    property <bool> maschine: groove && Controls.value(Controls.resolve("[Groove" + (deck + 1) + "]", "backend"), Controls.tick) > 0;
+    property <bool> maschine: (groove || mixer-groove-shown) && Controls.value(Controls.resolve("[Groove" + (deck + 1) + "]", "backend"), Controls.tick) > 0;
+    // The Groove Box's ⏏ goes with it, however it was unloaded: so does
+    // its tooltip.
+    changed groove => {
+        if !groove && HoverTip.title == "Unload deck" {
+            HoverTip.shown = false;
+        }
+    }
     property <bool> looper: !info.loaded && Controls.value(Controls.resolve("[Looper" + (deck + 1) + "]", "enabled"), Controls.tick) > 0;
     property <int> live: info.loaded || groove || looper ? 0 : InstrumentsUi.live(deck);
+    property <bool> mixer: live == InstrumentsUi.mixer-live;
+    // The Mixer deck shows the instrument's panel instead of its strips.
+    property <bool> mixer-keys: mixer && InstrumentsUi.mixer-view == 1 && InstrumentsUi.in-mixer("[Instrument1]", Controls.tick);
+    // Or its Groove Box's panel, while a channel plays it.
+    property <bool> mixer-groove-shown: mixer && InstrumentsUi.mixer-view == 2 && InstrumentsUi.mixer-groove;
     // Files dragged in from Finder or a file manager (see TrackDrag.files-over).
     property <bool> under-files: TrackDrag.files-x >= self.absolute-position.x && TrackDrag.files-x < self.absolute-position.x + self.width
         && TrackDrag.files-y >= self.absolute-position.y && TrackDrag.files-y < self.absolute-position.y + self.height;
@@ -4693,18 +5882,32 @@ export component Deck inherits Rectangle {
     VerticalLayout {
         spacing: 1px;
 
+        // A Mixer deck gives the header's room to its strips: a slim title
+        // row instead.
         header := Header {
-            deck: deck; info: info; overview: overview; mirrored: mirrored; group: group;
+            deck: deck;
+            info: info;
+            overview: overview;
+            mirrored: mirrored;
+            group: group;
             number-lit: controller-layers && ((deck >= 2) == (Controls.value(layer-index, Controls.tick) > 0));
-            number-clicked => { if controller-layers { Controls.set-value(layer-index, deck >= 2 ? 1 : 0); } }
+            number-clicked => {
+                if controller-layers {
+                    Controls.set-value(layer-index, deck >= 2 ? 1 : 0);
+                }
+            }
+            visible: !mixer;
+            height: mixer ? 0px : self.fixed-height;
         }
+        if mixer: MixerTitle { deck: deck; in-view: root.mixer-keys || root.mixer-groove-shown; view: root.mixer-groove-shown ? 2 : root.mixer-keys ? 1 : 0; }
 
         Rectangle {
             background: Theme.panel;
             vertical-stretch: 1;
             // Outside in: the tempo column, the pads, the loop, and the jog
             // with play and CUE under it beside the mixer. Deck B is the mirror image.
-            if live > 0: LivePanel { x: 8px; y: 8px; width: parent.width - 16px; height: parent.height - 16px; live: live; group: group; tint: tint; }
+            if mixer-groove-shown && !maschine: GrooveBox { x: 4px; y: 4px; width: parent.width - 8px; height: parent.height - 8px; deck: deck; group: group; tint: tint; }
+            if live > 0 && !mixer-groove-shown: LivePanel { x: mixer ? 4px : 8px; y: mixer ? 4px : 8px; width: parent.width - (mixer ? 8px : 16px); height: parent.height - (mixer ? 8px : 16px); live: mixer-keys ? 3 : live; group: group; tint: tint; }
             if looper: LooperPanel { x: 8px; y: 8px; width: parent.width - 16px; height: parent.height - 16px; deck: deck; group: group; tint: tint; }
             if !groove && !looper && live == 0 && !narrow: HorizontalLayout {
                 padding: 8px;
@@ -4715,7 +5918,7 @@ export component Deck inherits Rectangle {
                 if mirrored: VDivider { }
                 if !mirrored: Pitch { group: group; info: info; tint: tint; }
                 if !mirrored: Rectangle { width: 12px; }
-                // 2-Deck Pro always shows the pads (PADS is for 2-Deck and
+                // 2-Deck always shows the pads (PADS is for 2-Deck Basic and
                 // 4-Deck).
                 if show-pads: Pads { deck: deck; group: group; info: info; horizontal-stretch: 1; }
                 if !show-pads: Rectangle { horizontal-stretch: 1; }
@@ -4743,8 +5946,15 @@ export component Deck inherits Rectangle {
         }
     }
 
-    // A Groove Box has no waveform or jog: it takes the whole deck.
-    if groove && !maschine: GrooveBox { width: parent.width; height: parent.height; deck: deck; group: group; tint: tint; }
+    // A Groove Box has no waveform or jog: it takes the whole deck under a
+    // slim title, as the Mixer's.
+    if groove && !maschine: VerticalLayout {
+        width: parent.width;
+        height: parent.height;
+        spacing: 1px;
+        GrooveTitle { deck: deck; group: group; }
+        GrooveBox { vertical-stretch: 1; deck: deck; group: group; tint: tint; }
+    }
     if maschine: MaschinePanel { width: parent.width; height: parent.height; deck: deck; channel: group; tint: tint; }
 
     // Drop target for tracks dragged from the browser. While any drag is in

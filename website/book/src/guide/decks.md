@@ -10,10 +10,12 @@ doesn't pass file drops to openDJ yet.)
 
 In 2-Deck each deck runs, from the outer edge in:
 
-- **The tempo column**: **SYNC** on top, the tempo fader, and **−** and **+**
-  under it for small steps. The triangle beside the fader puts the tempo
-  back to the track's own. A lilac line down the fader means
-  [key lock](#keys) is on; right-click the fader to switch it.
+- **The tempo column**, as in djay Pro: **SYNC** on top, the BPM, the
+  tempo % (click it for the [tempo panel](#tempo-panel-and-range)), the
+  tempo fader, and **−** and **+** under it for small steps. The triangle
+  beside the fader puts the tempo back to the track's own. A lilac line
+  down the fader means [key lock](#keys) is on; right-click the fader to
+  switch it.
 - **The pads**, with their tabs on top (see [Pads](pads.md)).
 - **The LOOP column** (see [Looping](looping.md)).
 - **The jog wheel**, with **CUE** and **PLAY** under it, next to the mixer.
@@ -26,6 +28,104 @@ Above them, the deck's header shows the cover, title and artist, the time
 left and the track's tempo and key, with the overview waveform of the whole
 track. Click the overview to jump; dragging it moves without playing what it
 passes.
+
+To empty a deck, point at its cover and click the small **⏏** in the
+corner (the Mixer has it at the end of its title bar instead). It works on
+whatever the deck holds: a track, the Groove Box, the Looper, an input or
+the Mixer. It only shows while the deck isn't playing. Right-clicking the
+cover has **Unload deck** too, and <kbd>⇧</kbd> <kbd>⌥</kbd> <kbd>←</kbd> /
+<kbd>→</kbd> unload decks 1 and 2. If it was a mistake, click
+**↺ Put back** on the empty deck: a track comes back where it was.
+
+### Waveform look
+
+Click the arrow on the right of the waveforms button in the top bar. Under
+the height slider, these set how the waveforms look:
+
+- **Type**: **Full** (the default) mirrors the waveforms about their middle;
+  **Half** grows them from the bottom edge, as on rekordbox. It applies to
+  the large waveforms and the overviews under the decks alike.
+- **Color**:
+  - **RGB** (the default): one shape, red where the bass is loudest, amber
+    for the mids and blue for the highs.
+  - **3-Band**: the bass, mids and highs stacked in their own colors, the
+    bass widest, as on rekordbox. A second row picks **Blue-Orange**
+    (rekordbox's colors) or **Lilac-Cyan**.
+  - **Stems**: each stem (kick, hi-hats, bass, instruments, vocals) in the
+    color of its stem pad, the loudest at the back, so you can see where
+    the vocals come in or the bass drops out. A track shows RGB until its
+    stems are ready.
+- **Needle**: where the play line sits on the large waveforms. **Center**
+  (the default) shows as much of what has played as what is coming;
+  **Left** puts it a quarter of the way in, so three quarters of the
+  waveform shows what is coming next.
+- **Vocals**: what runs along the bottom of the large waveforms, one at a
+  time. **Lyrics** (the default) shows a track's timed lyrics in cyan.
+  **Bar** draws a cyan bar wherever someone sings, leaving the waveform's
+  colors as they are. openDJ checks each track for vocals the first time
+  you load it (or when it's analyzed), in the background, so the bar shows
+  up a few seconds after the waveform; after that it's there straight
+  away. Tracks with HQ stems use their vocal stem instead. **Off** shows
+  neither.
+- **Phrases**: the colored phrase bar along the bottom of the overviews
+  (**Overview**), the phrase flags on the large waveforms (**Waveform**),
+  **Both** (the default) or neither (**Off**).
+
+The changes show straight away and the menu stays open, so you can try them
+out.
+
+**Settings › Appearance › Size follows gain**, on at first, makes a deck's
+large waveform taller or shorter as you turn its gain knob.
+The overview keeps its height.
+
+### Waveform zoom
+
+The large scrolling waveforms zoom in twenty steps of 5%, from **5%** (about
+40 seconds across) to **100%** (under a second, close enough to line a grid
+up with a kick). They start at **40%**, ten seconds across. Every large
+waveform zooms together, in every layout, so beats stay the same distance
+apart on each deck; the overviews under the decks always show the whole
+track.
+
+- Scroll the mouse wheel or swipe on the trackpad over a large waveform: up
+  zooms in, down zooms out. The zoom follows smoothly and settles on the
+  nearest step when you stop.
+- Use the bar at the edge of the waveform under the pointer (the side away
+  from the grid pencil), widest at the top: click the grey track to move the lilac marker there, or drag the
+  marker up and down.
+- **⌘=** and **⌘−** (**Ctrl** on Windows and Linux) step in and out, **⌘0**
+  goes back to 40%. They are also in **View** and in a large waveform's
+  right-click menu.
+- On a controller, map **Zoom waveform in**, **Zoom waveform out**, **Reset
+  waveform zoom** or **Waveform zoom** (1 to 20).
+
+The step shows for a moment on the waveform under the pointer (or the top
+one). openDJ remembers it for next time. Decks playing an input, an
+instrument or the Groove Box keep ten seconds across.
+
+### Waveform height
+
+The large scrolling waveforms have ten heights, **1** to **10**; **3** is the
+usual one. Each layout remembers its own, so tall waveforms in 2-Deck don't
+make 4-Deck taller.
+
+- Drag the line under the waveforms: a lilac grip shows when the pointer is
+  on it. The waveforms stretch with the pointer and settle on the nearest
+  height when you let go, with the number in the middle. Double-click the
+  line to go back to 3.
+- Click the arrow on the right of the waveforms button in the top bar and
+  drag the **Waveform height** slider: the waveforms resize as you drag and
+  settle on the nearest height when you let go. The arrow keys move it a
+  height at a time.
+- Right-click a large waveform and use **−** and **+** under Height.
+- **⌥⌘↑** and **⌥⌘↓** (**Ctrl+Alt** on Windows and Linux) make them taller
+  or shorter. They are also in **View**.
+- On a controller, map **Taller waveforms**, **Shorter waveforms**, **Reset
+  waveform height** or **Waveform height** (1 to 10).
+
+The library always keeps room for about five tracks. When the window is too
+short for the height you chose, the waveforms show the highest one that
+fits, and grow back when the window does. The decks never shrink.
 
 ### Beat counter
 
@@ -63,11 +163,17 @@ the rail at the far left (the keyboard icon) and drag one onto a deck:
 - The **Looper**, with four recording layers, capture, overdub, Undo and
   Redo. Its complete editor stays visible in both 4-Deck arrangements.
 - An **instrument plugin** you ticked in **Settings › Plugins**, played with
-  a MIDI keyboard or the **KEYBOARD** pads. **EDIT** on the deck opens its
+  a MIDI keyboard or the **KEYBOARD** pads. **OPEN** on the deck opens its
   own window for its sounds and presets (see
   [Instruments](fx.md#instruments)).
-- The **Microphone** or the **Aux input**, from the inputs picked in
-  **Settings › Audio**: turntables, a drum machine or a singer.
+- The **Looper**: four layers you record in time with the mix and play
+  back (see [Looper](#looper)).
+- The **Microphone**, from the input picked in **Settings › Audio**.
+- The **Mixer**: up to eight aux inputs from **Settings › Audio**
+  (turntables, a drum machine, a phone, another DJ's mixer) summed into the
+  one deck. The numbers on the deck turn each input on and off; a new
+  input starts off. The deck's fader is the Mixer's master, and one deck
+  holds the Mixer at a time.
 
 It plays through that deck's channel, so the EQ, filter, effects, fader and
 crossfader all work on it. A track on the deck is stopped and ejected
@@ -112,6 +218,34 @@ only; a Groove Box deck always shows its step lanes.
 To go back to a track deck, load a track onto it, or press EJECT while it is
 stopped. openDJ remembers what each deck plays for next time.
 
+### Looper
+
+Drag **Looper** from the **Jam** list onto a deck. In 2-Deck the deck shows
+four layers, two by two, with **▶ PLAY** and four beat lights under them. The
+header shows the tempo the Looper plays at, and whether it is in time with
+the mix.
+
+- **FROM** picks what it records: **Mix** (the main mix), **Mic**,
+  **Aux**, **Instr.** (the instrument plugin), **Aux 2** or **Aux 3**.
+- **BARS** sets how long a new layer is: 1, 2, 4, 8 or 16 bars.
+- Tap a layer's **● REC** to record it. It shows **NEXT BAR** until the
+  next bar starts, then **RECORDING**, then **▶ PLAY** with its length once
+  the bars are done. Tapping a layer on a stopped deck starts the deck.
+- Tap a playing layer to **OVERDUB**: what comes in is added on top of
+  it. Tap it again to go back to playing. With **THEN OVERDUB** on, a layer
+  goes straight on to overdub when it finishes recording.
+- **CAPTURE** puts the bars just heard into the first empty layer, even if
+  you weren't recording. **LAST** picks how many: 1, 2, 4 or 8 bars.
+- Each layer has **M** to mute it, a level knob, and **×** to clear it.
+- **UNDO** takes back the last recording or overdub, and **REDO** brings
+  it back. While a layer waits for the bar or records, **UNDO** cancels it.
+- **▶ PLAY** under the layers starts all of them together, and **■ STOP**
+  stops them.
+
+A layer holds up to about 48 seconds, 16 bars at 80 BPM. If what you pick
+is longer, the deck says **Too long to fit: pick fewer bars.** To go back
+to a track deck, drop a track on it.
+
 ## Slip, bend and censor
 
 **SLIP** keeps the track in time while you play with it. Click the word
@@ -151,6 +285,25 @@ bend the deck you started last, the one you're mixing in.
 **Censor** plays the deck backwards while you hold it, then carries on as if
 it had played forwards, to bleep a word. Shift-click and hold PLAY while the
 deck plays, or hold SHIFT and PLAY on the DDJ-FLX4.
+
+## Tempo panel and range
+
+Click a deck's tempo % (under the BPM in 2-Deck and 2-Deck Basic, under
+the BPM in a 4-Deck strip) for its tempo menu. In 2-Deck and 2-Deck Basic
+it has a short tempo slider with fine **−** and **+**, **KEY LOCK**,
+**QUANTIZE** and **RESET**; in 4-Deck, **KEY LOCK**, **QUANTIZE** and
+**RESET**. **RESET** puts the tempo back to the track's own.
+
+**Range** at the bottom shows how far the tempo fader goes either way, and a
+click lists the ranges: **4%**, **6%**, **8%**, **10%**, **16%**, **24%**,
+**50%** and **100%**, the current one ticked. The new range applies to that
+deck straight away and the tempo stays where it is: the fader moves to
+match, or goes to its end when the tempo doesn't fit the new range.
+**Settings › Decks › Tempo fader range** sets the range every deck starts
+with, and changing it there also changes every deck's range the same way.
+Custom controller mappings can set a deck's range the same way with
+**rate_range_set** (for example `0.16` for 16%); **rateRange** stays Mixxx's
+raw range control.
 
 ## Sync and quantize
 
@@ -207,6 +360,8 @@ of these can be switched off (all are on to start):
 - **EQ and filter**: EQ, kills, filter and sculpt go back to the middle.
 - **Gain**: the gain knob goes back to 0 dB (or the track's own gain, if its
   info sets one). Auto gain still levels each track.
+- **Tempo**: the tempo fader goes back to 0%, so the track starts at its own
+  BPM. A synced deck still takes the tempo it follows.
 
 ## Mixer
 

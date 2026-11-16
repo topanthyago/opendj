@@ -30,7 +30,9 @@ use crate::effects::{
     instance_indices, plugin_index, route_name, Attached, PluginLink, PluginMsg, BLOCK, MAIN,
     MAX_PARAMETERS, MAX_PLUGINS, PLUGIN_BASE, TARGETS,
 };
-use crate::inputs::{input_group, INSTRUMENT, INSTRUMENT_PARAMETERS, NUM_INPUTS};
+use crate::inputs::{
+    input_group, AUXILIARIES, AUXILIARY, INSTRUMENT, INSTRUMENT_PARAMETERS, MICROPHONE, NUM_INPUTS,
+};
 
 const INSTRUMENT_GROUP: &str = input_group(INSTRUMENT);
 
@@ -346,8 +348,15 @@ fn target_name(target: usize) -> String {
     } else if target == MAIN {
         "Master".into()
     } else {
-        ["Mic", "Aux", "Instrument", "Aux 2", "Aux 3"][(target - MAIN - 1).min(NUM_INPUTS - 1)]
-            .into()
+        match (target - MAIN - 1).min(NUM_INPUTS - 1) {
+            MICROPHONE => "Mic".into(),
+            AUXILIARY => "Aux".into(),
+            INSTRUMENT => "Instrument".into(),
+            i => format!(
+                "Aux {}",
+                AUXILIARIES.iter().position(|&a| a == i).unwrap_or(0) + 1
+            ),
+        }
     }
 }
 
@@ -1385,7 +1394,7 @@ mod tests {
             self.rack.prepare([0.5; TARGETS], self.now);
             let mut buf = vec![[0.5f32, 0.5]; FRAMES];
             self.rack.process_block(0, &mut buf);
-            self.rack.finish();
+            self.rack.finish(FRAMES);
             self.now += FRAMES as f64 / SR as f64;
             buf[FRAMES - 1][0]
         }
@@ -1574,9 +1583,18 @@ mod tests {
             let target = input_target(INSTRUMENT);
             self.instrument
                 .start(FRAMES, &mut self.rack, target, on_deck);
-            self.instrument
-                .render(FRAMES, &mut self.rack, target, 0.01, on_deck);
-            self.rack.finish();
+            self.instrument.render(
+                FRAMES,
+                &mut self.rack,
+                target,
+                0.01,
+                if on_deck {
+                    crate::inputs::Routing::Deck
+                } else {
+                    crate::inputs::Routing::Main
+                },
+            );
+            self.rack.finish(FRAMES);
             self.now += FRAMES as f64 / SR as f64;
             self.instrument.buf[FRAMES - 1][0]
         }

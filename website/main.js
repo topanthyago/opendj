@@ -63,37 +63,78 @@
     .catch(function () {});
 })();
 
-// Feature rows fade in, and screenshots zoom towards their focus point
-// (--fx/--fy) as they scroll up the screen.
+// Latest releases list: the four newest releases from GitHub. Without JS
+// (or if GitHub's API is unreachable) the list written in the page stays.
 (function () {
-  if (!("IntersectionObserver" in window)) return;
-  document.documentElement.classList.add("js");
-  var io = new IntersectionObserver(function (entries) {
-    entries.forEach(function (e) {
-      if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
-    });
-  }, { rootMargin: "0px 0px -10% 0px" });
-  document.querySelectorAll(".reveal").forEach(function (el) { io.observe(el); });
+  var list = document.querySelector("[data-releases]");
+  if (!list) return;
+  fetch("https://api.github.com/repos/openwave-studio/opendj/releases?per_page=4")
+    .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+    .then(function (rels) {
+      if (!rels.length) return;
+      list.textContent = "";
+      rels.forEach(function (rel) {
+        var li = document.createElement("li");
+        var a = document.createElement("a");
+        a.href = rel.html_url;
+        a.textContent = "openDJ " + (rel.tag_name || "").replace(/^v/, "");
+        var date = document.createElement("span");
+        date.textContent = new Date(rel.published_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+        li.append(a, " ", date);
+        list.appendChild(li);
+      });
+    })
+    .catch(function () {});
+})();
 
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  var frames = Array.prototype.slice.call(document.querySelectorAll("[data-zoom]"));
-  var queued = false;
-  function update() {
-    queued = false;
-    var vh = window.innerHeight;
-    frames.forEach(function (f) {
-      var r = f.getBoundingClientRect();
-      if (r.bottom < 0 || r.top > vh) return;
-      // 0 while the frame's centre is low on the screen, 1 once it reaches
-      // the upper third, so the zoom has finished by the time it's read.
-      var centre = r.top + r.height / 2;
-      var p = Math.min(1, Math.max(0, (vh * 0.85 - centre) / (vh * 0.5)));
-      p = p * p * (3 - 2 * p);
-      f.style.setProperty("--z", (1 + (parseFloat(f.dataset.zoom) - 1) * p).toFixed(4));
-    });
+// Screenshot viewer: a click on a screenshot opens it large in a dialog,
+// with arrows, keys (← → Esc) and swipes to move through the gallery.
+// Without JS, or without <dialog>, the links open the image itself.
+(function () {
+  var links = Array.prototype.slice.call(document.querySelectorAll(".gal a"));
+  if (!links.length || typeof HTMLDialogElement !== "function") return;
+  var shots = links.map(function (a) {
+    var cap = a.parentNode.querySelector("figcaption");
+    return { src: a.getAttribute("href"), alt: a.querySelector("img").alt, cap: cap ? cap.textContent : "" };
+  });
+  var box = document.createElement("dialog");
+  box.className = "viewer";
+  box.innerHTML =
+    '<figure><img alt=""><figcaption><span class="viewer-cap"></span> <span class="viewer-count"></span></figcaption></figure>' +
+    '<button class="viewer-prev" aria-label="Previous screenshot">‹</button>' +
+    '<button class="viewer-next" aria-label="Next screenshot">›</button>' +
+    '<button class="viewer-close" aria-label="Close">×</button>';
+  document.body.appendChild(box);
+  var img = box.querySelector("img"), cap = box.querySelector(".viewer-cap"), count = box.querySelector(".viewer-count");
+  var at = 0;
+  function show(i) {
+    at = (i + shots.length) % shots.length;
+    img.src = shots[at].src;
+    img.alt = shots[at].alt;
+    cap.textContent = shots[at].cap;
+    count.textContent = (at + 1) + " / " + shots.length;
+    new Image().src = shots[(at + 1) % shots.length].src;
   }
-  function queue() { if (!queued) { queued = true; requestAnimationFrame(update); } }
-  window.addEventListener("scroll", queue, { passive: true });
-  window.addEventListener("resize", queue);
-  update();
+  function open(i) { show(i); if (!box.open) box.showModal(); }
+  links.forEach(function (a, i) {
+    a.addEventListener("click", function (e) { e.preventDefault(); open(i); });
+  });
+  var intro = document.querySelector(".intro-shot");
+  if (intro) intro.addEventListener("click", function (e) { e.preventDefault(); open(0); });
+  box.querySelector(".viewer-prev").addEventListener("click", function () { show(at - 1); });
+  box.querySelector(".viewer-next").addEventListener("click", function () { show(at + 1); });
+  box.querySelector(".viewer-close").addEventListener("click", function () { box.close(); });
+  box.addEventListener("click", function (e) { if (e.target === box) box.close(); });
+  box.addEventListener("keydown", function (e) {
+    if (e.key === "ArrowLeft") show(at - 1);
+    if (e.key === "ArrowRight") show(at + 1);
+  });
+  var x0 = null;
+  box.addEventListener("touchstart", function (e) { x0 = e.touches[0].clientX; }, { passive: true });
+  box.addEventListener("touchend", function (e) {
+    if (x0 === null) return;
+    var dx = e.changedTouches[0].clientX - x0;
+    if (Math.abs(dx) > 40) show(dx < 0 ? at + 1 : at - 1);
+    x0 = null;
+  });
 })();
