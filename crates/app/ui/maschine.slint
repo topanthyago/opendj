@@ -1,5 +1,6 @@
 import { Theme } from "theme.slint";
 import { Controls, ControlButton } from "controls.slint";
+import { GrooveTempo, GrooveFillBar, PerformanceStatus } from "performance.slint";
 import { ListView } from "scroll.slint";
 
 export struct MaschineGroup {
@@ -608,6 +609,37 @@ export component MaschinePanel inherits Rectangle {
         HorizontalLayout {
             height: 26px;
             spacing: 4px;
+            GrooveTempo { g: "[Groove" + (deck + 1) + "]"; tint: tint; width: 74px; height: 26px; menu-right-aligned: false; }
+            MaschineButton {
+                text: "REC QUANT ▾";
+                width: 84px;
+                on: Controls.value(Controls.resolve(group, "quantize"), Controls.tick) > 0;
+                clicked => { record-grid.show(); }
+                record-grid := PopupWindow {
+                    y: 28px;
+                    width: 220px;
+                    Rectangle { background: Theme.panel-raised; border-radius: 5px; border-width: 1px; border-color: Theme.border; }
+                    VerticalLayout {
+                        padding: 6px;
+                        spacing: 5px;
+                        ControlButton { group: group; key: "quantize"; text: "QUANTIZE RECORDED NOTES"; height: 26px; font-size: 10px; tint: tint; }
+                        HorizontalLayout {
+                            spacing: 3px;
+                            for ticks[i] in [960, 480, 240, 120, 60]: MaschineButton {
+                                text: ["1/4", "1/8", "1/16", "1/32", "1/64"][i];
+                                horizontal-stretch: 1;
+                                on: Controls.value(Controls.resolve(group, "grid"), Controls.tick) == ticks;
+                                clicked => { Controls.set-value(Controls.resolve(group, "grid"), ticks); }
+                            }
+                        }
+                    }
+                }
+            }
+            PerformanceStatus { g: "[Groove" + (deck + 1) + "]"; channel: channel; tint: tint; }
+        }
+        HorizontalLayout {
+            height: 26px;
+            spacing: 4px;
             for letter[i] in ["A", "B", "C", "D", "E", "F", "G", "H"]: MaschineButton {
                 text: letter;
                 width: 26px;
@@ -717,6 +749,7 @@ export component MaschinePanel inherits Rectangle {
             }
             for parameter[i] in MaschineUi.parameters: MaschineKnob { horizontal-stretch: 1; min-width: 0px; parameter: parameter; tint: tint; changed(value) => { MaschineUi.set-parameter(i, value); } }
         }
+        GrooveFillBar { g: "[Groove" + (deck + 1) + "]"; tint: tint; show-four: false; }
         if MaschineUi.status != "": Text { text: MaschineUi.status; color: #ff9f0a; font-size: 10px; overflow: elide; height: 14px; }
     }
     if MaschineUi.instrument-menu-open: Rectangle {

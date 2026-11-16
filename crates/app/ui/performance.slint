@@ -1,0 +1,267 @@
+import { Theme } from "theme.slint";
+import { Controls, ControlButton, ControlKnob } from "controls.slint";
+
+component PerformanceButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> lit;
+    in property <color> tint: Theme.accent;
+    in property <length> font-size: 11px;
+    callback clicked();
+    height: 24px;
+    border-radius: Theme.radius;
+    border-width: lit ? 2px : 1px;
+    border-color: lit ? tint : Theme.border;
+    background: ta.pressed ? Theme.control-pressed : Theme.control;
+    Text { text: root.text; color: lit ? tint : Theme.text; font-size: root.font-size; font-weight: 600; overflow: elide; width: parent.width - 8px; horizontal-alignment: center; vertical-alignment: center; }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+component PerformanceTab inherits Rectangle {
+    in property <string> text;
+    in property <bool> on;
+    in property <color> tint;
+    callback clicked();
+    height: 24px;
+    border-radius: 4px;
+    background: on ? tint.with-alpha(0.22) : ta.has-hover ? #ffffff10 : transparent;
+    Text { text: root.text; color: on ? Theme.text : Theme.text-dim; font-size: 9px; font-weight: 700; letter-spacing: 0.4px; }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+export component GrooveMenuItem inherits Rectangle {
+    in property <string> text;
+    in property <string> detail;
+    in property <bool> checked;
+    callback clicked();
+    height: detail == "" ? 24px : 36px;
+    border-radius: 5px;
+    background: gmta.has-hover ? #3a3a3d : transparent;
+    VerticalLayout {
+        x: 22px;
+        width: parent.width - 28px;
+        alignment: center;
+        Text { text: root.text; color: Theme.text; font-size: 12px; }
+        if detail != "": Text { text: root.detail; color: Theme.text-dim; font-size: 10px; overflow: elide; }
+    }
+    if checked: Text { x: 7px; text: "✓"; color: Theme.accent; font-size: 12px; vertical-alignment: center; }
+    gmta := TouchArea { clicked => { root.clicked(); } }
+}
+
+export component GrooveMenuBackground inherits Rectangle {
+    background: Theme.panel-raised;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: 16px;
+    drop-shadow-color: #000000b0;
+}
+
+export component GrooveTempo inherits PerformanceButton {
+    in property <string> g;
+    in property <bool> menu-right-aligned: true;
+    property <int> bpm-index: Controls.resolve(g, "bpm");
+    property <float> bpm: Controls.value(bpm-index, Controls.tick);
+    property <int> follow-index: Controls.resolve(g, "follow");
+    property <bool> follow: Controls.value(follow-index, Controls.tick) > 0;
+    property <bool> following: Controls.value(Controls.resolve(g, "following"), Controls.tick) > 0;
+    property <int> scale-index: Controls.resolve(g, "tempo_scale");
+    property <float> scale: Controls.value(scale-index, Controls.tick);
+    function nudge(by: float) {
+        Controls.set-value(follow-index, 0);
+        Controls.set-value(bpm-index, max(40, min(220, round((bpm + by) * 10) / 10)));
+    }
+    text: round(bpm * 10) / 10 + (scale < 0.75 && follow ? " ½×" : scale > 1.5 && follow ? " 2×" : "") + " ▾";
+    lit: following;
+    clicked => { tempo-menu.show(); }
+    tempo-menu := PopupWindow {
+        y: root.height + 2px;
+        x: menu-right-aligned ? root.width - 220px : 0px;
+        width: 220px;
+        close-policy: close-on-click-outside;
+        GrooveMenuBackground { }
+        VerticalLayout {
+            padding: 6px;
+            spacing: 6px;
+            GrooveMenuItem {
+                text: "Follow the mix";
+                detail: "The playing track's tempo, else Link's";
+                checked: follow;
+                clicked => { Controls.set-value(follow-index, follow ? 0 : 1); }
+            }
+            HorizontalLayout {
+                spacing: 4px;
+                height: 26px;
+                for step in [-1, -0.1]: PerformanceButton { width: 36px; height: 26px; text: step < -0.5 ? "−1" : "−.1"; clicked => { nudge(step); } }
+                Text { horizontal-stretch: 1; text: round(bpm * 10) / 10 + " BPM"; color: Theme.text; font-size: 13px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                for step in [0.1, 1]: PerformanceButton { width: 36px; height: 26px; text: step > 0.5 ? "+1" : "+.1"; clicked => { nudge(step); } }
+            }
+            HorizontalLayout {
+                spacing: 4px;
+                height: 26px;
+                for s[i] in [0.5, 1, 2]: PerformanceButton {
+                    horizontal-stretch: 1;
+                    height: 26px;
+                    text: i == 0 ? "Half time" : i == 1 ? "Normal" : "Double";
+                    lit: follow && abs(scale - s) < 0.01;
+                    clicked => {
+                        Controls.set-value(scale-index, s);
+                        Controls.set-value(follow-index, 1);
+                    }
+                }
+            }
+            ControlButton { group: g; key: "follow_breaks"; text: "FOLLOW TRACK BREAKS"; height: 26px; font-size: 10px; tint: root.tint; }
+            ControlButton { group: g; key: "auto_fill_style"; text: "ADDITIVE FILLS"; height: 26px; font-size: 10px; tint: root.tint; }
+            HorizontalLayout {
+                spacing: 6px;
+                ControlKnob { group: g; key: "break_sensitivity"; label: "BREAK"; size: 24px; }
+                Text { text: "Break detection sensitivity"; color: Theme.text-dim; font-size: 10px; vertical-alignment: center; }
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+                ControlKnob { group: g; key: "swing"; label: "SWING"; size: 24px; }
+                Text { text: "Every second 16th plays late,\nfor a shuffle."; color: Theme.text-dim; font-size: 10px; vertical-alignment: center; }
+            }
+        }
+    }
+}
+
+export component GrooveFillBar inherits HorizontalLayout {
+    in property <string> g;
+    in property <color> tint;
+    // The Sequencer as 4x4 pads instead of rows of 16.
+    in-out property <bool> four;
+    in property <bool> show-four: true;
+    property <int> auto-index: Controls.resolve(g, "auto_fill");
+    property <int> auto: Controls.value(auto-index, Controls.tick);
+    property <int> fill-index: Controls.resolve(g, "fill");
+    property <int> remix-index: Controls.resolve(g, "remix");
+    property <float> remix: Controls.value(remix-index, Controls.tick);
+    property <bool> filling: Controls.value(Controls.resolve(g, "fill_playing"), Controls.tick) > 0;
+    property <int> level: remix <= 0 ? 0 : floor(min(1, remix) * 15.999) + 1;
+    height: 26px;
+    spacing: 4px;
+    if show-four: PerformanceButton {
+        width: 40px;
+        height: 26px;
+        text: "4x4";
+        lit: four;
+        tint: tint;
+        clicked => { four = !four; }
+    }
+    Rectangle {
+        width: 168px;
+        border-radius: 6px;
+        background: Theme.well;
+        HorizontalLayout {
+            padding: 2px;
+            spacing: 2px;
+            for name[i] in ["NO FILLS", "AUTO 1", "AUTO 2"]: PerformanceTab {
+                height: 22px;
+                text: name;
+                on: auto == i;
+                tint: tint;
+                clicked => { Controls.set-value(auto-index, i); }
+            }
+        }
+    }
+    Rectangle {
+        width: 52px;
+        border-radius: Theme.radius;
+        border-width: filling ? 2px : 1px;
+        border-color: filling ? tint : Theme.border;
+        background: fta.pressed ? tint.with-alpha(0.4) : Theme.control;
+        Text { text: "FILL"; color: filling ? tint : Theme.text; font-size: 10px; font-weight: 700; }
+        fta := TouchArea {
+            mouse-cursor: pointer;
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                    Controls.set-value(fill-index, 1);
+                } else if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel {
+                    Controls.set-value(fill-index, 0);
+                }
+            }
+        }
+    }
+    Rectangle {
+        horizontal-stretch: 1;
+        border-radius: Theme.radius;
+        border-width: 1px;
+        border-color: level > 0 ? tint : Theme.border;
+        background: #00000040;
+        HorizontalLayout {
+            padding: 3px;
+            spacing: 2px;
+            for i in 16: Rectangle {
+                border-radius: 2px;
+                background: i < level ? tint.with-alpha(0.35 + 0.6 * (i + 1) / 16) : #ffffff10;
+            }
+        }
+        Text {
+            text: level > 0 ? "REMIX " + level : root.width < 500px ? "REMIX · hold + slide" : "REMIX   hold and slide: hats · rolls · swap · all";
+            color: level > 0 ? Theme.text : Theme.text-dim;
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+        }
+        rta := TouchArea {
+            mouse-cursor: pointer;
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel {
+                    Controls.set-value(remix-index, 0);
+                }
+            }
+            moved => {
+                if self.pressed {
+                    Controls.set-value(remix-index, max(0.001, min(1, self.mouse-x / self.width)));
+                }
+            }
+            changed pressed => {
+                if self.pressed {
+                    Controls.set-value(remix-index, max(0.001, min(1, self.mouse-x / self.width)));
+                } else {
+                    Controls.set-value(remix-index, 0);
+                }
+            }
+        }
+    }
+}
+
+// These indicators come from the audio engine. `following` identifies an
+// external clock, without identifying whether its source is a deck or Link.
+export component PerformanceStatus inherits HorizontalLayout {
+    in property <string> g;
+    in property <string> channel;
+    in property <color> tint;
+    in property <bool> looper: false;
+    property <float> bpm: Controls.value(Controls.resolve(g, "bpm"), Controls.tick);
+    property <bool> following: Controls.value(Controls.resolve(g, "following"), Controls.tick) > 0;
+    property <bool> playing: Controls.value(Controls.resolve(channel, "play"), Controls.tick) > 0;
+    property <bool> breaking: !looper && Controls.value(Controls.resolve(g, "break_active"), Controls.tick) > 0;
+    property <bool> follows-breaks: !looper && Controls.value(Controls.resolve(g, "follow_breaks"), Controls.tick) > 0;
+    property <bool> filling: !looper && Controls.value(Controls.resolve(g, "fill_playing"), Controls.tick) > 0;
+    property <int> input: looper ? Controls.value(Controls.resolve(g, "input"), Controls.tick) : 0;
+    property <int> bars: looper ? Controls.value(Controls.resolve(g, "length"), Controls.tick) : 0;
+    property <float> level: Controls.value(Controls.resolve(channel, "vu_meter"), Controls.tick);
+    height: 16px;
+    spacing: 6px;
+    Text {
+        text: round(bpm * 10) / 10 + " BPM · " + (following ? "MIX / LINK" : "OWN TEMPO") + " · "
+            + (!playing ? "STOPPED" : breaking ? "BREAK PAUSE" : filling ? "FILL / REMIX" : "PLAYING")
+            + (!looper && follows-breaks && !breaking ? " · BREAK FOLLOW" : "")
+            + (looper ? " · " + ["MIX", "MIC", "AUX", "INSTR.", "AUX 2", "AUX 3"][input] + " · " + bars + " BARS" : "");
+        color: breaking ? #ff9f0a : following ? tint : Theme.text-dim;
+        font-size: 9px;
+        vertical-alignment: center;
+        overflow: elide;
+        horizontal-stretch: 1;
+        min-width: 0px;
+    }
+    Rectangle {
+        width: 40px;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.well;
+        Rectangle { x: 0; width: parent.width * clamp(level, 0, 1); height: parent.height; background: tint; border-radius: 2px; }
+    }
+}

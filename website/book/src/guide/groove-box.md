@@ -268,3 +268,23 @@ and backup before switching projects.
 The controller's FILE page also saves the focused Group or Sound as
 `.mxgrp` or `.mxsnd` after choosing a folder on the computer. **Export Audio**
 renders the selected Scene to a new WAV file at the current Maschine tempo.
+
+### Performance information on the deck
+
+Original Groove Box and DECKARD share the tempo menu, Auto Fill buttons, held
+FILL and REMIX strip. The tempo menu offers Follow the mix, half/normal/double
+time, manual BPM adjustment, additive fills and track-break following with
+sensitivity, plus Swing for the active group. The status line shows the engine BPM, external Mix / Link clock or
+own tempo, transport state, active fill/remix, break-follow mode and break pause.
+Its meter follows the deck output. The clock indicator reports external following
+without identifying the individual leader.
+
+DECKARD applies fill/remix to the focused group's eight mapped percussion roles.
+Its REC QUANT menu toggles quantization of newly recorded notes and selects a
+1/4–1/64 grid.
+
+The Looper uses the same status line for BPM, clock, selected recording input,
+new-recording length and output level. Its numbered layer buttons show armed,
+recording, playing and overdubbing states, loop position and recorded bar count.
+Layer level, mute, clear, capture, undo/redo and then-overdub retain their existing
+controls in both four-deck arrangements.
