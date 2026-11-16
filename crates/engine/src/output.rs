@@ -600,6 +600,7 @@ pub(crate) struct Outputs {
     pub(crate) main_status: String,
     /// Each route's state, in the setup's order: its format, or what is wrong.
     pub(crate) route_status: Vec<String>,
+    route_connected: Vec<bool>,
     inputs: Vec<cpal::Stream>,
     /// Each open input device's channel meters (see [`Levels`]), by its
     /// name as the setup gives it.
@@ -641,6 +642,7 @@ impl Outputs {
             timer: None,
             main_status: String::new(),
             route_status: Vec::new(),
+            route_connected: Vec::new(),
             inputs: Vec::new(),
             levels: Vec::new(),
             watched: None,
@@ -986,6 +988,12 @@ impl Outputs {
         self.health.realtime_denied.load(Ordering::Relaxed)
     }
 
+    pub(crate) fn headphones_ready(&self) -> bool {
+        !self.health.lost.load(Ordering::Acquire)
+            && self.setup.routes.iter().zip(&self.route_connected)
+                .any(|(route, connected)| route.role == Role::Headphones && *connected)
+    }
+
     fn configure_outputs(&mut self, setup: &AudioSetup) {
         self.streams.clear();
         self.timer = None;
@@ -994,9 +1002,11 @@ impl Outputs {
         self.lost_reported = false;
         self.retry_at = None;
         self.route_status = vec![String::new(); setup.routes.len()];
+        self.route_connected = vec![false; setup.routes.len()];
         if let Err(e) = self.open(setup) {
             eprintln!("audio output unavailable ({e}); running without sound");
             self.streams.clear();
+            self.route_connected.fill(false);
             self.timer = Some(self.start_timer());
             self.main_status = if no_audio() {
                 "No audio output".into()
@@ -1123,6 +1133,7 @@ impl Outputs {
                     self.streams.push(s);
                     for &(_, _, i) in &d.routes {
                         self.route_status[i] = format!("{khz} kHz · {channels} out");
+                        self.route_connected[i] = true;
                     }
                     let sources: Vec<usize> = d.routes.iter().map(|r| r.0).collect();
                     feeds.push((tx, sources));
@@ -1149,6 +1160,7 @@ impl Outputs {
         let channels = config.channels() as usize;
         let pairs: Vec<(usize, usize)> = d.routes.iter().map(|r| (r.0, r.1)).collect();
         for &(_, pair, i) in &d.routes {
+            self.route_connected[i] = 2 * pair + 2 <= channels;
             self.route_status[i] = if 2 * pair + 2 <= channels {
                 format!("{khz} kHz · {channels} out")
             } else {

@@ -1671,6 +1671,12 @@ pub struct Engine {
     maschines: Vec<crate::maschine::Maschine>,
     maschine_handles: Option<Vec<crate::maschine::MaschineHandle>>,
     machine_capture: Vec<crate::machine_capture::CaptureTap>,
+    machine_capture_audio: Vec<Vec<[f32; 2]>>,
+    machine_capture_shifter: [KeyShifter; NUM_DECKS],
+    machine_capture_key: [(usize, usize); NUM_DECKS],
+    machine_monitor: [ControlHandle; 3],
+    machine_capture_positions: Vec<Vec<f64>>,
+    machine_capture_markers: [[ControlHandle; 3]; NUM_DECKS],
     machine_capture_handles: Option<Vec<Arc<Mutex<crate::machine_capture::CaptureHandle>>>>,
     groove_buf: Vec<Vec<[f32; 2]>>,
     maschine_cue_buf: Vec<Vec<[f32; 2]>>,
@@ -1947,7 +1953,7 @@ impl Engine {
                 )
             })
             .unzip();
-        let (machine_capture, machine_capture_handles): (Vec<_>, Vec<_>) = (0..NUM_DECKS)
+        let (machine_capture, machine_capture_handles): (Vec<_>, Vec<_>) = (0..=NUM_DECKS)
             .map(|_| {
                 let (tap, handle) = crate::machine_capture::channel(sample_rate as u32);
                 (tap, Arc::new(Mutex::new(handle)))
@@ -2021,6 +2027,37 @@ impl Engine {
                 maschines,
                 maschine_handles: Some(maschine_handles),
                 machine_capture,
+                machine_capture_audio: vec![vec![[0.0; 2]; BLOCK]; NUM_DECKS],
+                machine_capture_shifter: std::array::from_fn(|_| KeyShifter::new(sample_rate)),
+                machine_capture_key: [(0, 0); NUM_DECKS],
+                machine_capture_positions: vec![vec![0.0; BLOCK]; NUM_DECKS],
+                machine_capture_markers: std::array::from_fn(|i| {
+                    let group = format!("[Channel{}]", i + 1);
+                    [
+                        registry.indicator(&group, "sampling_capture_start", f64::MAX),
+                        registry.indicator(&group, "sampling_capture_end", f64::MAX),
+                        registry.indicator(&group, "sampling_capture_state", 2.0),
+                    ]
+                }),
+                machine_monitor: [
+                    registry.create(
+                        "[Maschine3]",
+                        "sampling_source",
+                        0.0,
+                        0.0,
+                        4.0,
+                        opendj_control::Behavior::Free,
+                    ),
+                    registry.create(
+                        "[Maschine3]",
+                        "sampling_stem",
+                        0.0,
+                        0.0,
+                        4.0,
+                        opendj_control::Behavior::Free,
+                    ),
+                    registry.toggle("[Maschine3]", "sampling_monitor"),
+                ],
                 machine_capture_handles: Some(machine_capture_handles),
                 groove_buf: vec![vec![[0.0; 2]; BLOCK]; NUM_DECKS],
                 maschine_cue_buf: vec![vec![[0.0; 2]; BLOCK]; NUM_DECKS],
@@ -3215,6 +3252,30 @@ impl Engine {
         let mut looper_capture_ready = [false; NUM_DECKS];
         let mut looper_capture_shifted = [false; NUM_DECKS];
         let mut looper_stem_weights = [[0.0; MAX_STEMS]; NUM_DECKS];
+        let monitor_source = self.machine_monitor[2]
+            .get_bool()
+            .then(|| self.machine_monitor[0].get().round().clamp(0.0, 4.0) as usize);
+        let monitor_stem = self.machine_monitor[1].get().round().clamp(0.0, 4.0) as usize;
+        let capture_requested: [Option<usize>; NUM_DECKS] = std::array::from_fn(|i| {
+            self.machine_capture[i]
+                .requested_stem()
+                .or_else(|| (monitor_source == Some(i)).then_some(monitor_stem))
+        });
+        let mut capture_ready = [false; NUM_DECKS];
+        let mut capture_shifted = [false; NUM_DECKS];
+        let mut capture_weights = [[0.0; MAX_STEMS]; NUM_DECKS];
+        for i in 0..NUM_DECKS {
+            let identity = self.decks[i]
+                .audio
+                .as_ref()
+                .map_or(0, |a| Arc::as_ptr(a) as usize);
+            let key = (capture_requested[i].unwrap_or(0), identity);
+            if key != self.machine_capture_key[i] || capture_requested[i].is_none() {
+                self.machine_capture_key[i] = key;
+                self.machine_capture_shifter[i].stop();
+            }
+        }
+
         let master_key = self
             .link_master
             .and_then(|k| Key::from_mixxx_number(self.decks[k].c.key.get()));
@@ -3631,6 +3692,66 @@ impl Engine {
                     self.looper_source_shifter[k].stop();
                 }
             }
+            if let Some(stem) = capture_requested[i].filter(|stem| *stem > 0) {
+                if let Some((audio, stems)) = d
+                    .audio
+                    .as_ref()
+                    .and_then(|audio| Some((audio, audio.stems()?.current())))
+                {
+                    let weights = looper_stem_selection(stems, stem);
+                    capture_weights[i] = weights;
+                    let reach = from.abs().max(target.abs()) * ratio * frames as f64
+                        + if shifting { sr } else { 2.0 };
+                    let mut start = (d.pos - reach).max(0.0) as usize;
+                    let mut end =
+                        ((d.pos + reach).max(0.0) as usize).min(audio.len().saturating_sub(1));
+                    if let Some((a, b)) = loop_frames {
+                        start = start.min(a.max(0.0) as usize);
+                        end = end
+                            .max(b.max(0.0) as usize)
+                            .min(audio.len().saturating_sub(1));
+                    }
+                    capture_ready[i] = (from != 0.0 || target != 0.0)
+                        && weights.iter().any(|weight| *weight > 0.0)
+                        && looper_stem_range_ready(stems, start, end);
+                    if capture_ready[i] && shifting {
+                        if let Some(k) =
+                            looper_sources.iter().enumerate().position(|(k, source)| {
+                                *source == (i + 1, stem) && looper_capture_shifted[k]
+                            })
+                        {
+                            self.machine_capture_audio[i][..frames]
+                                .copy_from_slice(&self.looper_stem_audio[k][..frames]);
+                        } else {
+                            let speed =
+                                from + (target - from) * (frames + 1) as f64 / (2 * frames) as f64;
+                            let transpose = transpose_factor(semitones, speed, keylock);
+                            let mix = StemMix::solo(
+                                stems,
+                                audio,
+                                weights,
+                                weights,
+                                (0.0, 0.0),
+                                speed * ratio * frames as f64,
+                            );
+                            self.machine_capture_shifter[i].render(
+                                &mix,
+                                d.pos,
+                                speed,
+                                ratio,
+                                transpose,
+                                loop_frames,
+                                &mut self.machine_capture_audio[i][..frames],
+                            );
+                        }
+                        capture_shifted[i] = true;
+                    } else {
+                        self.machine_capture_shifter[i].stop();
+                    }
+                } else {
+                    self.machine_capture_shifter[i].stop();
+                }
+            }
             Plan {
                 stems: stem_gains,
                 stem_upgrade: upgrade,
@@ -3932,6 +4053,51 @@ impl Engine {
                 wave.idle();
             }
         }
+        let capture_clocks: [Option<(f64, f64)>; NUM_DECKS] = std::array::from_fn(|i| {
+            let deck = &self.decks[i];
+            if !deck.c.play.get_bool() {
+                return None;
+            }
+            if let Some(track) = &deck.track {
+                let bpm = deck.effective_bpm();
+                return (bpm > 0.0).then(|| (track.beat_at(deck.seconds()), bpm / 60.0 / out_rate));
+            }
+            if groove_on[i] {
+                let bpm = self.grooves[i].c.bpm.get();
+                return Some((
+                    self.grooves[i].clock.beat - bpm / 60.0 * dt,
+                    bpm / 60.0 / out_rate,
+                ));
+            }
+            if looper_on[i] {
+                let controls = &self.loopers.loopers[i].c;
+                let bpm = controls.bpm.get();
+                return Some((
+                    controls.bar_beat.get() - bpm / 60.0 * dt,
+                    bpm / 60.0 / out_rate,
+                ));
+            }
+            None
+        });
+        let master_capture_clock = self
+            .leading_beat()
+            .1
+            .and_then(|i| capture_clocks[i])
+            .or_else(|| capture_clocks.iter().copied().flatten().next());
+        let capture_identity: [usize; NUM_DECKS] = std::array::from_fn(|i| {
+            self.decks[i].audio.as_ref().map_or_else(
+                || {
+                    if groove_on[i] {
+                        self.maschines[i].project_generation() as usize
+                    } else if looper_on[i] {
+                        2
+                    } else {
+                        0
+                    }
+                },
+                |audio| Arc::as_ptr(audio) as usize,
+            )
+        });
         for f in 0..frames {
             let r = (f + 1) as f32 / frames as f32;
             let lerp = |(a, b): (f32, f32)| a + (b - a) * r;
@@ -3995,6 +4161,21 @@ impl Engine {
                             );
                         }
                     }
+                    if capture_requested[i].is_some_and(|stem| stem > 0)
+                        && capture_ready[i]
+                        && !capture_shifted[i]
+                    {
+                        let stems = audio
+                            .stems()
+                            .expect("validated capture stem source")
+                            .current();
+                        let weights = capture_weights[i];
+                        self.machine_capture_audio[i][f] = read(
+                            &StemMix::solo(stems, audio, weights, weights, (0.0, 0.0), 1.0),
+                            d.pos,
+                        );
+                    }
+                    self.machine_capture_positions[i][f] = d.seconds();
                     let step = v * p.ratio;
                     if let Some(dc) = &mut d.declick {
                         s = dc.mix(s, source(dc.pos));
@@ -4074,7 +4255,6 @@ impl Engine {
                 let pre = lerp(p.pre);
                 s = [s[0] * pre, s[1] * pre];
                 let dry = dry.map(|x| [x[0] * pre, x[1] * pre]);
-                self.machine_capture[i].push(dry.map_or(s, |x| [s[0] + x[0], s[1] + x[1]]));
                 // A live deck's sound for its waveform, after the trim and
                 // before the EQ, as a track's waveform shows the track.
                 if live_on[i] > 0 || mixer_on[i] || groove_on[i] || looper_on[i] {
@@ -4121,6 +4301,62 @@ impl Engine {
         if let Some(m) = mixer_deck {
             for (d, x) in deck_buf[m][..frames].iter_mut().zip(&mixer_dry) {
                 *d = [d[0] + x[0], d[1] + x[1]];
+            }
+        }
+        for i in 0..NUM_DECKS {
+            if let Some(stem) = capture_requested[i] {
+                let mut marker_state = self.machine_capture_markers[i][2].get() as u8;
+                let mut marker_end = None;
+                for f in 0..frames {
+                    let mut audio = if stem == 0 {
+                        deck_buf[i][f]
+                    } else {
+                        self.machine_capture_audio[i][f]
+                    };
+                    if stem == 0
+                        && groove_on[i]
+                        && self.grooves[i].c.backend.get_bool()
+                        && self.maschines[i].controls.ready.get_bool()
+                    {
+                        let cue = self.maschines[i].capture_cue_frame(f);
+                        audio[0] += cue[0];
+                        audio[1] += cue[1];
+                    }
+                    let clock = capture_clocks[i]
+                        .map(|(beat, per_frame)| (beat + per_frame * f as f64, per_frame));
+                    let ready = if stem == 0 {
+                        capture_clocks[i].is_some()
+                    } else {
+                        capture_ready[i]
+                    };
+                    self.machine_capture[i].push_clocked(audio, clock, ready, capture_identity[i]);
+                    let next_state = self.machine_capture[i].capture_state();
+                    if next_state == 2 {
+                        let position = if self.decks[i].track.is_some() {
+                            self.machine_capture_positions[i][f]
+                        } else {
+                            clock.map_or(0.0, |(beat, _)| beat)
+                        };
+                        if marker_state != 2 {
+                            self.machine_capture_markers[i][0].set(position);
+                        }
+                        marker_end = Some(position);
+                    }
+                    marker_state = next_state;
+                    if monitor_source == Some(i) && ready {
+                        // Musical group Cue already reaches the headphones. Its
+                        // prehear remains separate and never feeds a capture.
+                        let monitored = if stem == 0 { deck_buf[i][f] } else { audio };
+                        maschine_cue_buf[2][f][0] += monitored[0];
+                        maschine_cue_buf[2][f][1] += monitored[1];
+                    }
+                }
+                if let Some(end) = marker_end {
+                    self.machine_capture_markers[i][1].set(end);
+                }
+                self.machine_capture_markers[i][2].set(marker_state as f64);
+            } else {
+                self.machine_capture_markers[i][2].set(0.0);
             }
         }
         // These taps are consumed next callback, like INPUT=MIX. Mix is
@@ -4275,6 +4511,7 @@ impl Engine {
                 for c in 0..2 {
                     master_peak[c] = master_peak[c].max(main[c].abs());
                 }
+                self.machine_capture[NUM_DECKS].push_clocked(main, None, false, 1);
                 let o = &mut out[f * channels..(f + 1) * channels];
                 let mixes = channels.min(MIX_CHANNELS);
                 o[..mixes].fill(0.0);
@@ -4325,6 +4562,18 @@ impl Engine {
             for c in 0..2 {
                 main[c] = limited[c] * bal[c];
                 master_peak[c] = master_peak[c].max(main[c].abs());
+            }
+            let capture_clock = master_capture_clock
+                .map(|(beat, per_frame)| (beat + per_frame * f as f64, per_frame));
+            self.machine_capture[NUM_DECKS].push_clocked(
+                main,
+                capture_clock,
+                capture_clock.is_some(),
+                1,
+            );
+            if monitor_source == Some(NUM_DECKS) && monitor_stem == 0 {
+                cue[0] += main[0];
+                cue[1] += main[1];
             }
             let o = &mut out[f * channels..(f + 1) * channels];
             o[0] = main[0];

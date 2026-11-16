@@ -209,7 +209,7 @@ impl AudioEngine {
         self.maschines.get(deck).cloned()
     }
 
-    /// Capture one deck before EQ, from a non-audio thread.
+    /// Capture a performed deck (0..4) or the Master (4) off the audio thread.
     pub fn machine_capture(
         &self,
         deck: usize,
@@ -774,6 +774,11 @@ impl AudioEngine {
     /// The device running the engine, or why there is no sound.
     pub fn status(&self) -> String {
         self.output.borrow().main_status.clone()
+    }
+
+    /// A dedicated headphone route is open, including on a separate stereo device.
+    pub fn headphones_ready(&self) -> bool {
+        self.output.borrow().headphones_ready()
     }
 
     /// Each route's state, in the setup's order.

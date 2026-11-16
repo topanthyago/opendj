@@ -6,6 +6,11 @@ import { ListView, ScrollView } from "scroll.slint";
 export struct MaschineGroup {
     name: string,
     color: color,
+    cue: bool,
+    muted: bool,
+    playing: bool,
+    assigned-pattern-name: string,
+    sound-loaded: int,
 }
 
 export struct MaschineSound {
@@ -77,6 +82,7 @@ export global MaschineUi {
     in property <string> selected-sound-name;
     in property <string> parameter-page;
     in property <string> sample-name;
+    in property <string> sample-origin;
     in property <image> sample-waveform;
     in property <float> sample-start;
     in property <float> sample-end: 1;
@@ -84,6 +90,12 @@ export global MaschineUi {
     in property <float> sample-loop-end: 1;
     in property <bool> sample-loop;
     in property <bool> sample-loaded;
+    in property <bool> sample-staged;
+    in property <int> sample-slice-count;
+    in property <int> sample-selected-slice;
+    in-out property <bool> sample-stage-to-group: true;
+    in-out property <bool> sample-replace-occupied;
+    callback sample-preview(slice: int);
     in property <string> sound-launch-mode;
     in property <bool> sound-launch-audio;
     in property <float> sound-launch-bars;
@@ -585,10 +597,15 @@ component MaschineSampling inherits Rectangle {
     property <int> source-deck: 0;
     property <int> stem: 0;
     property <int> bars-index: 2;
-    property <int> slice: 0;
+    property <int> slice: 1;
     property <bool> edit-mode;
+    property <bool> edit-markers: true;
     background: Theme.well;
-    VerticalLayout {
+    sampling-scroll := ScrollView {
+        content-width: self.visible-width;
+        content-height: sampling-content.preferred-height;
+        sampling-content := VerticalLayout {
+        width: sampling-scroll.visible-width;
         padding: 6px;
         spacing: 5px;
         HorizontalLayout {
@@ -610,18 +627,50 @@ component MaschineSampling inherits Rectangle {
         if !edit-mode: HorizontalLayout {
             height: 24px;
             spacing: 4px;
-            MaschineButton { text: "Deck " + (source-deck + 1); horizontal-stretch: 1; clicked => { source-deck = Math.mod(source-deck + 1, 4); } }
-            MaschineButton { text: ["Mix", "Drums", "Bass", "Melody", "Voice"][stem]; horizontal-stretch: 1; clicked => { stem = Math.mod(stem + 1, 5); } }
-            MaschineButton { text: [1, 2, 4, 8, 16][bars-index] + " bars"; horizontal-stretch: 1; clicked => { bars-index = Math.mod(bars-index + 1, 5); } }
+            MaschineButton { text: source-deck == 4 ? "Master mix" : "Deck " + (source-deck + 1); horizontal-stretch: 1; clicked => { source-deck = Math.mod(source-deck + 1, 5); Controls.set-value(Controls.resolve("[Maschine3]", "sampling_source"), source-deck); } }
+            MaschineButton { text: ["Mix · FX", "Drums · pre FX", "Bass · pre FX", "Melody · pre FX", "Voice · pre FX"][stem]; horizontal-stretch: 1; clicked => { stem = Math.mod(stem + 1, 5); Controls.set-value(Controls.resolve("[Maschine3]", "sampling_stem"), stem); } }
+            MaschineButton { text: ([1, 2, 4, 8, 16][bars-index] * 4) + " beats"; horizontal-stretch: 1; clicked => { bars-index = Math.mod(bars-index + 1, 5); Controls.set-value(Controls.resolve("[Maschine3]", "sampling_bars"), [1, 2, 4, 8, 16][bars-index]); } }
         }
         if !edit-mode: HorizontalLayout {
             height: 24px;
             spacing: 4px;
-            MaschineButton { text: ["Selected Sound", "Grid · 16 Sounds", "Detect · 16 Sounds"][slice]; horizontal-stretch: 1; clicked => { slice = Math.mod(slice + 1, 3); } }
-            MaschineButton { text: "CAPTURE"; width: 68px; clicked => { MaschineUi.sample-capture(source-deck, stem, [1, 2, 4, 8, 16][bars-index], slice); } }
+            MaschineButton { text: ["Whole take", "Split · 16 pads", "Detect · up to 16", "Grid · 1 slice/beat"][slice]; horizontal-stretch: 1; clicked => { slice = Math.mod(slice + 1, 4); Controls.set-value(Controls.resolve("[Maschine3]", "sampling_slice"), slice); } }
+            MaschineButton { text: "CAPTURE"; width: 68px; enabled: !MaschineUi.sample-staged; clicked => { MaschineUi.sample-capture(source-deck, stem, [1, 2, 4, 8, 16][bars-index], slice); } }
             MaschineButton { text: "×"; width: 26px; clicked => { MaschineUi.sample-cancel(); } }
         }
-        if edit-mode: HorizontalLayout {
+        if !edit-mode: HorizontalLayout {
+            height: 24px; spacing: 4px;
+            ControlButton { group: "[Maschine3]"; key: "sampling_next_bar"; text: "NEXT BAR"; horizontal-stretch: 1; }
+            ControlButton { group: "[Maschine3]"; key: "sampling_monitor"; text: "MONITOR · CUE"; horizontal-stretch: 1; }
+            Text { text: Controls.value(Controls.resolve("[Maschine3]", "sampling_recording"), Controls.tick) > 0 ? "REC " + round(100 * Controls.value(Controls.resolve("[Maschine3]", "sampling_progress"), Controls.tick)) + "%" : Controls.value(Controls.resolve("[Maschine3]", "sampling_waiting"), Controls.tick) > 0 ? "ARMED" : ""; color: Theme.text; font-size: 10px; vertical-alignment: center; }
+        }
+        if MaschineUi.sample-staged || Controls.value(Controls.resolve("[Maschine3]", "sampling_recording"), Controls.tick) > 0 || Controls.value(Controls.resolve("[Maschine3]", "sampling_waiting"), Controls.tick) > 0: Text {
+            text: MaschineUi.sample-origin; height: 16px; color: Theme.text-dim; font-size: 10px; overflow: elide;
+        }
+        if MaschineUi.sample-staged: HorizontalLayout {
+            height: 24px; spacing: 4px;
+            MaschineButton { text: MaschineUi.sample-stage-to-group ? "☑ Stage to Group · all slices" : "☐ Stage to Group · selected slice"; horizontal-stretch: 1; clicked => { MaschineUi.sample-stage-to-group = !MaschineUi.sample-stage-to-group; } }
+            MaschineButton { text: "DISCARD"; width: 62px; clicked => { MaschineUi.sample-action("DISCARD"); } }
+        }
+        if MaschineUi.sample-staged: HorizontalLayout {
+            height: 24px; spacing: 4px;
+            MaschineButton { text: MaschineUi.sample-replace-occupied ? "☑ Replace occupied · Undo" : "☐ Replace occupied · Undo"; horizontal-stretch: 1; clicked => { MaschineUi.sample-replace-occupied = !MaschineUi.sample-replace-occupied; } }
+            MaschineButton { text: "APPLY → " + ["A", "B", "C", "D", "E", "F", "G", "H"][round(Controls.value(Controls.resolve("[Maschine3]", "group"), Controls.tick))] + " · CUE"; width: 106px; clicked => { MaschineUi.sample-action("APPLY"); } }
+        }
+        if MaschineUi.sample-staged: HorizontalLayout {
+            height: 24px; spacing: 4px;
+            MaschineButton { text: ["Split · 16", "Detect", "Manual", "Grid · beat"][MaschineUi.sample-slice-mode]; horizontal-stretch: 1; clicked => { MaschineUi.sample-slice-mode = Math.mod(MaschineUi.sample-slice-mode + 1, 4); MaschineUi.sample-action("RESLICE"); } }
+            if MaschineUi.sample-slice-mode == 2: MaschineButton { text: edit-markers ? "MARK" : "RANGE"; width: 46px; clicked => { edit-markers = !edit-markers; } }
+            MaschineButton { text: "◀"; width: 28px; clicked => { MaschineUi.sample-preview(Math.mod(MaschineUi.sample-selected-slice + MaschineUi.sample-slice-count - 1, max(1, MaschineUi.sample-slice-count))); } }
+            Text { text: "Slice " + (MaschineUi.sample-selected-slice + 1) + "/" + MaschineUi.sample-slice-count; color: Theme.text; font-size: 10px; vertical-alignment: center; }
+            MaschineButton { text: "▶"; width: 28px; clicked => { MaschineUi.sample-preview(Math.mod(MaschineUi.sample-selected-slice + 1, max(1, MaschineUi.sample-slice-count))); } }
+        }
+        HorizontalLayout {
+            height: 24px; spacing: 4px;
+            MaschineButton { text: "PREHEAR · CUE"; horizontal-stretch: 1; enabled: MaschineUi.sample-loaded; clicked => { MaschineUi.sample-preview(MaschineUi.sample-staged ? MaschineUi.sample-selected-slice : 0); } }
+            MaschineButton { text: "STOP PREHEAR"; width: 100px; clicked => { MaschineUi.sample-action("STOP"); } }
+        }
+        if edit-mode || MaschineUi.sample-staged: HorizontalLayout {
             height: 54px;
             spacing: 4px;
             MaschineKnob {
@@ -636,27 +685,40 @@ component MaschineSampling inherits Rectangle {
             }
             MaschineKnob {
                 horizontal-stretch: 1; min-width: 0px; tint: tint;
-                parameter: { name: "FADE IN", display: round(MaschineUi.sample-fade-in * 100) + "%", value: MaschineUi.sample-fade-in, enabled: MaschineUi.sample-loaded };
+                parameter: { name: "FADE IN", display: round(MaschineUi.sample-fade-in * 100) + "%", value: MaschineUi.sample-fade-in, enabled: MaschineUi.sample-loaded && !MaschineUi.sample-staged };
                 changed(value) => { MaschineUi.sample-edit("fade-in", value); }
             }
             MaschineKnob {
                 horizontal-stretch: 1; min-width: 0px; tint: tint;
-                parameter: { name: "FADE OUT", display: round(MaschineUi.sample-fade-out * 100) + "%", value: MaschineUi.sample-fade-out, enabled: MaschineUi.sample-loaded };
+                parameter: { name: "FADE OUT", display: round(MaschineUi.sample-fade-out * 100) + "%", value: MaschineUi.sample-fade-out, enabled: MaschineUi.sample-loaded && !MaschineUi.sample-staged };
                 changed(value) => { MaschineUi.sample-edit("fade-out", value); }
             }
         }
-        if edit-mode: HorizontalLayout {
+        if edit-mode && !MaschineUi.sample-staged: HorizontalLayout {
             height: 24px;
             spacing: 4px;
             MaschineButton {
-                text: ["Grid · 16 Sounds", "Detect · 16 Sounds", "Manual · " + MaschineUi.sample-markers.length + "/17"][MaschineUi.sample-slice-mode];
+                text: ["Split · 16 Sounds", "Detect · up to 16 Sounds", "Manual · " + MaschineUi.sample-markers.length + "/17"][MaschineUi.sample-slice-mode];
                 horizontal-stretch: 1;
                 clicked => { MaschineUi.sample-slice-mode = Math.mod(MaschineUi.sample-slice-mode + 1, 3); }
             }
             if MaschineUi.sample-slice-mode == 2: MaschineButton { text: "CLEAR"; width: 44px; clicked => { MaschineUi.sample-action("clear-markers"); } }
         }
+        if MaschineUi.sample-staged: Rectangle {
+            height: 50px;
+            for index in 16: MaschineButton {
+                x: Math.mod(index, 8) * parent.width / 8;
+                y: floor(index / 8) * 25px;
+                width: parent.width / 8 - 2px; height: 23px;
+                text: (index + 1) + "";
+                enabled: index < MaschineUi.sample-slice-count;
+                on: index == MaschineUi.sample-selected-slice;
+                tint: root.tint;
+                clicked => { MaschineUi.sample-preview(index); }
+            }
+        }
         Rectangle {
-            vertical-stretch: 1;
+            height: 100px;
             clip: true;
             Image { width: parent.width; height: parent.height; source: MaschineUi.sample-waveform; image-fit: fill; }
             if MaschineUi.sample-loaded: Rectangle {
@@ -675,18 +737,18 @@ component MaschineSampling inherits Rectangle {
                 mouse-cursor: crosshair;
                 pointer-event(e) => {
                     if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
-                        if edit-mode && MaschineUi.sample-slice-mode == 2 { MaschineUi.sample-marker(clamp(self.mouse-x / self.width, 0, 1)); }
+                        if (edit-mode || MaschineUi.sample-staged) && MaschineUi.sample-slice-mode == 2 && edit-markers { MaschineUi.sample-marker(clamp(self.mouse-x / self.width, 0, 1)); }
                         else { range-start = clamp(self.mouse-x / self.width, 0, 1); }
                     }
                     else if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
-                        if edit-mode && MaschineUi.sample-slice-mode == 2 { return; }
+                        if (edit-mode || MaschineUi.sample-staged) && MaschineUi.sample-slice-mode == 2 && edit-markers { return; }
                         let end = clamp(self.mouse-x / self.width, 0, 1);
                         MaschineUi.sample-range(min(range-start, end), max(range-start, end));
                     }
                 }
             }
         }
-        Rectangle {
+        if !MaschineUi.sample-staged: Rectangle {
             property <int> columns: root.width < 350px ? 2 : 4;
             height: root.width < 350px ? 56px : 26px;
             for action[i] in ["TRIM", "NORMALIZE", "REVERSE", "SLICE"]: MaschineButton {
@@ -698,6 +760,7 @@ component MaschineSampling inherits Rectangle {
                 clicked => { MaschineUi.sample-action(action); }
             }
         }
+    }
     }
     launch-options := PopupWindow {
         x: 6px; y: 62px;
@@ -977,15 +1040,25 @@ export component MaschinePanel inherits Rectangle {
             }
         }
         HorizontalLayout {
-            height: 26px;
-            spacing: 4px;
-            for letter[i] in ["A", "B", "C", "D", "E", "F", "G", "H"]: MaschineButton {
-                text: letter;
-                width: 26px;
-                tint: MaschineUi.groups[i].color;
-                on: i == group-index;
-                clicked => { Controls.set-value(Controls.resolve(group, "group"), i); }
+            height: 66px; spacing: 4px;
+            for letter[i] in ["A", "B", "C", "D", "E", "F", "G", "H"]: VerticalLayout {
+                horizontal-stretch: 1; min-width: 0px; spacing: 2px;
+                MaschineButton {
+                    text: (MaschineUi.groups[i].playing ? "▶ " : "") + letter + (MaschineUi.groups[i].muted ? " · M" : "");
+                    height: 24px; tint: MaschineUi.groups[i].color; on: i == group-index;
+                    clicked => { Controls.set-value(Controls.resolve(group, "group"), i); }
+                }
+                Text { text: MaschineUi.groups[i].assigned-pattern-name != "" ? MaschineUi.groups[i].assigned-pattern-name : MaschineUi.groups[i].sound-loaded > 0 ? "Pads / free" : "Empty"; height: 14px; color: Theme.text-dim; font-size: 8px; overflow: elide; horizontal-alignment: center; }
+                MaschineButton {
+                    text: MaschineUi.groups[i].cue ? "CUE" : "MASTER"; height: 22px;
+                    tint: MaschineUi.groups[i].cue ? Theme.c-ffd60a : MaschineUi.groups[i].color;
+                    on: MaschineUi.groups[i].cue;
+                    clicked => { Controls.set-value(Controls.resolve(group, "group_cue" + (i + 1)), MaschineUi.groups[i].cue ? 0 : 1); }
+                }
             }
+        }
+        HorizontalLayout {
+            height: 26px; spacing: 4px;
             MaschineButton {
                 text: (scene < MaschineUi.scenes.length ? MaschineUi.scenes[scene].name : "Scene " + (scene + 1)) + " ▾";
                 horizontal-stretch: 1;
@@ -1041,6 +1114,12 @@ export component MaschinePanel inherits Rectangle {
         HorizontalLayout {
             height: 24px;
             spacing: 5px;
+            MaschineButton {
+                text: MaschineUi.groups[group-index].cue ? "RELEASE → MASTER NOW" : "SEND GROUP TO CUE";
+                on: MaschineUi.groups[group-index].cue;
+                tint: Theme.c-ffd60a;
+                clicked => { Controls.set-value(Controls.resolve(group, "group_cue" + (group-index + 1)), MaschineUi.groups[group-index].cue ? 0 : 1); }
+            }
             MaschineButton {
                 text: MaschineUi.assigned-pattern >= 0 ? "STOP GROUP" : "PLAY GROUP";
                 clicked => { MaschineUi.toggle-group-pattern(); }

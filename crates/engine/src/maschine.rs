@@ -32,6 +32,10 @@ pub use mxprj::sound_info::SoundInfo;
 #[path = "maschine_paths.rs"]
 mod project_paths;
 
+#[path = "maschine_preview.rs"]
+mod sampling_preview;
+pub use sampling_preview::SamplingPreview;
+
 use crate::effects::BLOCK;
 use crate::groove::{GrooveControls, GrooveManualHit, GroovePadEdit, GrooveStep, Source};
 use crate::groove_dice::{self, Dice, Habits, Move, Track};
@@ -216,7 +220,9 @@ impl MaschineControls {
         };
         Self {
             group: create("group", 0.0, 0.0, 7.0),
-            group_cue: std::array::from_fn(|g| registry.toggle(&group, &format!("group_cue{}", g + 1))),
+            group_cue: std::array::from_fn(|g| {
+                registry.toggle(&group, &format!("group_cue{}", g + 1))
+            }),
             sound: create("sound", 0.0, 0.0, 15.0),
             scene: create("scene", 0.0, 0.0, 127.0),
             pattern: create("pattern", 0.0, 0.0, 127.0),
@@ -283,41 +289,9 @@ impl MaschineControls {
     }
 }
 
-/// Isolate the SDK Cue bus in the playback copy. The saved document retains all
-/// user routing. An existing distinct Cue output also carries its shared routes.
-pub fn cue_playback_project(project: &Project) -> Result<(Project, usize), String> {
-    use deckard_model::AudioDest;
-    let mut playback = project.clone();
-    if let AudioDest::Ext(bus) = project.cue_output {
-        if (0..deckard_engine::OUTPUTS as i64).contains(&bus)
-            && project.cue_output != project.master_output
-        {
-            return Ok((playback, bus as usize));
-        }
-    }
-    let mut used = [false; deckard_engine::OUTPUTS];
-    let mut mark = |dest: AudioDest| {
-        if let AudioDest::Ext(bus) = dest {
-            if let Some(entry) = usize::try_from(bus).ok().and_then(|bus| used.get_mut(bus)) {
-                *entry = true;
-            }
-        }
-    };
-    mark(project.master_output);
-    for group in &project.groups {
-        mark(group.channel.dest);
-        for dest in group.channel.aux_dest { mark(dest); }
-        for sound in &group.sounds {
-            mark(sound.channel.dest);
-            for dest in sound.channel.aux_dest { mark(dest); }
-        }
-    }
-    for output in &project.extra_outs { mark(output.dest); }
-    let cue_bus = used.iter().position(|used| !used)
-        .ok_or("No free output for isolated Cue playback")?;
-    playback.cue_output = AudioDest::Ext(cue_bus as i64);
-    Ok((playback, cue_bus))
-}
+#[path = "maschine_cue.rs"]
+mod cue_routing;
+pub use cue_routing::playback_project as cue_playback_project;
 
 struct Prepared {
     engine: Engine,
@@ -376,6 +350,7 @@ struct Shared {
     preview: Mutex<rtrb::Producer<Option<Arc<Sample>>>>,
     retired_previews: Mutex<rtrb::Consumer<Arc<Sample>>>,
     snapshot: RwLock<Option<Snapshot>>,
+    sampling_preview: RwLock<Option<Arc<SamplingPreview>>>,
     revision: AtomicU64,
     project_generation: AtomicU64,
     groove_overflow: AtomicBool,
@@ -1732,8 +1707,12 @@ impl MaschineHandle {
             return Err("empty preview sample".into());
         }
         self.shared.collect();
-        self.shared.preview.lock().map_err(|_| "preview queue unavailable")?
-            .push(Some(sample)).map_err(|_| "preview queue is full".to_string())
+        self.shared
+            .preview
+            .lock()
+            .map_err(|_| "preview queue unavailable")?
+            .push(Some(sample))
+            .map_err(|_| "preview queue is full".to_string())
     }
 
     /// Preview a file from the browser without changing the project.
@@ -1781,6 +1760,7 @@ pub(crate) struct Maschine {
     preview_sample: Option<Arc<Sample>>,
     preview_position: f64,
     preview_active: bool,
+    source_cue: Vec<[f32; 2]>,
     rate: f64,
     scratch: Vec<f32>,
     cue_bus: usize,
@@ -1845,6 +1825,7 @@ impl Maschine {
             preview: Mutex::new(preview_tx),
             retired_previews: Mutex::new(preview_retired_rx),
             snapshot: RwLock::new(None),
+            sampling_preview: RwLock::new(None),
             revision: AtomicU64::new(0),
             project_generation: AtomicU64::new(1),
             groove_overflow: AtomicBool::new(false),
@@ -2048,7 +2029,11 @@ impl Maschine {
                                 *seen = version;
                                 let cue = control.get_bool();
                                 if doc.project().groups.get(group).is_some_and(|g| g.cue != cue) {
-                                    match doc.set_cue(Target::Group(group), cue) {
+                                    let result = if cue && cue_playback_project(doc.project()).is_ok_and(|(_, bus)| bus >= deckard_engine::OUTPUTS) {
+                                        control.set_bool(false);
+                                        Err("All SDK outputs are assigned. Free a stereo output to route this Group to Cue".into())
+                                    } else { doc.set_cue(Target::Group(group), cue) };
+                                    match result {
                                         Ok(()) => cue_changed = true,
                                         Err(error) => editor.shared.set_error(error),
                                     }
@@ -2101,6 +2086,7 @@ impl Maschine {
                 preview_sample: None,
                 preview_position: 0.0,
                 preview_active: false,
+                source_cue: vec![[0.0; 2]; BLOCK],
                 rate,
                 scratch: vec![0.0; BLOCK * 2],
                 cue_bus: 1,
@@ -2394,7 +2380,8 @@ impl Maschine {
         self.active = true;
         self.poll();
         self.engine.set_recording(self.controls.record.get_bool());
-        self.engine.metronome = self.controls.metronome.get_bool();
+        self.engine.metronome =
+            self.controls.metronome.get_bool() && self.cue_bus < deckard_engine::OUTPUTS;
         if self.controls.choke.get_bool() {
             self.controls.choke.set_bool(false);
             self.engine.schedule(0, Live::ChokeAll);
@@ -2627,6 +2614,7 @@ impl Maschine {
                 }
             }
         }
+        self.source_cue[..cue.len()].copy_from_slice(cue);
         if self.preview_active {
             if let Some(sample) = &self.preview_sample {
                 let step = sample.rate as f64 / self.rate;
@@ -2693,6 +2681,15 @@ impl Maschine {
         }
     }
 
+    /// Musical Cue audio before the browser/sample prehear is added.
+    pub fn project_generation(&self) -> u64 {
+        self.shared.project_generation.load(Ordering::Acquire)
+    }
+
+    pub fn capture_cue_frame(&self, frame: usize) -> [f32; 2] {
+        self.source_cue[frame]
+    }
+
     pub fn active(&self) -> bool {
         self.active
     }
@@ -2707,8 +2704,10 @@ impl Maschine {
             for (frame, samples) in block.iter_mut().zip(audio.chunks_exact(2)) {
                 *frame = [samples[0], samples[1]];
             }
-            for (frame, samples) in cue.iter_mut().zip(self.external[self.cue_bus].chunks_exact(2)) {
-                *frame = [samples[0], samples[1]];
+            if let Some(buffer) = self.external.get(self.cue_bus) {
+                for (frame, samples) in cue.iter_mut().zip(buffer.chunks_exact(2)) {
+                    *frame = [samples[0], samples[1]];
+                }
             }
         }
     }

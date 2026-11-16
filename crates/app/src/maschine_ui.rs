@@ -643,6 +643,7 @@ pub fn install(
                         app.global::<MaschineUi>().set_instrument_menu_open(true);
                     }
                     UiRequest::Sampling(deck) if deck == DECK + 1 => show_panel(&app, 2),
+                    UiRequest::SamplingApply(deck) if deck == DECK + 1 => app.global::<MaschineUi>().invoke_sample_action("APPLY".into()),
                     UiRequest::Browse(deck) if deck == DECK + 1 => show_panel(&app, 3),
                     UiRequest::PluginEditor(deck, chain, slot) if deck == DECK + 1 => {
                         let level = match chain { Chain::Master => 0, Chain::Group(_) => 1, Chain::Sound(_, _) => 2 };
@@ -696,6 +697,9 @@ pub fn install(
                     }));
                     seen.set(Some(key));
                 }
+            }
+            if let Some(project) = handle.snapshot_cached() {
+                show_groups(&app, &project, indices.3, &registry);
             }
             let view = surface.view(DECK + 1).unwrap_or_default();
             for i in 0..8 {
@@ -892,6 +896,65 @@ fn save_project(
         .map_err(|e| format!("Project saved, but recent history could not be saved: {e}"))
 }
 
+fn show_groups(
+    app: &AppWindow,
+    project: &Project,
+    focused_scene: usize,
+    registry: &ControlRegistry,
+) {
+    let playing = registry
+        .get("[Maschine3]", "playing")
+        .is_some_and(|control| control.get_bool());
+    let playing_scene = registry
+        .get("[Maschine3]", "playing_scene")
+        .map_or(-1.0, |control| control.get());
+    let scene = if playing && playing_scene >= 0.0 {
+        playing_scene as usize
+    } else {
+        focused_scene
+    };
+    app.global::<MaschineUi>().set_groups(model(
+        (0..8)
+            .map(|i| {
+                let group = project.groups.get(i);
+                let assigned = project
+                    .scenes
+                    .get(scene)
+                    .and_then(|scene| scene.patterns.iter().find(|(g, _)| *g == i))
+                    .and_then(|(_, pattern)| group?.patterns.get(*pattern));
+                let metered = (0..16).any(|sound| {
+                    registry
+                        .get(
+                            "[Maschine3]",
+                            &format!("group{}_sound{}_meter", i + 1, sound + 1),
+                        )
+                        .is_some_and(|control| control.get() > 0.0001)
+                });
+                MaschineGroup {
+                    name: group.map_or("", |group| group.name.as_str()).into(),
+                    color: color(group.map_or(Color::Default, |group| group.color), i * 2),
+                    cue: group.is_some_and(|group| group.cue),
+                    muted: group.is_some_and(|group| group.muted),
+                    playing: metered
+                        || (playing
+                            && assigned.is_some()
+                            && group.is_some_and(|group| !group.muted)),
+                    assigned_pattern_name: assigned
+                        .map_or("", |pattern| pattern.name.as_str())
+                        .into(),
+                    sound_loaded: group.map_or(0, |group| {
+                        group
+                            .sounds
+                            .iter()
+                            .filter(|sound| !sound.slots.is_empty())
+                            .count()
+                    }) as i32,
+                }
+            })
+            .collect(),
+    ));
+}
+
 fn show(
     app: &AppWindow,
     project: &Project,
@@ -906,17 +969,6 @@ fn show(
     ui.set_sound_launch_audio_mode(slot.and_then(|s| s.param("mode")).unwrap_or(0.0) as i32);
     ui.set_sound_launch_audio_engine(slot.and_then(|s| s.param("engine")).unwrap_or(1.0) as i32);
     ui.set_project_name(project.name.as_str().into());
-    ui.set_groups(model(
-        (0..8)
-            .map(|i| {
-                let item = project.groups.get(i);
-                MaschineGroup {
-                    name: item.map(|g| g.name.as_str()).unwrap_or("").into(),
-                    color: color(item.map(|g| g.color).unwrap_or_default(), i * 2),
-                }
-            })
-            .collect(),
-    ));
     let selected = project.groups.get(group);
     ui.set_sounds(model(
         (0..16)

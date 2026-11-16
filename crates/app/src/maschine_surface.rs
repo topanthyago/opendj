@@ -23,6 +23,7 @@ use crate::maschine_projects::{recent_name, recent_path, Projects};
 pub enum UiRequest {
     Instrument(usize),
     Sampling(usize),
+    SamplingApply(usize),
     Browse(usize),
     PluginEditor(usize, Chain, usize),
     File(usize, &'static str),
@@ -1782,12 +1783,36 @@ impl Deck {
         view.sampling.pages[0] = vec![surface::KnobPage {
             name: "CAPTURE".into(),
             knobs: vec![
-                choice("sampling_source", "DECK", 3.0),
+                choice("sampling_source", "DECK / MASTER", 4.0),
                 choice("sampling_stem", "STEM", 4.0),
                 choice("sampling_bars", "BARS", 16.0),
-                choice("sampling_slice", "SLICES", 2.0),
+                choice("sampling_slice", "SLICES", 3.0),
             ],
         }];
+        if let Some(preview) = self.handle.sampling_preview() {
+            let sample = preview.sample.clone();
+            if self
+                .sample_data
+                .as_ref()
+                .is_none_or(|old| !Arc::ptr_eq(old, &sample))
+            {
+                self.sample_overview = peaks(&sample.frames, (0, sample.frames.len()), 512);
+                self.sample_data = Some(sample.clone());
+                self.sample_wave_range = None;
+            }
+            view.sampling.sample = Some(surface::SampleView {
+                name: "CAPTURE · CUE · APPLY TO GROUP".into(),
+                frames: sample.frames.len(),
+                rate: sample.rate,
+                overview: self.sample_overview.clone(),
+                detail: self.sample_overview.clone(),
+                view: (0.0, sample.frames.len() as f64),
+                play: (0, sample.frames.len()),
+                slices: preview.ranges.iter().map(|range| range.0).collect(),
+                ..Default::default()
+            });
+            return;
+        }
         let (g, s, z) = (self.group(), self.sound(), self.sampling_zone);
         let Some(sound) = project.groups.get(g).and_then(|g| g.sounds.get(s)) else {
             return;
@@ -1953,6 +1978,9 @@ impl Deck {
     }
 
     fn sample_knob(&mut self, index: usize, value: f64) -> Result<(), String> {
+        if self.handle.sampling_preview().is_some() && self.sampling_tab != 0 {
+            return Err("Edit the prepared slice in Sampling".into());
+        }
         if !value.is_finite() {
             return Err("Invalid sample parameter".into());
         }
@@ -2046,6 +2074,25 @@ impl Deck {
 
     fn sample_call(&mut self, call: surface::SamplingCall) -> Result<(), String> {
         use surface::SamplingCall;
+        if self.handle.sampling_preview().is_some() {
+            return match call {
+                SamplingCall::Prehear(start, _) => {
+                    if self.get("cue_available") <= 0.0 {
+                        return Err("Headphone route unavailable".into());
+                    }
+                    self.handle.preview_staged(start)
+                }
+                SamplingCall::ApplySlices => {
+                    self.ui
+                        .lock()
+                        .unwrap()
+                        .push(UiRequest::SamplingApply(self.deck));
+                    Ok(())
+                }
+                SamplingCall::View(_, _) => Ok(()),
+                _ => Err("Edit the prepared take in Sampling, then Apply to Group · Cue".into()),
+            };
+        }
         let (g, s, z) = (self.group(), self.sound(), self.sampling_zone);
         match call {
             SamplingCall::View(start, end) => {
