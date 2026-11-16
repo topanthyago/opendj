@@ -990,7 +990,11 @@ impl Outputs {
 
     pub(crate) fn headphones_ready(&self) -> bool {
         !self.health.lost.load(Ordering::Acquire)
-            && self.setup.routes.iter().zip(&self.route_connected)
+            && self
+                .setup
+                .routes
+                .iter()
+                .zip(&self.route_connected)
                 .any(|(route, connected)| route.role == Role::Headphones && *connected)
     }
 
