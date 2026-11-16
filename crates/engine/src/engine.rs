@@ -1290,6 +1290,40 @@ impl Frames for Audio {
     }
 }
 
+/// Metadata-based grouping works for four-stem and split drums/instruments layouts.
+fn looper_stem_selection(stems: &Stems, selected: usize) -> [f32; MAX_STEMS] {
+    std::array::from_fn(|k| {
+        let Some(info) = stems.info.get(k) else {
+            return 0.0;
+        };
+        let words: &[&str] = match selected {
+            1 => &["drum", "kick", "hihat", "hi-hat", "snare", "cymbal"],
+            2 => &["bass"],
+            3 => &["instru", "other", "melody", "synth", "piano", "guitar"],
+            4 => &["vocal", "voice"],
+            _ => &[],
+        };
+        if words.iter().any(|word| {
+            info.name
+                .as_bytes()
+                .windows(word.len())
+                .any(|part| part.eq_ignore_ascii_case(word.as_bytes()))
+        }) {
+            1.0
+        } else {
+            0.0
+        }
+    })
+}
+
+fn looper_stem_range_ready(stems: &Stems, start: usize, end: usize) -> bool {
+    start <= end
+        && stems.has_frame(start)
+        && stems.has_frame(end)
+        && ((start / crate::stems::CHUNK + 1)..=end / crate::stems::CHUNK)
+            .all(|chunk| stems.has_frame(chunk * crate::stems::CHUNK))
+}
+
 /// A deck's stems mixed at their gains. The gains glide from `from` to `to`
 /// over the `span` frames read after [`Frames::begin`], so a mute or a fader
 /// move doesn't click, whether the frames go straight out or through the
@@ -1655,6 +1689,13 @@ pub struct Engine {
     loopers: Loopers,
     looper_buf: Vec<Vec<[f32; 2]>>,
     looper_seen: [bool; NUM_DECKS],
+    looper_source: Vec<Vec<[f32; 2]>>,
+    looper_stem_audio: Vec<Vec<[f32; 2]>>,
+    looper_source_shifter: [KeyShifter; NUM_DECKS],
+    looper_source_key: [(usize, usize, usize); NUM_DECKS],
+    looper_source_valid: [bool; NUM_DECKS],
+    // Per source deck: start/end track seconds, then armed/recording state.
+    looper_markers: [[ControlHandle; 3]; NUM_DECKS],
     last_main: Vec<[f32; 2]>,
     last_main_len: usize,
     looper_supply: Option<crate::looper::LooperSupply>,
@@ -1990,6 +2031,20 @@ impl Engine {
                 loopers,
                 looper_buf: vec![vec![[0.0; 2]; BLOCK]; NUM_DECKS],
                 looper_seen: [false; NUM_DECKS],
+                looper_source: vec![vec![[0.0; 2]; BLOCK]; NUM_DECKS],
+                looper_stem_audio: vec![vec![[0.0; 2]; BLOCK]; NUM_DECKS],
+                looper_source_shifter: std::array::from_fn(|_| KeyShifter::new(sample_rate)),
+                looper_source_key: [(0, 0, 0); NUM_DECKS],
+                looper_source_valid: [false; NUM_DECKS],
+                looper_markers: std::array::from_fn(|deck| {
+                    let group = crate::controls::deck_group(deck);
+                    [
+                        "looper_record_start",
+                        "looper_record_end",
+                        "looper_record_state",
+                    ]
+                    .map(|key| registry.indicator(&group, key, f64::MAX))
+                }),
                 last_main: vec![[0.0; 2]; BLOCK],
                 last_main_len: 0,
                 looper_supply: Some(looper_supply),
@@ -3129,12 +3184,36 @@ impl Engine {
             self.loopers.loopers[i].active() && self.decks[i].track.is_none()
         });
         let looper_in: [usize; NUM_DECKS] = std::array::from_fn(|i| {
-            if looper_on[i] {
+            if looper_on[i] && self.loopers.loopers[i].source_deck() == 0 {
                 self.loopers.loopers[i].input()
             } else {
                 0
             }
         });
+        let looper_sources: [(usize, usize); NUM_DECKS] = std::array::from_fn(|k| {
+            let l = &self.loopers.loopers[k];
+            (l.source_deck(), l.source_stem())
+        });
+        for (k, &(deck, stem)) in looper_sources.iter().enumerate() {
+            let identity = deck
+                .checked_sub(1)
+                .and_then(|d| self.decks[d].audio.as_ref())
+                .map_or(0, |a| Arc::as_ptr(a) as usize);
+            let key = if deck == 0 {
+                (0, looper_in[k], 0)
+            } else {
+                (deck, stem, identity)
+            };
+            if key != self.looper_source_key[k] {
+                self.looper_source_key[k] = key;
+                self.looper_source_valid[k] = false;
+                self.looper_source_shifter[k].stop();
+                self.loopers.loopers[k].source_changed();
+            }
+        }
+        let mut looper_capture_ready = [false; NUM_DECKS];
+        let mut looper_capture_shifted = [false; NUM_DECKS];
+        let mut looper_stem_weights = [[0.0; MAX_STEMS]; NUM_DECKS];
         let master_key = self
             .link_master
             .and_then(|k| Key::from_mixxx_number(self.decks[k].c.key.get()));
@@ -3485,6 +3564,69 @@ impl Engine {
                 _ if shifting => d.declick = None,
                 _ => {}
             }
+            // A stem capture has its own preallocated time-stretcher. The
+            // DJ's audible stem gains and its stem-FX send stay independent.
+            for (k, &(source_deck, source_stem)) in looper_sources.iter().enumerate() {
+                if !looper_on[k] || source_deck != i + 1 {
+                    continue;
+                }
+                let moving = d.audio.is_some() && (from != 0.0 || target != 0.0);
+                if source_stem == 0 {
+                    looper_capture_ready[k] = moving;
+                    self.looper_source_shifter[k].stop();
+                    continue;
+                }
+                let Some((audio, stems)) = d
+                    .audio
+                    .as_ref()
+                    .and_then(|a| Some((a, a.stems()?.current())))
+                else {
+                    self.looper_source_shifter[k].stop();
+                    continue;
+                };
+                let weights = looper_stem_selection(stems, source_stem);
+                looper_stem_weights[k] = weights;
+                let reach = from.abs().max(target.abs()) * ratio * frames as f64
+                    + if shifting { sr } else { 2.0 };
+                let mut start = (d.pos - reach).max(0.0) as usize;
+                let mut end = ((d.pos + reach).max(0.0) as usize).min(audio.len().saturating_sub(1));
+                if let Some((a, b)) = loop_frames {
+                    start = start.min(a.max(0.0) as usize);
+                    end = end.max(b.max(0.0) as usize).min(audio.len().saturating_sub(1));
+                }
+                let ready = moving
+                    && weights.iter().any(|&w| w > 0.0)
+                    && looper_stem_range_ready(stems, start, end);
+                looper_capture_ready[k] = ready;
+                if !ready {
+                    self.looper_source_shifter[k].stop();
+                    continue;
+                }
+                if shifting {
+                    let speed = from + (target - from) * (frames + 1) as f64 / (2 * frames) as f64;
+                    let transpose = transpose_factor(semitones, speed, keylock);
+                    let mix = StemMix::solo(
+                        stems,
+                        audio,
+                        weights,
+                        weights,
+                        (0.0, 0.0),
+                        speed * ratio * frames as f64,
+                    );
+                    self.looper_source_shifter[k].render(
+                        &mix,
+                        d.pos,
+                        speed,
+                        ratio,
+                        transpose,
+                        loop_frames,
+                        &mut self.looper_stem_audio[k][..frames],
+                    );
+                    looper_capture_shifted[k] = true;
+                } else {
+                    self.looper_source_shifter[k].stop();
+                }
+            }
             Plan {
                 stems: stem_gains,
                 stem_upgrade: upgrade,
@@ -3729,22 +3871,56 @@ impl Engine {
         // Loopers play and record on the same beat as the Groove Boxes.
         let mut looper_buf = std::mem::take(&mut self.looper_buf);
         if looper_on.iter().any(|&on| on) {
-            let (leader, _) = self.leading_beat();
+            let (leader, leader_deck) = self.leading_beat();
             let link_beat = link.map(|m| (m.tempo, m.beat));
+            for marker in &self.looper_markers {
+                marker[2].set(0.0);
+            }
             for i in (0..NUM_DECKS).filter(|&i| looper_on[i]) {
+                let (source_deck, _) = looper_sources[i];
+                let selected = source_deck.checked_sub(1);
+                let selected_clock = selected.and_then(|k| {
+                    let d = &self.decks[k];
+                    Some((d.effective_bpm(), d.track.as_ref()?.beat_at(d.seconds())))
+                });
                 let l = &mut self.loopers.loopers[i];
-                let source = pick_source(leader, link_beat, l.c.bpm.get());
-                let input = looper_in[i]
-                    .checked_sub(1)
+                let ready =
+                    source_deck == 0 || (looper_capture_ready[i] && self.looper_source_valid[i]);
+                l.c.source_ready.set_bool(ready);
+                l.c.source_missing.set_bool(!ready);
+                let source = pick_source(selected_clock.or(leader), link_beat, l.c.bpm.get());
+                let input = (source_deck == 0)
+                    .then_some(looper_in[i])
+                    .and_then(|input| input.checked_sub(1))
                     .and_then(|k| self.inputs.get(k))
                     .map(|inp| &inp.raw[..frames]);
-                let mix = (input.is_none() && self.last_main_len > 0)
-                    .then(|| &self.last_main[..self.last_main_len]);
+                let mix = if selected.is_some() {
+                    ready.then(|| &self.looper_source[i][..self.last_main_len])
+                } else {
+                    (input.is_none() && self.last_main_len > 0)
+                        .then(|| &self.last_main[..self.last_main_len])
+                };
                 let play = self.decks[i].c.play.get_bool();
                 let heard = Heard { input, mix };
                 if l.render(play, source, heard, &mut looper_buf[i][..frames]) {
                     self.decks[i].c.play.set_bool(true);
                 }
+                if let Some((state, start, end)) = l.recording_span() {
+                    if let Some(deck) = selected.or(leader_deck) {
+                        if let Some(track) = self.decks[deck].track.as_ref() {
+                            let marker = &self.looper_markers[deck];
+                            if marker[2].get() < state as f64 {
+                                marker[0].set(track.seconds_at(start));
+                                marker[1].set(track.seconds_at(end));
+                                marker[2].set(state as f64);
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            for marker in &self.looper_markers {
+                marker[2].set(0.0);
             }
         }
         for (i, wave) in self.live_waves.iter_mut().enumerate() {
@@ -3800,6 +3976,20 @@ impl Engine {
                             s = crossfade(d.shifted[f], s, (f + 1) as f32 / n as f32);
                         }
                         _ => {}
+                    }
+                    for (k, &(source_deck, source_stem)) in looper_sources.iter().enumerate() {
+                        if source_deck == i + 1
+                            && source_stem > 0
+                            && looper_capture_ready[k]
+                            && !looper_capture_shifted[k]
+                        {
+                            let stems = audio.stems().expect("validated stem source").current();
+                            let weights = looper_stem_weights[k];
+                            self.looper_stem_audio[k][f] = read(
+                                &StemMix::solo(stems, audio, weights, weights, (0.0, 0.0), 1.0),
+                                d.pos,
+                            );
+                        }
                     }
                     let step = v * p.ratio;
                     if let Some(dc) = &mut d.declick {
@@ -3929,6 +4119,22 @@ impl Engine {
                 *d = [d[0] + x[0], d[1] + x[1]];
             }
         }
+        // These taps are consumed next callback, like INPUT=MIX. Mix is
+        // post deck FX, before fader/crossfader. Isolated stems are pre FX.
+        for (k, &(source_deck, source_stem)) in looper_sources.iter().enumerate() {
+            self.looper_source_valid[k] = looper_capture_ready[k];
+            if let Some(deck) = source_deck
+                .checked_sub(1)
+                .filter(|_| looper_capture_ready[k])
+            {
+                let from = if source_stem == 0 {
+                    &deck_buf[deck]
+                } else {
+                    &self.looper_stem_audio[k]
+                };
+                self.looper_source[k][..frames].copy_from_slice(&from[..frames]);
+            }
+        }
         for f in 0..frames {
             let r = (f + 1) as f32 / frames as f32;
             let lerp = |(a, b): (f32, f32)| a + (b - a) * r;
@@ -4039,10 +4245,9 @@ impl Engine {
             let mic_gain = if mic.in_mixer { 0.0 } else { gm };
             let bal = balance_gains(lerp(balance));
             for c in 0..2 {
-                self.last_main[f][c] =
-                    (source_main[c] * ducked + source_keep[c] + m[c] * mic_gain)
-                        * lerp(master)
-                        * bal[c];
+                self.last_main[f][c] = (source_main[c] * ducked + source_keep[c] + m[c] * mic_gain)
+                    * lerp(master)
+                    * bal[c];
             }
             main_buf[f] = main;
             cue_buf[f] = cue;
@@ -7986,6 +8191,82 @@ mod tests {
         load(&mut input, 1, short_track(120.0, 4.0));
         talk(&mut engine, &mut tx, 0.05, sine(500.0, 0.4));
         assert_eq!(ch(2, "live_input").get(), 0.0);
+    }
+
+    #[test]
+    fn looper_stem_groups_and_readiness_follow_metadata() {
+        let frames = vec![[[0.0; 2]; MAX_STEMS]; 8];
+        let normal = Stems::from_frames(crate::stems::default_info(), SR as u32, &frames);
+        assert_eq!(looper_stem_selection(&normal, 1), [1.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(looper_stem_selection(&normal, 4), [0.0, 0.0, 0.0, 1.0, 0.0]);
+        let info = ["Kick", "HiHat", "Bass", "Instru", "Vocal"].map(|name| crate::stems::StemInfo {
+            name: name.into(), color: 0,
+        }).to_vec();
+        let split = Stems::from_frames(info, SR as u32, &frames);
+        assert_eq!(looper_stem_selection(&split, 1), [1.0, 1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(looper_stem_selection(&split, 3), [0.0, 0.0, 0.0, 1.0, 0.0]);
+        assert!(looper_stem_range_ready(&split, 0, 7));
+        assert!(!looper_stem_range_ready(&split, 0, 8));
+    }
+
+    #[test]
+    fn looper_stem_source_uses_keylock_quantizes_and_rejects_a_changed_unprepared_track() {
+        let (reg, mut engine, mut input) = setup();
+        let track = long_tone_track(220.0, "Am", 8.0);
+        let frames: Vec<_> = (0..(SR * 8.0) as usize).map(|i| {
+            let mut frame = [[0.0; 2]; MAX_STEMS];
+            let voice = (std::f64::consts::TAU * 600.0 * i as f64 / SR).sin() as f32 * 0.2;
+            frame[3] = [voice; 2];
+            frame
+        }).collect();
+        track.audio.as_ref().unwrap().set_stems(Stems::from_frames(
+            crate::stems::default_info(), SR as u32, &frames));
+        load(&mut input, 0, track);
+        run(&mut engine, 0.02);
+        let lp = |key: &str| reg.get("[Looper2]", key).unwrap();
+        lp("enabled").set_bool(true);
+        let mut supply = engine.take_looper_supply().unwrap();
+        supply.to_engine.push((1, crate::looper::LooperMemory::new(SR))).ok().unwrap();
+        lp("source_deck").set(1.0);
+        lp("source_stem").set(4.0);
+        lp("length").set(1.0);
+        reg.get("[Channel1]", "keylock").unwrap().set_bool(true);
+        reg.get("[Channel1]", "rate").unwrap().set(0.25);
+        reg.get("[Channel1]", "play").unwrap().set_bool(true);
+        run(&mut engine, 0.3);
+        assert!(lp("source_ready").get_bool());
+        assert!(engine.looper_source_shifter[1].is_active());
+        let mut heard = Vec::new();
+        let mut out = vec![0.0; 512 * 2];
+        for _ in 0..100 {
+            engine.process(&mut out, 2);
+            heard.extend(engine.looper_source[1].iter().flat_map(|s| *s));
+        }
+        assert!(level_at(&heard, 600.0) > 0.15);
+        assert!(level_at(&heard, 220.0) < 0.01);
+        lp("layer1_tap").set_bool(true);
+        run(&mut engine, 0.02);
+        lp("layer1_tap").set_bool(false);
+        assert_eq!(lp("layer1_state").get() as u8, crate::looper::ARMED);
+        let markers = &engine.looper_markers[0];
+        assert_eq!(markers[2].get(), crate::looper::ARMED as f64);
+        let t = engine.decks[0].track.as_ref().unwrap();
+        let start = t.beat_at(markers[0].get());
+        assert!(start.rem_euclid(4.0).abs() < 1e-6);
+        assert!((t.beat_at(markers[1].get()) - start - 4.0).abs() < 1e-6);
+        run(&mut engine, 4.0);
+        assert_eq!(lp("layer1_state").get() as u8, crate::looper::PLAYING);
+        let saved = engine.loopers.loopers[1].layer_audio(0).unwrap().to_vec();
+        assert!(saved.iter().any(|s| s[0].abs() > 0.1));
+        load(&mut input, 0, long_tone_track(440.0, "Am", 8.0));
+        run(&mut engine, 0.1);
+        assert!(!lp("source_ready").get_bool());
+        assert!(lp("source_missing").get_bool());
+        assert!(!engine.looper_source_shifter[1].is_active());
+        lp("layer2_tap").set_bool(true);
+        run(&mut engine, 0.02);
+        assert_eq!(lp("layer2_state").get() as u8, crate::looper::EMPTY);
+        assert_eq!(engine.loopers.loopers[1].layer_audio(0).unwrap(), saved);
     }
 
     #[test]

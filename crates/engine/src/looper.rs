@@ -121,6 +121,12 @@ pub struct LooperControls {
     /// The looper has its memory and works.
     pub ready: ControlHandle,
     pub input: ControlHandle,
+    /// 0 uses input, 1..4 taps that deck. Stem 0 taps its pre-fader mix.
+    pub source_deck: ControlHandle,
+    /// 0 mix, 1 drums, 2 bass, 3 melody, 4 voice.
+    pub source_stem: ControlHandle,
+    pub source_ready: ControlHandle,
+    pub source_missing: ControlHandle,
     /// Bars a new layer records.
     pub length: ControlHandle,
     pub capture: ControlHandle,
@@ -148,7 +154,8 @@ impl LooperControls {
     fn new(reg: &ControlRegistry, deck: usize) -> Self {
         let g = looper_group(deck);
         let g = g.as_str();
-        reg.indicator(g, "stop_recording_supported", 1.0).set_bool(true);
+        reg.indicator(g, "stop_recording_supported", 1.0)
+            .set_bool(true);
         Self {
             stop_recording: reg.push(g, "stop_recording"),
             stop_recording_edge: Edge::default(),
@@ -162,6 +169,14 @@ impl LooperControls {
                 crate::inputs::NUM_INPUTS as f64,
                 Behavior::Free,
             ),
+            source_deck: reg.create(g, "source_deck", 0.0, 0.0, 4.0, Behavior::Free),
+            source_stem: reg.create(g, "source_stem", 0.0, 0.0, 4.0, Behavior::Free),
+            source_ready: {
+                let ready = reg.indicator(g, "source_ready", 1.0);
+                ready.set_bool(true);
+                ready
+            },
+            source_missing: reg.indicator(g, "source_missing", 1.0),
             length: reg.create(g, "length", 4.0, 1.0, 16.0, Behavior::Free),
             capture: reg.push(g, "capture"),
             capture_edge: Edge::default(),
@@ -340,6 +355,35 @@ impl Looper {
         !self.enabled() && self.mem.is_some()
     }
 
+    pub fn source_deck(&self) -> usize {
+        self.c.source_deck.get().round().clamp(0.0, 4.0) as usize
+    }
+
+    pub fn source_stem(&self) -> usize {
+        self.c.source_stem.get().round().clamp(0.0, 4.0) as usize
+    }
+
+    /// A changed track or source cannot reuse capture history from the old one.
+    pub fn source_changed(&mut self) {
+        self.finish_recordings(self.c.bpm.get());
+        self.clock.stop();
+        self.stamped = 0;
+        self.written = self.t;
+        self.t_last = self.t;
+    }
+
+    /// First armed/recording interval, in the followed source's beat domain.
+    pub fn recording_span(&self) -> Option<(u8, f64, f64)> {
+        self.layers.iter().find_map(|l| match l.state {
+            ARMED => {
+                let start = (self.clock.beat / BAR).floor() * BAR + BAR;
+                Some((ARMED, start, start + l.beats))
+            }
+            RECORDING => Some((RECORDING, l.start, l.start + l.beats)),
+            _ => None,
+        })
+    }
+
     fn frames_for(&self, beats: f64, bpm: f64) -> usize {
         (beats * 60.0 / bpm.max(1.0) * self.rate).ceil() as usize
     }
@@ -391,6 +435,10 @@ impl Looper {
         }
         self.was_playing = play;
         let mut start = false;
+        if !self.c.source_ready.get_bool() {
+            self.finish_recordings(source.bpm);
+            self.stamped = 0;
+        }
 
         // What the controls ask.
         let bpm = source.bpm;
@@ -470,7 +518,9 @@ impl Looper {
             let bar = ((b + 1e-7) / BAR).floor();
             if b > self.last_beat && bar > ((self.last_beat + 1e-7) / BAR).floor() {
                 let at = self.t + f as u64;
-                self.on_bar(bar * BAR, at, play || start);
+                if self.c.source_ready.get_bool() {
+                    self.on_bar(bar * BAR, at, play || start);
+                }
             }
             self.last_beat = b;
             let mem = self.mem.as_mut().unwrap();
@@ -578,6 +628,9 @@ impl Looper {
 
     /// A tap on layer `k`. True when the deck should start.
     fn tap(&mut self, k: usize, bpm: f64) -> bool {
+        if matches!(self.layers[k].state, EMPTY | PLAYING) && !self.c.source_ready.get_bool() {
+            return false;
+        }
         match self.layers[k].state {
             EMPTY => {
                 let bars = nearest(&LENGTHS, self.c.length.get());
@@ -669,6 +722,9 @@ impl Looper {
 
     /// CAPTURE: the last bars heard into the first free layer.
     fn capture(&mut self, bpm: f64) -> bool {
+        if !self.c.source_ready.get_bool() {
+            return false;
+        }
         let bars = nearest(&CAPTURE_LENGTHS, self.c.capture_bars.get());
         let beats = bars as f64 * BAR;
         let Some(k) = self.layers.iter().position(Layer::free) else {
@@ -989,6 +1045,45 @@ mod tests {
         release(&l.c.layers[0].tap.clone());
         run(l, true, BUF, 2 * BAR_FRAMES / BUF + 4, |_| 0.25);
         assert_eq!(l.layers[0].state, PLAYING);
+    }
+
+    #[test]
+    fn missing_source_blocks_arm_and_capture_then_ready_arms_on_next_bar() {
+        let (_, mut l) = looper();
+        l.c.source_ready.set_bool(false);
+        press(&l.c.layers[0].tap.clone());
+        press(&l.c.capture.clone());
+        run(&mut l, true, 0, BAR_FRAMES / BUF * 2, |_| 10.0);
+        assert_eq!(l.layers[0].state, EMPTY);
+        assert!(l.recording_span().is_none());
+        release(&l.c.layers[0].tap.clone());
+        release(&l.c.capture.clone());
+        run(&mut l, true, 0, 1, |_| 0.25);
+        l.c.source_ready.set_bool(true);
+        press(&l.c.layers[0].tap.clone());
+        run(&mut l, true, 0, 1, |_| 0.25);
+        let (state, start, end) = l.recording_span().unwrap();
+        assert_eq!(state, ARMED);
+        assert_eq!(start.rem_euclid(BAR), 0.0);
+        assert_eq!(end - start, l.layers[0].beats);
+    }
+
+    #[test]
+    fn changing_source_preserves_layers_and_clears_capture_history_and_overdub() {
+        let (_, mut l) = looper();
+        recorded(&mut l);
+        press(&l.c.layers[0].tap.clone());
+        run(&mut l, true, 0, 3, |_| 0.5);
+        let saved = l.layer_audio(0).unwrap().to_vec();
+        l.source_changed();
+        assert_eq!(l.layers[0].state, PLAYING);
+        assert_eq!(l.layer_audio(0).unwrap(), saved);
+        assert_eq!(l.stamped, 0);
+        assert!(!l.clock.running);
+        l.c.source_ready.set_bool(false);
+        run(&mut l, true, 0, 3, |_| 100.0);
+        assert_eq!(l.layer_audio(0).unwrap(), saved);
+        assert_eq!(l.stamped, 0);
     }
 
     #[test]

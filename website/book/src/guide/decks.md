@@ -225,22 +225,40 @@ four layers, two by two, with **▶ PLAY** and four beat lights under them. The
 header shows the tempo the Looper plays at, and whether it is in time with
 the mix.
 
-- **FROM** picks what it records: **Mix** (the main mix), **Mic**,
-  **Aux**, **Instr.** (the instrument plugin), **Aux 2** or **Aux 3**.
+- **DECK** selects **Input** or a loaded DJ deck, **A** through **D**.
+  With **Input**, **INPUT** selects **Mix**, **Mic**, **Aux**, **Instr.**
+  (the instrument plugin), **Aux 2** or **Aux 3**. **Mix** captures the
+  source mix before master FX and limiting, with Looper returns excluded.
+- With a DJ deck selected, **STEM** selects **Mix**, **Drums**, **Bass**,
+  **Melody** or **Voice**. The deck's Mix includes its effects and is tapped
+  before its fader. Individual stems are tapped before EQ and effects, with
+  the deck's playback speed, key lock, pitch and active loop applied.
+  Melody groups instruments such as synth, piano and guitar. Split kick and
+  hi-hat tracks are grouped under Drums.
+- Start the selected DJ deck and prepare its stems before recording a stem.
+  The source status reports when it is unavailable. Changing the source or
+  loading another track finishes the current take and overdub, preserves
+  existing layers, and starts fresh capture history.
 - **BARS** sets how long a new layer is: 1, 2, 4, 8 or 16 bars.
 - Tap a layer's **● REC** to record it. It shows **NEXT BAR** until the
   next bar starts, then **RECORDING**, then **▶ PLAY** with its length once
   the bars are done. Tapping a layer on a stopped deck starts the deck.
 - Tap a playing layer to **OVERDUB**: what comes in is added on top of
   it. Tap it again to go back to playing. With **THEN OVERDUB** on, a layer
-  goes straight on to overdub when it finishes recording.
+  goes straight on to overdub when it finishes recording. **END OD** on
+  that layer ends its overdub. **END REC / OD** ends all current takes and
+  overdubs and cancels layers waiting for a bar, keeping recorded audio.
 - **CAPTURE** puts the bars just heard into the first empty layer, even if
   you weren't recording. **LAST** picks how many: 1, 2, 4 or 8 bars.
 - Each layer has **M** to mute it, a level knob, and **×** to clear it.
 - **UNDO** takes back the last recording or overdub, and **REDO** brings
   it back. While a layer waits for the bar or records, **UNDO** cancels it.
 - **▶ PLAY** under the layers starts all of them together, and **■ STOP**
-  stops them.
+  stops them, finishes overdubs and partial takes, and cancels layers waiting
+  for a bar. Starting playback again plays the preserved layers.
+- The source DJ deck's overview highlights the upcoming recording interval
+  in amber while armed and in red while recording. Its IN and OUT markers
+  follow the selected bar length.
 
 A layer holds up to about 48 seconds, 16 bars at 80 BPM. If what you pick
 is longer, the deck says **Too long to fit: pick fewer bars.** To go back

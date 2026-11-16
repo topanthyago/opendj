@@ -1264,6 +1264,10 @@ export component Header inherits Rectangle {
     property <bool> playing: Controls.value(Controls.resolve(group, "play"), Controls.tick) > 0;
     property <bool> groove-following: Controls.value(Controls.resolve(groove-group, "following"), Controls.tick) > 0;
     property <string> looper-group: "[Looper" + (deck + 1) + "]";
+    property <float> looper-record-start: Controls.value(Controls.resolve(group, "looper_record_start"), Controls.tick);
+    property <float> looper-record-end: Controls.value(Controls.resolve(group, "looper_record_end"), Controls.tick);
+    property <int> looper-record-state: Controls.value(Controls.resolve(group, "looper_record_state"), Controls.tick);
+    property <float> track-duration: Controls.value(Controls.resolve(group, "duration"), Controls.tick);
     property <bool> looper: Controls.value(Controls.resolve(looper-group, "enabled"), Controls.tick) > 0;
     property <float> looper-bpm: Controls.value(Controls.resolve(looper-group, "bpm"), Controls.tick);
     property <bool> looper-following: Controls.value(Controls.resolve(looper-group, "following"), Controls.tick) > 0;
@@ -1475,6 +1479,17 @@ export component Header inherits Rectangle {
                     background: Theme.automix.with-alpha(0.18);
                     Rectangle { x: 0; width: 1px; background: Theme.automix.with-alpha(0.8); }
                     Rectangle { x: parent.width - 1px; width: 1px; background: Theme.automix.with-alpha(0.8); }
+                }
+                if looper-record-state > 0 && track-duration > 0 && looper-record-end > looper-record-start: Rectangle {
+                    x: clamp(looper-record-start / track-duration, 0, 1) * parent.width;
+                    width: (clamp(looper-record-end / track-duration, 0, 1) - clamp(looper-record-start / track-duration, 0, 1)) * parent.width;
+                    height: parent.height;
+                    property <color> marker-color: looper-record-state == 2 ? #ff453a : #ff9f0a;
+                    background: marker-color.with-alpha(0.2);
+                    Rectangle { x: 0; width: 2px; background: parent.marker-color; }
+                    Rectangle { x: parent.width - 2px; width: 2px; background: parent.marker-color; }
+                    Text { x: 3px; y: 1px; text: looper-record-state == 2 ? "REC IN" : "LOOP IN"; color: parent.marker-color; font-size: 8px; }
+                    Text { x: max(3px, parent.width - self.preferred-width - 3px); y: parent.height - self.preferred-height - 1px; text: "OUT"; color: parent.marker-color; font-size: 8px; }
                 }
                 // The waveform, a dot at every minute and the phrase bar
                 // are all drawn into the image, stacked so none overlap.
@@ -4579,6 +4594,7 @@ component LooperLayers inherits VerticalLayout {
     in property <color> tint;
     property <bool> ready: Controls.value(Controls.resolve(g, "ready"), Controls.tick) > 0;
     property <bool> too-long: Controls.value(Controls.resolve(g, "too_long"), Controls.tick) > 0;
+    property <bool> source-ready: Controls.value(Controls.resolve(g, "source_ready"), Controls.tick) > 0;
     property <float> bar-beat: Controls.value(Controls.resolve(g, "bar_beat"), Controls.tick);
     property <int> play-index: Controls.resolve(group, "play");
     property <bool> playing: Controls.value(play-index, Controls.tick) > 0;
@@ -4617,7 +4633,7 @@ component LooperLayers inherits VerticalLayout {
         }
         Text {
             horizontal-stretch: 1;
-            text: !ready ? "Getting ready…" : too-long ? "Too long to fit: pick fewer bars." : "";
+            text: !ready ? "Getting ready…" : !source-ready ? "Start the source deck; prepare the selected stem." : too-long ? "Too long to fit: pick fewer bars." : "";
             color: too-long ? Theme.c-ff9f0a : Theme.text-dim;
             font-size: 11px;
             vertical-alignment: center;
@@ -4629,12 +4645,27 @@ component LooperLayers inherits VerticalLayout {
 component LooperOptions inherits VerticalLayout {
     in property <string> g;
     in property <color> tint;
+    property <int> source-deck: Controls.value(Controls.resolve(g, "source_deck"), Controls.tick);
     spacing: 5px;
     alignment: center;
     HorizontalLayout {
         spacing: 6px;
-        Text { text: "FROM"; width: 40px; color: Theme.text-dim; font-size: 10px; font-weight: 600; vertical-alignment: center; }
+        Text { text: "DECK"; width: 40px; color: Theme.text-dim; font-size: 10px; font-weight: 600; vertical-alignment: center; }
+        LooperChoice { g: g; key: "source_deck"; tint: tint; names: ["Input", "A", "B", "C", "D"]; values: [0, 1, 2, 3, 4]; }
+    }
+    if source-deck == 0: HorizontalLayout {
+        spacing: 6px;
+        Text { text: "INPUT"; width: 40px; color: Theme.text-dim; font-size: 10px; font-weight: 600; vertical-alignment: center; }
         LooperChoice { g: g; key: "input"; tint: tint; names: ["Mix", "Mic", "Aux", "Instr.", "Aux 2", "Aux 3"]; values: [0, 1, 2, 3, 4, 5]; }
+    }
+    if source-deck > 0: HorizontalLayout {
+        spacing: 6px;
+        Text { text: "STEM"; width: 40px; color: Theme.text-dim; font-size: 10px; font-weight: 600; vertical-alignment: center; }
+        LooperChoice { g: g; key: "source_stem"; tint: tint; names: ["Mix", "Drums", "Bass", "Melody", "Voice"]; values: [0, 1, 2, 3, 4]; }
+    }
+    if source-deck > 0: Text {
+        text: "Mix: post-FX, pre-fader · Stems: pre-FX";
+        color: Theme.text-dim; font-size: 10px;
     }
     HorizontalLayout {
         spacing: 6px;
