@@ -620,6 +620,13 @@ impl Ctx {
                     .map_err(|_| "the DECKARD preset path is damaged")?;
                 let source_scene =
                     native.get("scene").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let rhythm = match native.get("rhythm") {
+                    None | Some(Value::Null) => None,
+                    Some(value) => Some(
+                        opendj_engine::maschine::rhythm::from_json(value)
+                            .ok_or("the DECKARD rhythm profile is damaged")?,
+                    ),
+                };
                 let m = format!("[Maschine{}]", deck + 1);
                 let group = self.value(&m, "group").round() as usize;
                 let scene = self.value(&m, "scene").round() as usize;
@@ -635,6 +642,7 @@ impl Ctx {
                             group_file: decode("group")?,
                             project: decode("project")?,
                             origin,
+                            rhythm,
                         },
                     )?;
             } else if embedded {
@@ -796,6 +804,7 @@ impl Ctx {
                     "group": base64::engine::general_purpose::STANDARD.encode(native.group_file),
                     "project": base64::engine::general_purpose::STANDARD.encode(native.project),
                     "origin": native.origin,
+                    "rhythm": native.rhythm.as_ref().map(opendj_engine::maschine::rhythm::to_json),
                     "scene": scene,
                 }));
             } else {

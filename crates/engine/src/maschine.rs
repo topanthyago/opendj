@@ -31,6 +31,8 @@ pub use mxprj::sound_info::SoundInfo;
 
 #[path = "maschine_paths.rs"]
 mod project_paths;
+#[path = "maschine_rhythm.rs"]
+pub mod rhythm;
 
 #[path = "maschine_preview.rs"]
 mod sampling_preview;
@@ -106,6 +108,7 @@ pub struct NativeGroovePreset {
     pub group_file: Vec<u8>,
     pub project: Vec<u8>,
     pub origin: Option<Vec<u8>>,
+    pub rhythm: Option<rhythm::Profile>,
 }
 
 // Small, copy-only messages from the audio callback. The document and all
@@ -122,10 +125,12 @@ enum GrooveAction {
         genre: usize,
         index: usize,
         slot: Option<usize>,
+        chosen: usize,
     },
     LoadSet {
         genre: usize,
         set: usize,
+        chosen: usize,
         tone: [f64; crate::groove::ROWS],
     },
     Swing(f64),
@@ -139,6 +144,7 @@ enum GrooveAction {
     },
     Mix {
         kit: usize,
+        explicit_kit: bool,
         settings: [LegacySoundSettings; crate::groove::ROWS],
         rebuild: [bool; crate::groove::ROWS],
         replace: [bool; crate::groove::ROWS],
@@ -148,9 +154,25 @@ enum GrooveAction {
     Undo,
 }
 
+impl GrooveAction {
+    fn explicit_load(self) -> bool {
+        matches!(
+            self,
+            Self::Load { .. }
+                | Self::LoadSet { .. }
+                | Self::Pad(GroovePadEdit::Load { .. })
+                | Self::Mix {
+                    explicit_kit: true,
+                    ..
+                }
+        )
+    }
+}
+
 #[derive(Clone, Copy)]
 struct GrooveCommand {
     generation: u64,
+    rhythm_epoch: u64,
     group: usize,
     scene: usize,
     action: GrooveAction,
@@ -205,6 +227,12 @@ pub struct MaschineControls {
     pub tempo: ControlHandle,
     pub playing_scene: ControlHandle,
     pub queued_scene: ControlHandle,
+    pub rhythm_profile: [ControlHandle; GROUPS],
+    pub rhythm_roles: [[ControlHandle; crate::groove::ROWS]; GROUPS],
+    pub rhythm_has_profile: [ControlHandle; GROUPS],
+    pub rhythm_has_pattern: [ControlHandle; GROUPS],
+    pub rhythm_ready: [ControlHandle; GROUPS],
+    pub rhythm_load_kit: ControlHandle,
     pub pads: [ControlHandle; SOUNDS],
     pub pad_velocity: [ControlHandle; SOUNDS],
     pub colors: [ControlHandle; SOUNDS],
@@ -273,6 +301,29 @@ impl MaschineControls {
                 127.0,
                 Behavior::Indicator,
             ),
+            rhythm_profile: std::array::from_fn(|g| {
+                create(&format!("group{}_rhythm_profile", g + 1), 0.0, 0.0, 2.0)
+            }),
+            rhythm_roles: std::array::from_fn(|g| {
+                std::array::from_fn(|r| {
+                    create(
+                        &format!("group{}_rhythm_role{}", g + 1, r + 1),
+                        -1.0,
+                        -1.0,
+                        15.0,
+                    )
+                })
+            }),
+            rhythm_has_profile: std::array::from_fn(|g| {
+                registry.indicator(&group, &format!("group{}_rhythm_has_profile", g + 1), 1.0)
+            }),
+            rhythm_has_pattern: std::array::from_fn(|g| {
+                registry.indicator(&group, &format!("group{}_rhythm_has_pattern", g + 1), 1.0)
+            }),
+            rhythm_ready: std::array::from_fn(|g| {
+                registry.indicator(&group, &format!("group{}_rhythm_ready", g + 1), 1.0)
+            }),
+            rhythm_load_kit: registry.push(&group, "rhythm_load_kit"),
             pads: std::array::from_fn(|k| create(&format!("pad{}", k + 1), 0.0, 0.0, 1.0)),
             pad_velocity: std::array::from_fn(|k| {
                 create(&format!("pad{}_velocity", k + 1), 1.0, 0.0, 1.0)
@@ -301,7 +352,8 @@ struct Prepared {
     target: Option<(Mode, deckard_engine::Timeline)>,
     telemetry: deckard_engine::Telemetry,
     base_keys: [[i64; SOUNDS]; GROUPS],
-    roles: [[usize; crate::groove::ROWS]; GROUPS],
+    material_keys: [u64; GROUPS],
+    generation: u64,
     legacy_sounds: [[bool; SOUNDS]; GROUPS],
     project: Option<Arc<Project>>,
 }
@@ -312,6 +364,14 @@ enum Request {
     Initialize,
     New,
     Edit(Edit),
+    EditWithRhythm {
+        generation: u64,
+        epoch: u64,
+        group: usize,
+        kind: u8,
+        roles: [usize; crate::groove::ROWS],
+        edit: Edit,
+    },
     EditDeferred(Edit),
     EditDeferredForProject(u64, Edit),
     Undo,
@@ -353,6 +413,10 @@ struct Shared {
     sampling_preview: RwLock<Option<Arc<SamplingPreview>>>,
     revision: AtomicU64,
     project_generation: AtomicU64,
+    rhythm_bits: [AtomicU64; GROUPS],
+    rhythm_keys: [AtomicU64; GROUPS],
+    document_keys: [AtomicU64; GROUPS],
+    rhythm_epochs: [AtomicU64; GROUPS],
     groove_overflow: AtomicBool,
     groove_lost: AtomicBool,
     rate: u32,
@@ -452,7 +516,13 @@ impl Shared {
                     .map_or(60, |sound| sound.channel.base_key.clamp(0, 127))
             })
         });
-        let roles = std::array::from_fn(|g| roles_of(project.groups.get(g)));
+        let material_keys = std::array::from_fn(|g| {
+            project
+                .groups
+                .get(g)
+                .map_or(0, |group| rhythm::key(&rhythm::material(group)))
+        });
+        let generation = self.project_generation.load(Ordering::Acquire);
         let root = legacy_samples_root().ok();
         let legacy_sounds = std::array::from_fn(|g| {
             std::array::from_fn(|s| {
@@ -466,7 +536,9 @@ impl Shared {
                     })
             })
         });
-        if self.revision.load(Ordering::Acquire) != version {
+        if self.revision.load(Ordering::Acquire) != version
+            || self.project_generation.load(Ordering::Acquire) != generation
+        {
             return Err("Maschine project changed while its audio was prepared".into());
         }
         let mut ready = self
@@ -482,7 +554,8 @@ impl Shared {
                 target,
                 telemetry,
                 base_keys,
-                roles,
+                material_keys,
+                generation,
                 legacy_sounds,
                 project: Some(project),
             })
@@ -502,6 +575,9 @@ struct Editor {
     groove_dice: Dice,
     groove_undo: Vec<GrooveUndo>,
     groove_solo_saved: [Option<[bool; crate::groove::ROWS]>; GROUPS],
+    rhythm_profiles: [Option<rhythm::Profile>; GROUPS],
+    rhythm_material: [String; GROUPS],
+    rhythm_history: [Vec<rhythm::Profile>; GROUPS],
     autosave: Option<PathBuf>,
     project_lock: Option<std::fs::File>,
     backed_up: bool,
@@ -510,6 +586,192 @@ struct Editor {
 }
 
 impl Editor {
+    fn restore_rhythm_profiles(
+        &mut self,
+        profiles: [Option<rhythm::Profile>; GROUPS],
+    ) -> Result<(), String> {
+        for (group, profile) in profiles.into_iter().enumerate() {
+            if let Some(profile) = profile {
+                let matches = self
+                    .document
+                    .as_ref()
+                    .and_then(|d| d.project().groups.get(group))
+                    .is_some_and(|g| rhythm::material(g) == profile.material);
+                if matches {
+                    self.bind_rhythm_profile(group, profile.kind, profile.roles)?;
+                }
+            }
+        }
+        Ok(())
+    }
+    fn clear_rhythm_profile(&mut self, group: usize, clear_controls: bool) {
+        self.shared.rhythm_bits[group].store(0, Ordering::Release);
+        self.shared.rhythm_keys[group].store(0, Ordering::Release);
+        self.shared.rhythm_epochs[group].fetch_add(1, Ordering::AcqRel);
+        self.rhythm_profiles[group] = None;
+        self.shared.controls.rhythm_has_profile[group].set_bool(false);
+        self.shared.controls.rhythm_ready[group].set_bool(false);
+        if clear_controls {
+            self.shared.controls.rhythm_profile[group].set(0.0);
+            for role in &self.shared.controls.rhythm_roles[group] {
+                role.set(-1.0);
+            }
+        }
+    }
+
+    fn bind_rhythm_profile(
+        &mut self,
+        group: usize,
+        kind: u8,
+        roles: [usize; crate::groove::ROWS],
+    ) -> Result<(), String> {
+        if group >= GROUPS || !rhythm::valid(kind, roles) {
+            return Err("invalid rhythm profile or duplicate Sound".into());
+        }
+        let target = self
+            .document
+            .as_ref()
+            .and_then(|d| d.project().groups.get(group))
+            .ok_or("no such group")?;
+        if roles
+            .iter()
+            .any(|&sound| sound < SOUNDS && sound >= target.sounds.len())
+        {
+            return Err("rhythm role points to a missing Sound".into());
+        }
+        let material = rhythm::material(target);
+        let profile = rhythm::Profile {
+            kind,
+            roles,
+            material,
+        };
+        if self.rhythm_history[group].last() != Some(&profile) {
+            if self.rhythm_history[group].len() == 16 {
+                self.rhythm_history[group].remove(0);
+            }
+            self.rhythm_history[group].push(profile.clone());
+        }
+        self.shared.rhythm_bits[group].store(0, Ordering::Release);
+        self.shared.controls.rhythm_ready[group].set_bool(false);
+        self.shared.rhythm_epochs[group].fetch_add(1, Ordering::AcqRel);
+        for (r, sound) in roles.into_iter().enumerate() {
+            self.shared.controls.rhythm_roles[group][r].set(if sound == rhythm::NONE {
+                -1.0
+            } else {
+                sound as f64
+            });
+        }
+        self.shared.controls.rhythm_profile[group].set(kind as f64);
+        self.shared.rhythm_keys[group].store(rhythm::key(&profile.material), Ordering::Release);
+        self.rhythm_profiles[group] = Some(profile);
+        self.shared.rhythm_bits[group].store(rhythm::pack(kind, roles), Ordering::Release);
+        self.dirty_since = Some(Instant::now());
+        self.shared.controls.save_pending.set_bool(true);
+        Ok(())
+    }
+
+    fn restore_rhythm_after_undo(&mut self) -> Result<(), String> {
+        for group in 0..GROUPS {
+            let material = self
+                .document
+                .as_ref()
+                .and_then(|d| d.project().groups.get(group))
+                .map(rhythm::material);
+            let previous = material
+                .as_ref()
+                .and_then(|material| {
+                    self.rhythm_history[group]
+                        .iter()
+                        .rev()
+                        .find(|p| &p.material == material)
+                })
+                .cloned();
+            if let Some(profile) = previous {
+                if self.rhythm_profiles[group].as_ref() != Some(&profile) {
+                    self.bind_rhythm_profile(group, profile.kind, profile.roles)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_rhythm_material(&mut self) -> Result<(), String> {
+        let Some(document) = self.document.as_ref() else {
+            return Ok(());
+        };
+        let changed = self
+            .rhythm_profiles
+            .iter()
+            .enumerate()
+            .any(|(group, profile)| {
+                profile.as_ref().is_some_and(|profile| {
+                    document
+                        .project()
+                        .groups
+                        .get(group)
+                        .is_none_or(|g| rhythm::material(g) != profile.material)
+                })
+            });
+        if changed {
+            self.publish_snapshot(true)?;
+        }
+        Ok(())
+    }
+
+    fn sync_rhythm_controls(
+        &mut self,
+        seen: &mut [[u32; crate::groove::ROWS + 1]; GROUPS],
+    ) -> Result<(), String> {
+        for group in 0..GROUPS {
+            let controls = &self.shared.controls;
+            let versions: [u32; crate::groove::ROWS + 1] = std::array::from_fn(|i| {
+                if i == 0 {
+                    controls.rhythm_profile[group].version()
+                } else {
+                    controls.rhythm_roles[group][i - 1].version()
+                }
+            });
+            if versions == seen[group] {
+                continue;
+            }
+            seen[group] = versions;
+            let kind = controls.rhythm_profile[group].get().round() as u8;
+            if kind == 0 {
+                if self.rhythm_profiles[group].is_some() {
+                    self.clear_rhythm_profile(group, false);
+                    self.rhythm_history[group].clear();
+                    self.dirty_since = Some(Instant::now());
+                    self.shared.controls.save_pending.set_bool(true);
+                }
+                continue;
+            }
+            let roles = if kind == 1 {
+                [0, 1, 2, 3, 4, 5, 6, 7]
+            } else {
+                std::array::from_fn(|r| {
+                    let sound = controls.rhythm_roles[group][r].get().round() as i64;
+                    if sound < 0 {
+                        rhythm::NONE
+                    } else {
+                        sound as usize
+                    }
+                })
+            };
+            if !rhythm::valid(kind, roles) {
+                self.clear_rhythm_profile(group, false);
+                self.shared.set_error("Rhythm profile needs at least one unique Sound; duplicate mappings are disabled".into());
+                continue;
+            }
+            self.ensure_document()?;
+            if self.rhythm_profiles[group]
+                .as_ref()
+                .is_none_or(|p| p.kind != kind || p.roles != roles)
+            {
+                self.bind_rhythm_profile(group, kind, roles)?;
+            }
+        }
+        Ok(())
+    }
     fn take_groove_commands(&mut self) -> Result<bool, String> {
         let mut changed = false;
         if let Ok(mut command) = self.groove_commands.pop() {
@@ -520,6 +782,7 @@ impl Editor {
                     matches!(next.action, GrooveAction::Swing(_))
                         && next.group == command.group
                         && next.generation == command.generation
+                        && next.rhythm_epoch == command.rhythm_epoch
                 })
             {
                 command = self.groove_commands.pop().expect("peeked");
@@ -529,15 +792,42 @@ impl Editor {
                     matches!(next.action, GrooveAction::Mix { .. })
                         && next.group == command.group
                         && next.generation == command.generation
+                        && next.rhythm_epoch == command.rhythm_epoch
                 })
             {
                 let next = self.groove_commands.pop().expect("peeked");
                 merge_mix(&mut command.action, next.action);
             }
+            let explicit_load = command.action.explicit_load();
             if command.generation != self.shared.project_generation.load(Ordering::Acquire) {
-                return Ok(false);
+                return if explicit_load {
+                    Err("project changed before the rhythm load; retry".into())
+                } else {
+                    Ok(false)
+                };
+            }
+            if command.group >= GROUPS
+                || command.rhythm_epoch
+                    != self.shared.rhythm_epochs[command.group].load(Ordering::Acquire)
+                || (!explicit_load
+                    && self.shared.rhythm_bits[command.group].load(Ordering::Acquire) == 0)
+            {
+                return if explicit_load {
+                    Err("group or rhythm profile changed before the load; retry".into())
+                } else {
+                    Ok(false)
+                };
             }
             self.ensure_document()?;
+            let profile = self.rhythm_profiles[command.group].clone();
+            let roles = profile
+                .as_ref()
+                .map(|p| p.roles)
+                .unwrap_or([0, 1, 2, 3, 4, 5, 6, 7]);
+            let material_edit = matches!(
+                command.action,
+                GrooveAction::Mix { .. } | GrooveAction::LoadSet { .. }
+            );
             let doc = self.document.as_mut().expect("initialized");
             match command.action {
                 GrooveAction::Swing(value) => {
@@ -570,12 +860,13 @@ impl Editor {
                             pattern,
                             tracks,
                             [true; crate::groove::ROWS],
+                            roles,
                         )?;
                         changed = true;
                     }
                     _ => {
                         let pattern = scene_pattern(doc.project(), command.scene, command.group)?;
-                        changed = apply_pad_edit(doc, command.group, pattern, edit)?;
+                        changed = apply_pad_edit(doc, command.group, pattern, edit, roles)?;
                     }
                 },
                 GrooveAction::TrackDelta {
@@ -586,12 +877,13 @@ impl Editor {
                 } => {
                     doc.transaction("Edit Groove step", |doc| {
                         let pattern = pattern_in_slot(doc, command.group, slot)?;
-                        apply_track_delta(doc, command.group, pattern, row, before, after)
+                        apply_track_delta(doc, command.group, pattern, row, before, after, roles)
                     })?;
                     changed = true;
                 }
                 GrooveAction::Mix {
                     kit,
+                    explicit_kit: _,
                     mut settings,
                     rebuild,
                     replace,
@@ -609,7 +901,6 @@ impl Editor {
                                 .groups
                                 .get(command.group)
                                 .ok_or("no such group")?;
-                            let roles = roles_of(Some(g));
                             saved = Some(std::array::from_fn(|r| {
                                 g.sounds.get(roles[r]).is_some_and(|s| s.muted)
                             }));
@@ -654,6 +945,7 @@ impl Editor {
                             rebuild,
                             replace,
                             parameters,
+                            roles,
                         )
                     })?;
                     self.groove_solo_saved[command.group] = saved;
@@ -668,8 +960,9 @@ impl Editor {
                     let pattern = scene_pattern(doc.project(), command.scene, command.group)?;
                     let group = &doc.project().groups[command.group];
                     let slot = group.patterns[pattern].slot;
-                    let roles = roles_of(Some(group));
-                    let rows = std::array::from_fn(|r| row.map_or(!locked[r], |only| only == r));
+                    let rows = std::array::from_fn(|r| {
+                        roles[r] < SOUNDS && row.map_or(!locked[r], |only| only == r)
+                    });
                     let before = tracks_of(&group.patterns[pattern], roles)?;
                     let mut after = before;
                     for r in 0..crate::groove::ROWS {
@@ -718,6 +1011,9 @@ impl Editor {
                 }
                 GrooveAction::Undo => {
                     if let Some(edit) = self.groove_undo.last() {
+                        if edit.group != command.group {
+                            return Err("last Groove Dice belongs to another group".into());
+                        }
                         if edit.generation != command.generation {
                             self.groove_undo.clear();
                         } else {
@@ -757,12 +1053,30 @@ impl Editor {
                     }
                     self.legacy.can_undo.set_bool(!self.groove_undo.is_empty());
                 }
-                GrooveAction::Load { genre, index, slot } => {
+                GrooveAction::Load {
+                    genre,
+                    index,
+                    slot,
+                    chosen,
+                } => {
                     let tracks = library_tracks(genre, index)?;
                     doc.transaction("Load Groove", |doc| {
                         let pattern = match slot {
                             Some(slot) => pattern_in_slot(doc, command.group, slot)?,
-                            None => scene_pattern(doc.project(), command.scene, command.group)?,
+                            None => {
+                                match scene_pattern(doc.project(), command.scene, command.group) {
+                                    Ok(pattern) => pattern,
+                                    Err(_) => {
+                                        let pattern = pattern_in_slot(doc, command.group, chosen)?;
+                                        doc.assign_pattern(
+                                            command.scene,
+                                            command.group,
+                                            Some(pattern),
+                                        )?;
+                                        pattern
+                                    }
+                                }
+                            }
                         };
                         load_tracks(
                             doc,
@@ -770,11 +1084,22 @@ impl Editor {
                             pattern,
                             tracks,
                             [true; crate::groove::ROWS],
-                        )
+                            roles,
+                        )?;
+                        if scene_pattern(doc.project(), command.scene, command.group).is_err() {
+                            let pattern = pattern_in_slot(doc, command.group, chosen)?;
+                            doc.assign_pattern(command.scene, command.group, Some(pattern))?;
+                        }
+                        Ok(())
                     })?;
                     changed = true;
                 }
-                GrooveAction::LoadSet { genre, set, tone } => {
+                GrooveAction::LoadSet {
+                    genre,
+                    set,
+                    tone,
+                    chosen,
+                } => {
                     let tracks: Vec<_> = (0..crate::groove::GROOVES)
                         .map(|slot| library_tracks(genre, set * crate::groove::GROOVES + slot + 1))
                         .collect::<Result<_, _>>()?;
@@ -787,7 +1112,12 @@ impl Editor {
                                 pattern,
                                 tracks,
                                 [true; crate::groove::ROWS],
+                                roles,
                             )?;
+                        }
+                        if scene_pattern(doc.project(), command.scene, command.group).is_err() {
+                            let pattern = pattern_in_slot(doc, command.group, chosen)?;
+                            doc.assign_pattern(command.scene, command.group, Some(pattern))?;
                         }
                         if let Some(defaults) = crate::patterns::set_defaults(genre, set) {
                             let settings = std::array::from_fn(|row| LegacySoundSettings {
@@ -808,6 +1138,7 @@ impl Editor {
                                 [true; crate::groove::ROWS],
                                 [true; crate::groove::ROWS],
                                 [7; crate::groove::ROWS],
+                                roles,
                             )?;
                             let old = doc.project().groups[command.group].swing;
                             doc.set_swing(
@@ -821,6 +1152,23 @@ impl Editor {
                         Ok(())
                     })?;
                     changed = true;
+                }
+            }
+            if changed {
+                if explicit_load && profile.is_none() {
+                    self.bind_rhythm_profile(command.group, 1, roles)?;
+                } else if material_edit {
+                    if let Some(profile) = profile {
+                        let current = self
+                            .document
+                            .as_ref()
+                            .and_then(|d| d.project().groups.get(command.group))
+                            .map(rhythm::material)
+                            .ok_or("no such group")?;
+                        if current != profile.material {
+                            self.bind_rhythm_profile(command.group, profile.kind, profile.roles)?;
+                        }
+                    }
                 }
             }
         }
@@ -841,28 +1189,58 @@ impl Editor {
                 self.backup_if_needed()?;
                 let data = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
                 let origin = project_origin(&path, &data)?;
+                let profiles = project_rhythm_profiles(&path, &data)?;
                 let mut document = project_paths::normalize(Document::from_bytes(data, origin)?)?;
                 let modified = complete_groups(&mut document)? || document.is_dirty();
                 self.document = Some(document);
                 self.groove_solo_saved = [None; GROUPS];
+                self.restore_rhythm_profiles(profiles)?;
                 self.publish_snapshot(modified)?;
                 return Ok(());
             }
             let mut doc = empty_project()?;
             import_legacy(&mut doc, &self.legacy, &self.kits, self.shared.rate)?;
+            let mut factory_loaded = false;
             if let Some(manifest) = factory_manifest() {
                 if manifest.is_file() {
                     save_initial_legacy(&doc, &path)?;
                     crate::maschine_factory::import(&mut doc, &manifest)?;
+                    factory_loaded = true;
                 }
             }
             self.document = Some(reset_initial_history(doc)?);
+            if !factory_loaded {
+                self.bind_rhythm_profile(0, 1, [0, 1, 2, 3, 4, 5, 6, 7])?;
+            }
             self.publish_snapshot(true)?;
         }
         Ok(())
     }
 
     fn publish_snapshot(&mut self, modified: bool) -> Result<(), String> {
+        let materials: [String; GROUPS] = std::array::from_fn(|g| {
+            self.document
+                .as_ref()
+                .and_then(|d| d.project().groups.get(g))
+                .map(rhythm::material)
+                .unwrap_or_default()
+        });
+        for group in 0..GROUPS {
+            if !self.rhythm_material[group].is_empty()
+                && self.rhythm_material[group] != materials[group]
+            {
+                self.shared.rhythm_epochs[group].fetch_add(1, Ordering::AcqRel);
+            }
+            if self.rhythm_profiles[group]
+                .as_ref()
+                .is_some_and(|p| p.material != materials[group])
+            {
+                self.clear_rhythm_profile(group, true);
+            }
+            self.rhythm_material[group] = materials[group].clone();
+            self.shared.document_keys[group]
+                .store(rhythm::key(&materials[group]), Ordering::Release);
+        }
         let doc = self.document.as_ref().ok_or("Maschine project not ready")?;
         let mut snapshot = self
             .shared
@@ -931,7 +1309,7 @@ impl Editor {
             .autosave
             .as_ref()
             .ok_or("no configuration directory for Maschine projects")?;
-        save_project(path, &bytes, doc.path())?;
+        save_project(path, &bytes, doc.path(), &self.rhythm_profiles)?;
         self.dirty_since = None;
         self.shared.controls.save_pending.set_bool(false);
         self.shared.controls.save_error.set_bool(false);
@@ -958,6 +1336,7 @@ impl Editor {
                         group_file,
                         project: isolated.to_bytes()?,
                         origin: doc.path().map(encode_path),
+                        rhythm: self.rhythm_profiles.get(group).cloned().flatten(),
                     })
                 })();
                 let _ = reply.send(result);
@@ -965,6 +1344,9 @@ impl Editor {
             }
             Request::Open(path) => {
                 self.lock_project()?;
+                let source =
+                    std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                let profiles = project_rhythm_profiles(&path, &source)?;
                 let mut document = project_paths::normalize(Document::open(&path)?)?;
                 complete_groups(&mut document)?;
                 self.autosave_now()?;
@@ -976,8 +1358,14 @@ impl Editor {
                     backup_project(autosave)?;
                 }
                 self.backed_up = true;
+                for group in 0..GROUPS {
+                    self.clear_rhythm_profile(group, true);
+                }
+                self.rhythm_history = std::array::from_fn(|_| Vec::new());
+                self.rhythm_material = std::array::from_fn(|_| String::new());
                 self.document = Some(document);
                 self.groove_solo_saved = [None; GROUPS];
+                self.restore_rhythm_profiles(profiles)?;
                 self.shared
                     .project_generation
                     .fetch_add(1, Ordering::AcqRel);
@@ -990,6 +1378,8 @@ impl Editor {
                     .as_mut()
                     .expect("initialized")
                     .save_as(&path)?;
+                let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                save_project_metadata(&path, &bytes, Some(&path), &self.rhythm_profiles)?;
                 self.publish_snapshot(true)?;
                 Ok(false)
             }
@@ -1008,6 +1398,11 @@ impl Editor {
                     backup_project(path)?;
                 }
                 self.backed_up = true;
+                for group in 0..GROUPS {
+                    self.clear_rhythm_profile(group, true);
+                }
+                self.rhythm_history = std::array::from_fn(|_| Vec::new());
+                self.rhythm_material = std::array::from_fn(|_| String::new());
                 self.document = Some(reset_initial_history(empty_project()?)?);
                 self.groove_solo_saved = [None; GROUPS];
                 self.shared
@@ -1050,6 +1445,36 @@ impl Editor {
                 self.publish_snapshot(true)?;
                 Ok(true)
             }
+            Request::EditWithRhythm {
+                generation,
+                epoch,
+                group,
+                kind,
+                roles,
+                edit,
+            } => {
+                if group >= GROUPS
+                    || self.shared.project_generation.load(Ordering::Acquire) != generation
+                    || self.shared.rhythm_epochs[group].load(Ordering::Acquire) != epoch
+                {
+                    return Err("project or rhythm profile changed while preparing the edit".into());
+                }
+                if kind != 0 && !rhythm::valid(kind, roles) {
+                    return Err("invalid rhythm profile".into());
+                }
+                self.ensure_document()?;
+                self.document
+                    .as_mut()
+                    .expect("initialized")
+                    .transaction("Edit", edit)?;
+                if kind == 0 {
+                    self.clear_rhythm_profile(group, true);
+                } else {
+                    self.bind_rhythm_profile(group, kind, roles)?;
+                }
+                self.publish_snapshot(true)?;
+                Ok(true)
+            }
             Request::EditDeferredForProject(generation, edit) => {
                 if self.shared.project_generation.load(Ordering::Acquire) != generation {
                     return Err("Maschine project changed while preparing the edit".into());
@@ -1077,6 +1502,7 @@ impl Editor {
                     _ => unreachable!(),
                 };
                 if changed {
+                    self.restore_rhythm_after_undo()?;
                     self.publish_snapshot(true)?;
                 }
                 Ok(changed)
@@ -1159,6 +1585,30 @@ pub struct MaschineHandle {
 }
 
 impl MaschineHandle {
+    fn edit_with_rhythm(
+        &self,
+        group: usize,
+        kind: u8,
+        roles: [usize; crate::groove::ROWS],
+        edit: impl FnOnce(&mut Document) -> Result<(), String> + Send + 'static,
+    ) -> Result<(), String> {
+        if group >= GROUPS {
+            return Err("no such group".into());
+        }
+        let generation = self.shared.project_generation.load(Ordering::Acquire);
+        let epoch = self.shared.rhythm_epochs[group].load(Ordering::Acquire);
+        if self.request(Request::EditWithRhythm {
+            generation,
+            epoch,
+            group,
+            kind,
+            roles,
+            edit: Box::new(edit),
+        })? {
+            self.shared.prepare()?;
+        }
+        Ok(())
+    }
     pub fn export_native_groove_preset(&self, group: usize) -> Result<NativeGroovePreset, String> {
         let (reply, result) = std::sync::mpsc::sync_channel(1);
         self.request(Request::ExportGroovePreset { group, reply })?;
@@ -1175,7 +1625,12 @@ impl MaschineHandle {
         source_scene: usize,
         preset: NativeGroovePreset,
     ) -> Result<(), String> {
-        self.edit(move |doc| {
+        let profile = preset.rhythm.clone();
+        let verification = profile.clone();
+        let (kind, roles) = profile.map_or((0, [rhythm::NONE; crate::groove::ROWS]), |p| {
+            (p.kind, p.roles)
+        });
+        self.edit_with_rhythm(group, kind, roles, move |doc| {
             let origin = preset.origin.map(decode_path).transpose()?;
             let source = Document::from_bytes(preset.project, origin)?;
             let source_data = source
@@ -1184,6 +1639,12 @@ impl MaschineHandle {
                 .get(source_group)
                 .ok_or("preset group is missing")?
                 .clone();
+            if verification
+                .as_ref()
+                .is_some_and(|p| p.material != rhythm::material(&source_data))
+            {
+                return Err("preset rhythm profile does not match its source group".into());
+            }
             let old_patterns = doc
                 .project()
                 .groups
@@ -1446,9 +1907,14 @@ impl MaschineHandle {
         kit: Option<usize>,
         settings: [LegacySoundSettings; crate::groove::ROWS],
     ) -> Result<(), String> {
+        if group >= GROUPS {
+            return Err("no such group".into());
+        }
+        let (kind, roles) = rhythm::unpack(self.shared.rhythm_bits[group].load(Ordering::Acquire))
+            .unwrap_or((1, [0, 1, 2, 3, 4, 5, 6, 7]));
         let kits = self.shared.kits.clone();
         let rate = self.shared.rate;
-        self.edit(move |doc| {
+        self.edit_with_rhythm(group, kind, roles, move |doc| {
             apply_legacy_sounds(
                 doc,
                 group,
@@ -1459,6 +1925,7 @@ impl MaschineHandle {
                 [true; crate::groove::ROWS],
                 [true; crate::groove::ROWS],
                 [7; crate::groove::ROWS],
+                roles,
             )?;
             for (slot, rows) in tracks.into_iter().enumerate() {
                 if rows.iter().all(Option::is_none) {
@@ -1466,7 +1933,6 @@ impl MaschineHandle {
                 }
                 let pattern = pattern_in_slot(doc, group, slot)?;
                 let g = doc.project().groups.get(group).ok_or("no such group")?;
-                let roles = roles_of(Some(g));
                 let mut next = tracks_of(&g.patterns[pattern], roles)?;
                 let mut selected = [false; crate::groove::ROWS];
                 for (row, track) in rows.into_iter().enumerate() {
@@ -1475,7 +1941,7 @@ impl MaschineHandle {
                         selected[row] = true;
                     }
                 }
-                load_tracks(doc, group, pattern, next, selected)?;
+                load_tracks(doc, group, pattern, next, selected, roles)?;
             }
             if let Some(swing) = swing {
                 let old = doc
@@ -1751,6 +2217,8 @@ pub(crate) struct Maschine {
     groove_mix_group: usize,
     groove_mix_pending: Option<GrooveCommand>,
     groove_mix_next_frame: u64,
+    rhythm_load_kit_seen: u32,
+    rhythm_last_kit: Option<(usize, usize, u64, u64)>,
     vary_habits: Arc<Habits>,
     vary_rng: groove_dice::Rng,
     leader_key: Option<u8>,
@@ -1776,6 +2244,9 @@ pub(crate) struct Maschine {
     keyboard_focus: Option<(usize, usize, i64)>,
     base_keys: [[i64; SOUNDS]; GROUPS],
     roles: [[usize; crate::groove::ROWS]; GROUPS],
+    material_keys: [u64; GROUPS],
+    prepared_generation: u64,
+    rhythm_active: bool,
     legacy_sounds: [[bool; SOUNDS]; GROUPS],
     project: Option<Arc<Project>>,
     fill_seed: u32,
@@ -1828,6 +2299,10 @@ impl Maschine {
             sampling_preview: RwLock::new(None),
             revision: AtomicU64::new(0),
             project_generation: AtomicU64::new(1),
+            rhythm_bits: std::array::from_fn(|_| AtomicU64::new(0)),
+            rhythm_keys: std::array::from_fn(|_| AtomicU64::new(0)),
+            document_keys: std::array::from_fn(|_| AtomicU64::new(0)),
+            rhythm_epochs: std::array::from_fn(|_| AtomicU64::new(1)),
             groove_overflow: AtomicBool::new(false),
             groove_lost: AtomicBool::new(false),
             rate: rate as u32,
@@ -1849,6 +2324,7 @@ impl Maschine {
         let groove_chain_seen = legacy.chain.version();
         let groove_tracks_seen = std::array::from_fn(|slot| legacy.tracks(slot));
         let groove_mix_seen = legacy_mix(&legacy);
+        let rhythm_load_kit_seen = controls.rhythm_load_kit.version();
         std::thread::Builder::new()
             .name(format!("maschine-editor-{}", deck + 1))
             .spawn(move || {
@@ -1867,6 +2343,9 @@ impl Maschine {
                     ),
                     groove_undo: Vec::new(),
                     groove_solo_saved: [None; GROUPS],
+                    rhythm_profiles: std::array::from_fn(|_| None),
+                    rhythm_material: std::array::from_fn(|_| String::new()),
+                    rhythm_history: std::array::from_fn(|_| Vec::new()),
                     autosave: autosave_path(deck),
                     project_lock: None,
                     backed_up: false,
@@ -1881,9 +2360,16 @@ impl Maschine {
                 let mut pattern_seen = worker_controls.pattern.version();
                 let mut selected_patterns = [0usize; GROUPS];
                 let mut cue_seen = std::array::from_fn::<_, GROUPS, _>(|g| worker_controls.group_cue[g].version());
+                let mut rhythm_seen = [[0u32; crate::groove::ROWS + 1]; GROUPS];
+                let mut rhythm_checked = Instant::now();
                 loop {
                     match requests.recv_timeout(Duration::from_millis(4)) {
                         Ok(job) => {
+                            if let Err(error) = editor.sync_rhythm_controls(&mut rhythm_seen) {
+                                editor.shared.set_error(error.clone());
+                                let _ = job.reply.send(Err(error));
+                                continue;
+                            }
                             let selects = matches!(&job.request, Request::SelectPattern { .. });
                             let result = editor.request(job.request);
                             if selects && result.is_ok() {
@@ -1912,6 +2398,15 @@ impl Maschine {
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     }
                     editor.shared.collect();
+                    if let Err(error) = editor.sync_rhythm_controls(&mut rhythm_seen) {
+                        editor.shared.set_error(error);
+                    }
+                    if rhythm_checked.elapsed() >= Duration::from_secs(1) {
+                        rhythm_checked = Instant::now();
+                        if let Err(error) = editor.check_rhythm_material() {
+                            editor.shared.set_error(error);
+                        }
+                    }
                     if editor.shared.groove_overflow.swap(false, Ordering::AcqRel) {
                         editor.shared.groove_lost.store(true, Ordering::Release);
                         editor
@@ -2077,6 +2572,8 @@ impl Maschine {
                 groove_mix_group: 0,
                 groove_mix_pending: None,
                 groove_mix_next_frame: 0,
+                rhythm_load_kit_seen,
+                rhythm_last_kit: None,
                 vary_habits,
                 vary_rng: groove_dice::Rng(0x85eb_ca6b ^ ((deck as u32 + 1) * 3571)),
                 leader_key: None,
@@ -2101,7 +2598,10 @@ impl Maschine {
                 sound_seen,
                 keyboard_focus: Some((0, 0, 60)),
                 base_keys: [[60; SOUNDS]; GROUPS],
-                roles: [[0, 1, 2, 3, 4, 5, 6, 7]; GROUPS],
+                roles: [[rhythm::NONE; crate::groove::ROWS]; GROUPS],
+                material_keys: [0; GROUPS],
+                prepared_generation: 0,
+                rhythm_active: false,
                 legacy_sounds: [[false; SOUNDS]; GROUPS],
                 project: None,
                 fill_seed: crate::groove::fill_seed(deck),
@@ -2125,6 +2625,7 @@ impl Maschine {
         self.groove_tracks_seen = std::array::from_fn(|slot| controls.tracks(slot));
         self.groove_mix_seen = legacy_mix(controls);
         self.groove_mix_group = (self.controls.group.get().round() as usize).min(GROUPS - 1);
+        self.rhythm_load_kit_seen = self.controls.rhythm_load_kit.version();
     }
 
     pub fn set_groove_key(&mut self, key: Option<u8>) {
@@ -2165,19 +2666,60 @@ impl Maschine {
         self.groove_tracks_seen = std::array::from_fn(|slot| controls.tracks(slot));
         self.groove_mix_seen = legacy_mix(controls);
         self.groove_mix_group = (self.controls.group.get().round() as usize).min(GROUPS - 1);
+        self.controls.rhythm_load_kit.set_bool(false);
+        self.rhythm_load_kit_seen = self.controls.rhythm_load_kit.version();
     }
 
     fn send_groove_action(&mut self, action: GrooveAction) {
+        let group = (self.controls.group.get().round() as usize).min(GROUPS - 1);
+        let current = self.prepared_generation
+            == self.shared.project_generation.load(Ordering::Acquire)
+            && self.material_keys[group] != 0
+            && self.material_keys[group]
+                == self.shared.document_keys[group].load(Ordering::Acquire);
+        if (action.explicit_load() && self.shared.document_keys[group].load(Ordering::Acquire) == 0)
+            || (!action.explicit_load() && (!current || !self.has_rhythm_profile(group)))
+        {
+            return;
+        }
         let command = GrooveCommand {
             generation: self.shared.project_generation.load(Ordering::Acquire),
-            group: (self.controls.group.get().round() as usize).min(GROUPS - 1),
+            rhythm_epoch: self.shared.rhythm_epochs[group].load(Ordering::Acquire),
+            group,
             scene: (self.controls.scene.get().round() as usize).min(127),
             action,
         };
         if self.groove_commands.push(command).is_err() {
             self.controls.error.set_bool(true);
             self.shared.groove_overflow.store(true, Ordering::Release);
+        } else {
+            self.remember_kit_request(command);
         }
+    }
+
+    fn remember_kit_request(&mut self, command: GrooveCommand) {
+        if let GrooveAction::Mix {
+            kit,
+            explicit_kit: true,
+            ..
+        } = command.action
+        {
+            self.rhythm_last_kit = Some((
+                command.group,
+                kit,
+                command.generation,
+                self.engine.output_frame(),
+            ));
+        }
+    }
+
+    fn has_rhythm_profile(&self, group: usize) -> bool {
+        let bits = self.shared.rhythm_bits[group].load(Ordering::Acquire);
+        let requested = self.controls.rhythm_profile[group].get().round() as u8;
+        self.prepared_generation == self.shared.project_generation.load(Ordering::Acquire)
+            && self.material_keys[group] != 0
+            && self.material_keys[group] == self.shared.rhythm_keys[group].load(Ordering::Acquire)
+            && rhythm::unpack(bits).is_some_and(|(kind, _)| kind == requested)
     }
 
     fn flush_legacy_mix(&mut self, force: bool) {
@@ -2187,7 +2729,10 @@ impl Maschine {
         }
         if let Some(command) = self.groove_mix_pending.take() {
             match self.groove_commands.push(command) {
-                Ok(()) => self.groove_mix_next_frame = now.saturating_add((self.rate * 0.1) as u64),
+                Ok(()) => {
+                    self.remember_kit_request(command);
+                    self.groove_mix_next_frame = now.saturating_add((self.rate * 0.1) as u64);
+                }
                 Err(_) => self.groove_mix_pending = Some(command),
             }
         }
@@ -2196,21 +2741,34 @@ impl Maschine {
     fn capture_legacy_mix(&mut self, controls: &GrooveControls) {
         let group = (self.controls.group.get().round() as usize).min(GROUPS - 1);
         let now = legacy_mix(controls);
+        if !self.has_rhythm_profile(group) {
+            self.flush_legacy_mix(true);
+            if now.kit != self.groove_mix_seen.kit {
+                if let Some(action) = changed_mix(self.groove_mix_seen, now) {
+                    self.send_groove_action(action);
+                }
+            }
+            self.groove_mix_group = group;
+            self.groove_mix_seen = now;
+            return;
+        }
         if group != self.groove_mix_group {
             self.flush_legacy_mix(true);
             self.groove_mix_group = group;
             self.groove_mix_seen = now;
         } else if let Some(action) = changed_mix(self.groove_mix_seen, now) {
             let generation = self.shared.project_generation.load(Ordering::Acquire);
-            if self
-                .groove_mix_pending
-                .as_ref()
-                .is_some_and(|p| p.group != group || p.generation != generation)
-            {
+            let epoch = self.shared.rhythm_epochs[group].load(Ordering::Acquire);
+            if self.groove_mix_pending.as_ref().is_some_and(|p| {
+                p.group != group || p.generation != generation || p.rhythm_epoch != epoch
+            }) {
                 self.flush_legacy_mix(true);
             }
             if let Some(pending) = self.groove_mix_pending.as_mut() {
-                if pending.group == group && pending.generation == generation {
+                if pending.group == group
+                    && pending.generation == generation
+                    && pending.rhythm_epoch == epoch
+                {
                     merge_mix(&mut pending.action, action);
                 } else {
                     self.controls.error.set_bool(true);
@@ -2219,6 +2777,7 @@ impl Maschine {
             } else {
                 self.groove_mix_pending = Some(GrooveCommand {
                     generation,
+                    rhythm_epoch: epoch,
                     group,
                     scene: (self.controls.scene.get().round() as usize).min(127),
                     action,
@@ -2231,7 +2790,56 @@ impl Maschine {
     /// Capture the explicit actions before the legacy scheduler consumes the
     /// push controls. The worker prepares their timeline for the next bar.
     pub fn capture_groove_actions(&mut self, c: &GrooveControls) {
-        self.capture_legacy_mix(c);
+        let kit_changed = self.controls.rhythm_load_kit.version() != self.rhythm_load_kit_seen;
+        if self.controls.rhythm_load_kit.get_bool() || kit_changed {
+            self.controls.rhythm_load_kit.set_bool(false);
+            self.rhythm_load_kit_seen = self.controls.rhythm_load_kit.version();
+            let mix = legacy_mix(c);
+            let settings = std::array::from_fn(|r| LegacySoundSettings {
+                sound: mix.rows[r].sound,
+                pitch: mix.rows[r].pitch,
+                decay: mix.rows[r].decay,
+                tone: mix.rows[r].tone,
+                ..Default::default()
+            });
+            let mut action = GrooveAction::Mix {
+                kit: mix.kit,
+                explicit_kit: true,
+                settings,
+                rebuild: [true; crate::groove::ROWS],
+                replace: [true; crate::groove::ROWS],
+                parameters: [7; crate::groove::ROWS],
+                mute_changed: [false; crate::groove::ROWS],
+            };
+            let group = (self.controls.group.get().round() as usize).min(GROUPS - 1);
+            let generation = self.shared.project_generation.load(Ordering::Acquire);
+            let mut merged = false;
+            if let Some(mut pending) = self.groove_mix_pending.take() {
+                if pending.group == group
+                    && pending.generation == generation
+                    && pending.rhythm_epoch
+                        == self.shared.rhythm_epochs[group].load(Ordering::Acquire)
+                {
+                    merge_mix(&mut pending.action, action);
+                    action = pending.action;
+                    merged = true;
+                } else {
+                    self.groove_mix_pending = Some(pending);
+                }
+            }
+            let duplicate = self.rhythm_last_kit.is_some_and(|(g, kit, gen, frame)| {
+                g == group
+                    && kit == mix.kit
+                    && gen == generation
+                    && self.engine.output_frame().saturating_sub(frame) < (self.rate * 0.25) as u64
+            });
+            if merged || !duplicate {
+                self.send_groove_action(action);
+            }
+            self.groove_mix_seen = mix;
+        } else {
+            self.capture_legacy_mix(c);
+        }
         for slot in 0..crate::groove::GROOVES {
             let tracks = c.tracks(slot);
             for (row, &after) in tracks.iter().enumerate() {
@@ -2252,6 +2860,7 @@ impl Maschine {
                 genre,
                 index: c.pattern.get().round() as usize,
                 slot: None,
+                chosen: (c.groove.get().round() as usize).min(crate::groove::GROOVES - 1),
             });
         }
         if c.load_chain.get_bool() {
@@ -2260,12 +2869,14 @@ impl Maschine {
                 genre,
                 index: c.chain.get().round() as usize,
                 slot: Some(chosen ^ 1),
+                chosen,
             });
         }
         if c.load_set.get_bool() || c.load_set.version() != self.groove_set_seen {
             self.send_groove_action(GrooveAction::LoadSet {
                 genre,
                 set: c.library_set.get().round() as usize,
+                chosen: (c.groove.get().round() as usize).min(crate::groove::GROOVES - 1),
                 tone: std::array::from_fn(|row| c.tone[row].get()),
             });
         }
@@ -2300,7 +2911,16 @@ impl Maschine {
         }
         for edit in edits {
             if !matches!(edit, GroovePadEdit::Record { .. }) || !self.controls.record.get_bool() {
-                self.send_groove_action(GrooveAction::Pad(edit));
+                if let GroovePadEdit::Load { genre, index } = edit {
+                    self.send_groove_action(GrooveAction::Load {
+                        genre,
+                        index,
+                        slot: None,
+                        chosen: (c.groove.get().round() as usize).min(crate::groove::GROOVES - 1),
+                    });
+                } else {
+                    self.send_groove_action(GrooveAction::Pad(edit));
+                }
             }
         }
         let slot_changed = c.groove.version() != self.groove_slot_seen;
@@ -2348,7 +2968,8 @@ impl Maschine {
             next.engine.keep_timelines_for_adoption();
             let old = self.engine.adopt_with(next.engine, &mut next.timelines);
             std::mem::swap(&mut self.base_keys, &mut next.base_keys);
-            std::mem::swap(&mut self.roles, &mut next.roles);
+            std::mem::swap(&mut self.material_keys, &mut next.material_keys);
+            std::mem::swap(&mut self.prepared_generation, &mut next.generation);
             std::mem::swap(&mut self.legacy_sounds, &mut next.legacy_sounds);
             std::mem::swap(&mut self.project, &mut next.project);
             std::mem::swap(&mut self.cue_bus, &mut next.cue_bus);
@@ -2379,6 +3000,12 @@ impl Maschine {
     ) {
         self.active = true;
         self.poll();
+        self.refresh_rhythm();
+        if !self.rhythm_active {
+            self.engine.set_sequence_gate_sounds(None, None, false);
+            self.break_gate = false;
+            self.crash_next = false;
+        }
         self.engine.set_recording(self.controls.record.get_bool());
         self.engine.metronome =
             self.controls.metronome.get_bool() && self.cue_bus < deckard_engine::OUTPUTS;
@@ -2443,6 +3070,9 @@ impl Maschine {
         let sound = (self.controls.sound.get().round() as usize).min(SOUNDS - 1);
         let sound_changed = self.controls.sound.version() != self.sound_seen;
         if group != self.focused_group {
+            self.engine.set_sequence_gate_sounds(None, None, false);
+            self.break_gate = false;
+            self.crash_next = false;
             self.selected_sounds[self.focused_group] = self.last_sound;
             self.focused_group = group;
             if sound_changed {
@@ -2460,15 +3090,17 @@ impl Maschine {
         let kit =
             (controls.kit.get().round() as usize).min(self.shared.kits.len().saturating_sub(1));
         let sound = controls.sound[0].get().round() as usize;
-        let hz = if self.legacy_sounds[group][self.roles[group][0]] {
-            self.shared
-                .kits
-                .get(kit)
-                .and_then(|k| k.sounds.get(sound))
-                .map_or(0.0, |s| s.pitch)
-        } else {
-            0.0
-        };
+        let kick_sound = self.roles[group][0];
+        let hz =
+            if self.rhythm_active && kick_sound < SOUNDS && self.legacy_sounds[group][kick_sound] {
+                self.shared
+                    .kits
+                    .get(kit)
+                    .and_then(|k| k.sounds.get(sound))
+                    .map_or(0.0, |s| s.pitch)
+            } else {
+                0.0
+            };
         let tuning =
             crate::groove::kick_shift(hz, self.leader_key, controls.kick_key.get().round() as u8);
         self.kick_semitones = tuning.map_or(0, |(shift, _)| i64::from(shift));
@@ -2476,14 +3108,17 @@ impl Maschine {
             .kick_note
             .set(tuning.map_or(0.0, |(_, note)| f64::from(note) + 1.0));
         self.engine.set_sequence_pitch_shift(
-            Some(group),
-            self.roles[group][0],
+            (kick_sound < SOUNDS && self.rhythm_active).then_some(group),
+            kick_sound,
             self.kick_semitones,
         );
         let step = controls.position.get().round().max(0.0) as usize;
         self.update_vary_context(controls, group, step);
         for hit in manual {
             let sound = self.roles[group][hit.row.min(crate::groove::ROWS - 1)];
+            if sound >= SOUNDS {
+                continue;
+            }
             let velocity = ((hit.velocity.clamp(0.0, 1.25) as f64 / 1.25).cbrt() * 127.0)
                 .round()
                 .clamp(1.0, 127.0) as i64;
@@ -2584,10 +3219,11 @@ impl Maschine {
         self.sync_keyboard_focus(group, self.last_sound);
         let start_frame = self.engine.output_frame();
         self.engine.clear_played_notes();
+        let break_start = break_start && self.rhythm_active;
         if self.break_gate != break_start {
             self.break_gate = break_start;
             self.engine
-                .set_sequence_gate_sounds(None, None, break_start);
+                .set_sequence_gate_sounds(break_start.then_some(group), None, false);
             if break_start {
                 self.crash_next = false;
             }
@@ -2714,10 +3350,17 @@ impl Maschine {
 
     fn apply_step(&mut self, controls: &GrooveControls, signal: GrooveStep, group: usize) {
         self.update_vary_context(controls, group, signal.step);
+        if !self.rhythm_active {
+            self.break_gate = false;
+            self.crash_next = false;
+            self.engine.set_sequence_gate_sounds(None, None, false);
+            return;
+        }
         if signal.break_active {
             self.break_gate = true;
             self.crash_next = false;
-            self.engine.set_sequence_gate_sounds(None, None, true);
+            self.engine
+                .set_sequence_gate_sounds(Some(group), None, false);
             return;
         }
         self.break_gate = false;
@@ -2735,6 +3378,9 @@ impl Maschine {
         let vary = controls.vary.get() as f32;
         let genre = controls.genre.get().round() as usize;
         for row in 0..crate::groove::ROWS {
+            if roles[row] >= SOUNDS {
+                continue;
+            }
             let role = if row == crate::groove::ROWS - 1
                 && controls.sound[row].get().round() as usize == 8
             {
@@ -2761,6 +3407,9 @@ impl Maschine {
                 .round()
                 .clamp(1.0, 127.0) as i64;
             let sound = roles[row];
+            if sound >= SOUNDS {
+                continue;
+            }
             self.engine.note_on_generated(
                 group,
                 sound,
@@ -2781,6 +3430,9 @@ impl Maschine {
                 continue;
             }
             let sound = roles[row];
+            if sound >= SOUNDS {
+                continue;
+            }
             let velocity = ((velocity.clamp(0.0, 1.25) as f64 / 1.25).cbrt() * 127.0)
                 .round()
                 .clamp(1.0, 127.0) as i64;
@@ -2799,13 +3451,67 @@ impl Maschine {
         let mut context = [0u64; 16];
         context[0] = group as u64;
         context[1] = controls.genre.get().round() as u64;
-        context[2] = (controls.vary.get() as f32).to_bits() as u64;
+        context[2] = (if self.rhythm_active {
+            controls.vary.get() as f32
+        } else {
+            0.0f32
+        })
+        .to_bits() as u64;
         context[3] = (step % crate::groove::STEPS) as u64;
         for (row, sound) in self.roles[group].iter().enumerate() {
-            context[4 + row] = *sound as u64;
+            context[4 + row] = if *sound < SOUNDS {
+                *sound as u64
+            } else {
+                u64::MAX
+            };
         }
         context[12] = controls.sound[crate::groove::ROWS - 1].get().round() as u64;
         self.engine.set_sequence_transform_context(context);
+    }
+
+    /// Read only bounded atomics and the already-adopted snapshot on audio.
+    fn refresh_rhythm(&mut self) {
+        let scene = match self.engine.mode() {
+            Mode::Scene(scene) => Some(scene),
+            _ => None,
+        };
+        // A prepared edit is adopted before its replacement timeline becomes
+        // audible at the bar. Do not apply a new profile to the old timeline.
+        let stable_timeline =
+            !self.engine.sequencing || self.engine.queued() != Some(self.engine.mode());
+        let current =
+            self.prepared_generation == self.shared.project_generation.load(Ordering::Acquire);
+        let selected = (self.controls.group.get().round() as usize).min(GROUPS - 1);
+        for group in 0..GROUPS {
+            let key = self.shared.rhythm_keys[group].load(Ordering::Acquire);
+            let bits = self.shared.rhythm_bits[group].load(Ordering::Acquire);
+            let roles = if current && key != 0 && key == self.material_keys[group] {
+                rhythm::unpack(bits)
+                    .filter(|(kind, _)| {
+                        *kind == self.controls.rhythm_profile[group].get().round() as u8
+                    })
+                    .map(|(_, roles)| roles)
+            } else {
+                None
+            };
+            let assigned = scene
+                .and_then(|scene| self.project.as_ref()?.scenes.get(scene))
+                .and_then(|s| s.patterns.iter().find(|(g, _)| *g == group))
+                .is_some_and(|(_, p)| {
+                    self.project
+                        .as_ref()
+                        .and_then(|project| project.groups.get(group))
+                        .is_some_and(|g| *p < g.patterns.len())
+                });
+            self.roles[group] = roles.unwrap_or([rhythm::NONE; crate::groove::ROWS]);
+            self.controls.rhythm_has_profile[group].set_bool(roles.is_some());
+            self.controls.rhythm_has_pattern[group].set_bool(assigned);
+            self.controls.rhythm_ready[group]
+                .set_bool(roles.is_some() && assigned && stable_timeline);
+            if group == selected {
+                self.rhythm_active = roles.is_some() && assigned && stable_timeline;
+            }
+        }
     }
 
     fn written_steps(
@@ -2841,7 +3547,7 @@ impl Maschine {
             }
             let note_step = (offset / grid) as usize;
             for (row, sound) in self.roles[group].iter().enumerate() {
-                if note.sound == *sound {
+                if *sound < SOUNDS && note.sound == *sound {
                     written[row] |= 1 << note_step;
                     if note_step == step {
                         normal[row] = normal[row].max((note.velocity.clamp(0, 127) as f32) / 127.0);
@@ -2871,29 +3577,6 @@ fn telemetry() -> deckard_engine::Telemetry {
     t.recorded_expr.reserve(4096);
     t.recorded_controls.reserve(4096);
     t
-}
-
-fn roles_of(group: Option<&deckard_model::Group>) -> [usize; crate::groove::ROWS] {
-    let Some(group) = group else {
-        return [0, 1, 2, 3, 4, 5, 6, 7];
-    };
-    let named = |sound: usize, words: &[&str]| {
-        group.sounds.get(sound).is_some_and(|s| {
-            let name = s.name.to_lowercase();
-            words.iter().any(|word| name.contains(word))
-        })
-    };
-    if group.sounds.len() >= SOUNDS
-        && named(0, &["kick", "bumbo"])
-        && named(2, &["snare", "caixa"])
-        && named(6, &["clap", "palma"])
-    {
-        // The 16-sound factory banks put the eight roles in pairs.
-        [0, 2, 4, 5, 6, 10, 11, 14]
-    } else {
-        // A legacy or external kit keeps its own first-eight order.
-        [0, 1, 2, 3, 4, 5, 6, 7]
-    }
 }
 
 fn groove_swing(value: f64) -> f64 {
@@ -2958,6 +3641,7 @@ fn changed_mix(before: LegacyMixSnapshot, after: LegacyMixSnapshot) -> Option<Gr
             .any(|s| *s != LegacySoundSettings::default()))
     .then_some(GrooveAction::Mix {
         kit: after.kit,
+        explicit_kit: kit_changed,
         settings,
         rebuild,
         replace,
@@ -2970,6 +3654,7 @@ fn merge_mix(previous: &mut GrooveAction, next: GrooveAction) {
     let (
         GrooveAction::Mix {
             kit,
+            explicit_kit,
             settings,
             rebuild,
             replace,
@@ -2978,6 +3663,7 @@ fn merge_mix(previous: &mut GrooveAction, next: GrooveAction) {
         },
         GrooveAction::Mix {
             kit: next_kit,
+            explicit_kit: next_explicit_kit,
             settings: next_settings,
             rebuild: next_rebuild,
             replace: next_replace,
@@ -2989,6 +3675,7 @@ fn merge_mix(previous: &mut GrooveAction, next: GrooveAction) {
         return;
     };
     *kit = next_kit;
+    *explicit_kit |= next_explicit_kit;
     for row in 0..crate::groove::ROWS {
         rebuild[row] |= next_rebuild[row];
         replace[row] |= next_replace[row];
@@ -3069,7 +3756,10 @@ fn tracks_of(
         let Some(step) = grid_step(pattern, note) else {
             continue;
         };
-        let Some(row) = roles.iter().position(|sound| *sound == note.sound) else {
+        let Some(row) = roles
+            .iter()
+            .position(|sound| *sound < SOUNDS && *sound == note.sound)
+        else {
             continue;
         };
         let bit = 1 << step;
@@ -3246,15 +3936,15 @@ fn load_tracks(
     pattern: usize,
     tracks: [Track; crate::groove::ROWS],
     selected: [bool; crate::groove::ROWS],
+    roles: [usize; crate::groove::ROWS],
 ) -> Result<(), String> {
     let g = doc.project().groups.get(group).ok_or("no such group")?;
     let p = g.patterns.get(pattern).ok_or("no such pattern")?;
-    let roles = roles_of(Some(g));
     let _ = tracks_of(p, roles)?;
     let mut removed = Vec::new();
     let mut added = Vec::new();
     for (row, sound) in roles.into_iter().enumerate() {
-        if !selected[row] {
+        if !selected[row] || sound >= SOUNDS {
             continue;
         }
         for step in 0..crate::groove::STEPS {
@@ -3291,10 +3981,10 @@ fn apply_pad_edit(
     group: usize,
     pattern: usize,
     edit: GroovePadEdit,
+    roles: [usize; crate::groove::ROWS],
 ) -> Result<bool, String> {
     let g = doc.project().groups.get(group).ok_or("no such group")?;
     let p = g.patterns.get(pattern).ok_or("no such pattern")?;
-    let roles = roles_of(Some(g));
     let _ = tracks_of(p, roles)?;
     let (row, step, clear, record) = match edit {
         GroovePadEdit::Toggle { row, step } => (row, Some(step), false, false),
@@ -3302,7 +3992,10 @@ fn apply_pad_edit(
         GroovePadEdit::Record { row, step } => (row, Some(step), false, true),
         GroovePadEdit::Load { .. } => return Err("not a pad step edit".into()),
     };
-    let sound = *roles.get(row).ok_or("no such Groove row")?;
+    let sound = *roles
+        .get(row)
+        .filter(|s| **s < SOUNDS)
+        .ok_or("this Groove role has no Sound")?;
     let removed: Vec<_> = p
         .notes
         .iter()
@@ -3336,11 +4029,14 @@ fn apply_track_delta(
     row: usize,
     before: Track,
     after: Track,
+    roles: [usize; crate::groove::ROWS],
 ) -> Result<(), String> {
     let g = doc.project().groups.get(group).ok_or("no such group")?;
     let p = g.patterns.get(pattern).ok_or("no such pattern")?;
-    let roles = roles_of(Some(g));
-    let sound = *roles.get(row).ok_or("no such Groove row")?;
+    let sound = *roles
+        .get(row)
+        .filter(|s| **s < SOUNDS)
+        .ok_or("this Groove role has no Sound")?;
     let current = tracks_of(p, roles)?[row];
     let hit_delta = before.hits ^ after.hits;
     let soft_delta = before.soft ^ after.soft;
@@ -3412,13 +4108,16 @@ fn apply_legacy_sounds(
     rebuild: [bool; crate::groove::ROWS],
     replace: [bool; crate::groove::ROWS],
     parameters: [u8; crate::groove::ROWS],
+    roles: [usize; crate::groove::ROWS],
 ) -> Result<(), String> {
-    let roles = roles_of(doc.project().groups.get(group));
     let selected_kit = kit
         .map(|i| kits.get(i).ok_or("no such Groove kit"))
         .transpose()?;
     let any_solo = settings.iter().any(|s| s.solo == Some(true));
     for (row, sound) in roles.into_iter().enumerate() {
+        if sound >= SOUNDS {
+            continue;
+        }
         let setting = settings[row];
         let current = doc
             .project()
@@ -3677,7 +4376,7 @@ fn overlay_plan(
         if controls.auto_fill_style.get_bool() {
             let result = groove_fills::pattern_fill(fill, signal.step, normal, written);
             for row in 0..crate::groove::ROWS {
-                if result[row] > normal[row] {
+                if roles[row] < SOUNDS && result[row] > normal[row] {
                     plan.gate |= 1u32 << roles[row];
                     plan.hits[row] = result[row];
                 }
@@ -3694,14 +4393,21 @@ fn overlay_plan(
         }
     } else if signal.step == 0 && std::mem::take(crash_next) {
         let row = crate::groove::ROWS - 1;
-        if normal[row] < 1.0 {
+        if roles[row] < SOUNDS && normal[row] < 1.0 {
             plan.gate |= 1u32 << roles[row];
             plan.hits[row] = 1.0;
         }
     }
     if replace_all {
         for sound in roles {
-            plan.gate |= 1u32 << sound;
+            if sound < SOUNDS {
+                plan.gate |= 1u32 << sound;
+            }
+        }
+    }
+    for row in 0..crate::groove::ROWS {
+        if roles[row] >= SOUNDS {
+            plan.hits[row] = 0.0;
         }
     }
     plan
@@ -4135,7 +4841,12 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// Metadata is written first and retains both the previous and next origin.
 /// If interrupted between the two renames the old project still finds its own
 /// entry. Old sidecars are backed up with the project on the next session.
-fn save_project(path: &Path, bytes: &[u8], origin: Option<&Path>) -> Result<(), String> {
+fn save_project_metadata(
+    path: &Path,
+    bytes: &[u8],
+    origin: Option<&Path>,
+    profiles: &[Option<rhythm::Profile>; GROUPS],
+) -> Result<(), String> {
     let meta = metadata_path(path);
     let mut entries: Vec<serde_json::Value> = if meta.exists() {
         let data = std::fs::read(&meta).map_err(|e| format!("{}: {e}", meta.display()))?;
@@ -4146,13 +4857,57 @@ fn save_project(path: &Path, bytes: &[u8], origin: Option<&Path>) -> Result<(), 
     let id = fingerprint(bytes);
     entries
         .retain(|entry| entry.get("id").and_then(serde_json::Value::as_str) != Some(id.as_str()));
-    entries.push(serde_json::json!({"id": id, "origin": origin.map(encode_path)}));
+    let rhythm: Vec<_> = profiles
+        .iter()
+        .map(|p| p.as_ref().map(rhythm::to_json))
+        .collect();
+    entries
+        .push(serde_json::json!({"id": id, "origin": origin.map(encode_path), "rhythm": rhythm}));
     if entries.len() > 3 {
         entries.drain(..entries.len() - 3);
     }
     let metadata = serde_json::to_vec(&entries).map_err(|e| e.to_string())?;
-    atomic_write(&meta, &metadata)?;
+    atomic_write(&meta, &metadata)
+}
+
+fn save_project(
+    path: &Path,
+    bytes: &[u8],
+    origin: Option<&Path>,
+    profiles: &[Option<rhythm::Profile>; GROUPS],
+) -> Result<(), String> {
+    save_project_metadata(path, bytes, origin, profiles)?;
     atomic_write(path, bytes)
+}
+
+fn project_rhythm_profiles(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<[Option<rhythm::Profile>; GROUPS], String> {
+    let mut profiles = std::array::from_fn(|_| None);
+    let meta = metadata_path(path);
+    if !meta.exists() {
+        return Ok(profiles);
+    }
+    let data = std::fs::read(&meta).map_err(|e| format!("{}: {e}", meta.display()))?;
+    let entries: Vec<serde_json::Value> =
+        serde_json::from_slice(&data).map_err(|e| format!("{}: {e}", meta.display()))?;
+    let id = fingerprint(bytes);
+    let Some(values) = entries
+        .iter()
+        .rev()
+        .find(|entry| entry.get("id").and_then(serde_json::Value::as_str) == Some(id.as_str()))
+        .and_then(|entry| entry.get("rhythm"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(profiles);
+    };
+    for (dst, value) in profiles.iter_mut().zip(values) {
+        if !value.is_null() {
+            *dst = rhythm::from_json(value);
+        }
+    }
+    Ok(profiles)
 }
 
 fn project_origin(path: &Path, bytes: &[u8]) -> Result<Option<PathBuf>, String> {
@@ -4247,7 +5002,7 @@ mod tests {
             doc.add_note(0, 0, note).unwrap();
         }
         doc.add_note(1, 0, other_group).unwrap();
-        let roles = roles_of(doc.project().groups.first());
+        let roles = [0, 1, 2, 3, 4, 5, 6, 7];
         let group = &doc.project().groups[0];
         let pattern = &group.patterns[0];
         let before = tracks_of(pattern, roles).unwrap();
@@ -4295,7 +5050,7 @@ mod tests {
 
         let mut tracks = [Track::default(); crate::groove::ROWS];
         tracks[0].hits = 1;
-        load_tracks(&mut doc, 0, 0, tracks, [true; crate::groove::ROWS]).unwrap();
+        load_tracks(&mut doc, 0, 0, tracks, [true; crate::groove::ROWS], roles).unwrap();
         let notes = &doc.project().groups[0].patterns[0].notes;
         assert!(notes.contains(&off_grid));
         assert!(notes.contains(&other_sound));
@@ -4345,14 +5100,14 @@ mod tests {
             hits: 1 << 3,
             ..before
         };
-        apply_track_delta(&mut doc, 0, 0, 0, before, after).unwrap();
+        apply_track_delta(&mut doc, 0, 0, 0, before, after, [0, 1, 2, 3, 4, 5, 6, 7]).unwrap();
         assert!(doc.project().groups[0].patterns[0].notes.contains(&note));
         let before = Track {
             hits: 1,
             ..Track::default()
         };
         let after = Track { maybe: 1, ..before };
-        apply_track_delta(&mut doc, 0, 0, 0, before, after).unwrap();
+        apply_track_delta(&mut doc, 0, 0, 0, before, after, [0, 1, 2, 3, 4, 5, 6, 7]).unwrap();
         let pattern = &doc.project().groups[0].patterns[0];
         let got = pattern
             .notes
@@ -4730,8 +5485,14 @@ mod tests {
     fn autosave_metadata_roundtrips_the_original_directory() {
         let path = autosave_path(60).unwrap();
         let original = PathBuf::from("/tmp/original project/session.mxprj");
-        save_project(&path, b"first", Some(&original)).unwrap();
-        save_project(&path, b"second", None).unwrap();
+        save_project(
+            &path,
+            b"first",
+            Some(&original),
+            &std::array::from_fn(|_| None),
+        )
+        .unwrap();
+        save_project(&path, b"second", None, &std::array::from_fn(|_| None)).unwrap();
         assert_eq!(project_origin(&path, b"first").unwrap(), Some(original));
         assert_eq!(project_origin(&path, b"second").unwrap(), None);
         assert!(project_origin(&path, b"other").is_err());
