@@ -27,6 +27,8 @@ use crate::{
     MaschineUi,
 };
 
+#[path = "maschine_calibration.rs"]
+mod calibration;
 #[path = "maschine_launch.rs"]
 mod launch;
 
@@ -258,6 +260,7 @@ pub fn install(
     handle: MaschineHandle,
     surface: Arc<MaschineSurfaceProvider>,
 ) -> slint::Timer {
+    calibration::install(app, registry.clone());
     let selection = Selection::new(&registry);
     let shown = Rc::new(RefCell::new(None));
     let editor = Editor::new(app, handle.clone(), surface.clone());

@@ -49,6 +49,7 @@ pub mod maschine_factory;
 pub mod meter;
 pub mod midi_clock;
 mod output;
+pub mod pad_response;
 pub mod paths;
 pub mod patterns;
 pub mod phrases;

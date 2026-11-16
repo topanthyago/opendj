@@ -123,6 +123,8 @@ export global MaschineUi {
     callback browser-filter(which: int, index: int);
     callback browser-focus-result(index: int, load: bool);
     callback browser-action(action: string);
+    callback pad-calibration(key: string, value: float);
+    pure callback pad-curve-value(input: int, curve: int, gain: float, fixed: int) -> float;
 }
 
 component MaschineButton inherits Rectangle {
@@ -194,6 +196,80 @@ component MaschineKnob inherits Rectangle {
         scroll-event(e) => {
             root.changed(clamp(parameter.value + (e.delta-y > 0 ? 0.01 : -0.01), 0, 1));
             accept
+        }
+    }
+}
+
+component PadCalibration inherits Rectangle {
+    in property <color> tint: Theme.deck3;
+    property <string> g: "[MaschinePads]";
+    property <int> curve: Controls.value(Controls.resolve(g, "curve"), Controls.tick);
+    property <float> gain: Controls.value(Controls.resolve(g, "sensitivity"), Controls.tick);
+    property <int> fixed: Controls.value(Controls.resolve(g, "fixed"), Controls.tick);
+    property <int> last-pad: Controls.value(Controls.resolve(g, "last_pad"), Controls.tick);
+    property <int> last-input: Controls.value(Controls.resolve(g, "last_input"), Controls.tick);
+    property <int> last-output: Controls.value(Controls.resolve(g, "last_output"), Controls.tick);
+    background: Theme.panel;
+    border-width: 1px;
+    border-color: Theme.border;
+    border-radius: 6px;
+    VerticalLayout {
+        padding: 10px;
+        spacing: 7px;
+        Text { text: "Resposta dos pads · Maschine MK2"; color: Theme.text; font-size: 13px; font-weight: 600; height: 20px; }
+        HorizontalLayout {
+            spacing: 4px;
+            for label[i] in ["Linear", "Suave", "Firme", "Fixa"]: MaschineButton {
+                text: label; horizontal-stretch: 1; on: root.curve == i; tint: root.tint;
+                clicked => { MaschineUi.pad-calibration("curve", i); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 88px;
+                background: Theme.control;
+                border-width: 1px;
+                border-color: Theme.border;
+                for quarter in 3: Rectangle { y: (quarter + 1) * parent.height / 4; width: parent.width; height: 1px; background: Theme.border; }
+                for i in 64: Rectangle {
+                    x: i * parent.width / 64;
+                    width: max(1px, parent.width / 64 - 1px);
+                    height: MaschineUi.pad-curve-value(round((i + 1) * 127 / 64), root.curve, root.gain, root.fixed) * parent.height;
+                    y: parent.height - self.height;
+                    background: root.tint;
+                }
+            }
+            MaschineKnob {
+                width: 85px;
+                parameter: {name: "Sensibilidade", display: round(root.gain * 100) + "%", value: (root.gain - 0.25) / 3.75, enabled: root.curve != 3};
+                tint: root.tint;
+                changed(value) => { MaschineUi.pad-calibration("sensitivity", 0.25 + value * 3.75); }
+            }
+            if root.curve == 3: MaschineKnob {
+                width: 65px;
+                parameter: {name: "Velocidade", display: root.fixed, value: (root.fixed - 1) / 126, enabled: true};
+                tint: root.tint;
+                changed(value) => { MaschineUi.pad-calibration("fixed", round(1 + value * 126)); }
+            }
+        }
+        Text { text: root.last-pad > 0 ? "Pad " + root.last-pad + " · entrada MIDI " + root.last-input + " → " + root.last-output : "Toque um pad para medir a resposta"; color: Theme.text; font-size: 11px; height: 18px; }
+        for value[i] in [root.last-input, root.last-output]: Rectangle {
+            height: 12px;
+            background: Theme.control;
+            Rectangle { width: value / 127 * parent.width; height: parent.height; background: i == 0 ? Theme.text-dim : root.tint; }
+        }
+        MaschineButton {
+            text: "Usar este toque como volume máximo";
+            enabled: root.last-input > 0 && root.curve != 3;
+            tint: root.tint;
+            clicked => { MaschineUi.pad-calibration("match", 0); }
+        }
+        HorizontalLayout {
+            spacing: 5px;
+            MaschineButton { text: "Limpar medição"; horizontal-stretch: 1; clicked => { MaschineUi.pad-calibration("clear", 0); } }
+            MaschineButton { text: "Restaurar · suave 150%"; horizontal-stretch: 1; clicked => { MaschineUi.pad-calibration("reset", 0); } }
         }
     }
 }
@@ -673,6 +749,13 @@ export component MaschinePanel inherits Rectangle {
             Text { text: MaschineUi.project-name; color: Theme.text; font-size: 12px; font-weight: 600; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; min-width: 0px; }
             MaschineButton { text: "OPEN"; width: 42px; clicked => { MaschineUi.open-project(); } }
             MaschineButton { text: "SAVE"; width: 42px; clicked => { MaschineUi.save-project(); } }
+            MaschineButton {
+                text: "PAD ⚙"; width: 52px; clicked => { calibration.show(); }
+                calibration := PopupWindow {
+                    y: 30px; width: 360px; height: 310px;
+                    PadCalibration { tint: root.tint; }
+                }
+            }
             ControlButton { group: group; key: "undo"; text: "↶"; momentary: true; width: 26px; height: 26px; }
             ControlButton { group: group; key: "redo"; text: "↷"; momentary: true; width: 26px; height: 26px; }
             MaschineButton { text: "DECKARD ▾"; width: 84px; on: true; clicked => { backend.show(); }

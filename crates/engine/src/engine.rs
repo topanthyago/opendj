@@ -1766,6 +1766,7 @@ impl Engine {
     /// Creates all engine controls in `registry`.
     pub fn new(registry: &ControlRegistry, sample_rate: f64) -> (Self, EngineInput) {
         let master = create_global_controls(registry);
+        crate::pad_response::register(registry);
         // The rate the engine runs at, as Mixxx's [App],samplerate.
         registry
             .indicator("[App]", "samplerate", 384_000.0)
