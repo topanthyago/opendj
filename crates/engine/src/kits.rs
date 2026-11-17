@@ -24,7 +24,7 @@
 use std::f32::consts::TAU;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use mi_plaits_dsp::drums::{
     analog_bass_drum::AnalogBassDrum, analog_snare_drum::AnalogSnareDrum, hihat,
@@ -62,6 +62,7 @@ pub struct Kit {
     pub sounds: Vec<KitSound>,
 }
 
+#[derive(Clone)]
 pub struct KitInfo {
     pub name: &'static str,
     pub about: &'static str,
@@ -217,6 +218,187 @@ pub const KITS: [KitInfo; 8] = [
     },
 ];
 
+// Catalog metadata and decoded samples share one snapshot. A kit enters the
+// list only after every slot decodes, keeping UI indices and audio aligned.
+struct CuratedKit {
+    info: KitInfo,
+    samples: Vec<Sample>,
+}
+
+struct Catalog {
+    infos: Vec<KitInfo>,
+    curated: Vec<CuratedKit>,
+}
+
+fn static_string(value: &str) -> &'static str {
+    Box::leak(value.to_owned().into_boxed_str())
+}
+
+// Some otherwise decodable PCM WAV files have a four-byte zero extension on
+// fmt. Symphonia rejects that form; normalize only this exact header in memory.
+fn curated_sample(path: &Path) -> Result<Sample, String> {
+    match Sample::load(path, 48_000.0) {
+        Ok(sample) => return Ok(sample),
+        Err(original) => {
+            let metadata = std::fs::metadata(path).map_err(|_| original.clone())?;
+            if metadata.len() > 128 * 1024 * 1024 {
+                return Err(original);
+            }
+            let mut bytes = std::fs::read(path).map_err(|_| original.clone())?;
+            if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+                return Err(original);
+            }
+            let mut at = 12usize;
+            while let Some(header_end) = at.checked_add(8).filter(|&end| end <= bytes.len()) {
+                let size =
+                    u32::from_le_bytes(bytes[at + 4..header_end].try_into().unwrap()) as usize;
+                let Some(end) = header_end
+                    .checked_add(size)
+                    .filter(|&end| end <= bytes.len())
+                else {
+                    return Err(original);
+                };
+                if &bytes[at..at + 4] == b"fmt " {
+                    if size != 20
+                        || bytes[header_end..header_end + 2] != [1, 0]
+                        || bytes[end - 4..end] != [0; 4]
+                    {
+                        return Err(original);
+                    }
+                    let riff = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+                    let Some(riff) = riff.checked_sub(4) else {
+                        return Err(original);
+                    };
+                    bytes[4..8].copy_from_slice(&riff.to_le_bytes());
+                    bytes[at + 4..header_end].copy_from_slice(&16u32.to_le_bytes());
+                    bytes.drain(end - 4..end);
+                    let decoder =
+                        crate::decode::Decoder::open_source(path, Box::new(Cursor::new(bytes)))?;
+                    let max = (crate::sampler::MAX_SAMPLE_SECONDS
+                        * decoder.audio().sample_rate.max(1) as f64)
+                        as usize;
+                    let mut too_long = false;
+                    let audio = decoder.run(|audio| {
+                        too_long = audio.decoded() > max;
+                        !too_long
+                    })?;
+                    if too_long {
+                        return Err(format!("{}: sample exceeds maximum length", path.display()));
+                    }
+                    return Ok(Sample::from_audio(&audio, 48_000.0));
+                }
+                at = end + (size & 1);
+            }
+            Err(original)
+        }
+    }
+}
+
+fn read_curated(path: &Path) -> Result<Vec<CuratedKit>, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let kits = manifest
+        .get("kits")
+        .and_then(|v| v.as_array())
+        .filter(|kits| kits.len() == 8)
+        .ok_or("catalog must contain eight kits")?;
+    let mut result = Vec::new();
+    for kit in kits {
+        let read_kit = || -> Result<CuratedKit, String> {
+            let style = kit
+                .get("style")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .ok_or("missing style")?;
+            let slots = kit
+                .get("slots")
+                .and_then(|v| v.as_array())
+                .filter(|s| s.len() == MAX_SOUNDS)
+                .ok_or("expected 16 slots")?;
+            let mut ordered: [Option<(&str, &str)>; MAX_SOUNDS] = [None; MAX_SOUNDS];
+            let mut paths = std::collections::HashSet::new();
+            for slot in slots {
+                let index = slot
+                    .get("slot")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|n| usize::try_from(n).ok())
+                    .and_then(|n| n.checked_sub(1))
+                    .filter(|&n| n < MAX_SOUNDS)
+                    .ok_or("invalid slot number")?;
+                let name = slot
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .ok_or("missing sample name")?;
+                let path = slot
+                    .get("selected_path")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .ok_or("missing sample path")?;
+                if ordered[index].replace((name, path)).is_some() || !paths.insert(path) {
+                    return Err("duplicate slot or sample path".into());
+                }
+            }
+            let mut samples = Vec::with_capacity(MAX_SOUNDS);
+            let mut names = Vec::with_capacity(MAX_SOUNDS);
+            for entry in ordered {
+                let (name, path) = entry.ok_or("missing slot")?;
+                let sample = curated_sample(Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
+                if sample.is_empty() {
+                    return Err(format!("{path}: empty sample"));
+                }
+                names.push(name);
+                samples.push(sample);
+            }
+            let roles: [&'static str; 9] = std::array::from_fn(|i| static_string(names[i]));
+            let extras = Box::leak(
+                names[9..]
+                    .iter()
+                    .map(|name| static_string(name))
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            );
+            Ok(CuratedKit {
+                info: KitInfo {
+                    name: static_string(style),
+                    about: "Kit curado de amostras brasileiras",
+                    roles: Some(Box::leak(Box::new(roles))),
+                    extras,
+                },
+                samples,
+            })
+        };
+        let style = kit
+            .get("style")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        result.push(read_kit().map_err(|error| format!("kit {style} unavailable: {error}"))?);
+    }
+    Ok(result)
+}
+
+fn catalog() -> &'static Catalog {
+    static CATALOG: OnceLock<Catalog> = OnceLock::new();
+    CATALOG.get_or_init(|| {
+        let selected = std::env::var_os("OPENDJ_GROOVE_FACTORY_KITS")
+            .or_else(|| std::env::var_os("OPENDJ_MASCHINE_FACTORY_KITS"));
+        let curated = selected.map_or_else(Vec::new, |path| {
+            read_curated(Path::new(&path)).unwrap_or_else(|error| {
+                eprintln!("Groove curated catalog unavailable: {error}");
+                Vec::new()
+            })
+        });
+        let mut infos = KITS.to_vec();
+        infos.extend(curated.iter().map(|kit| kit.info.clone()));
+        Catalog { infos, curated }
+    })
+}
+
+/// Built-in kits followed by successfully decoded curated kits.
+pub fn infos() -> &'static [KitInfo] {
+    &catalog().infos
+}
+
 /// Small, licensed one-shots are decoded and resampled at startup, alongside
 /// the synthesized kits. The audio callback only reads the prepared samples.
 fn recorded_sound(kit: usize, sound: usize, rate: f64) -> Option<Sample> {
@@ -304,7 +486,23 @@ fn custom_sound(root: &Path, kit: &str, sound: usize, rate: f64) -> Option<Sampl
 
 pub fn build(rate: f64) -> Vec<Kit> {
     let root = custom_root();
-    build_from(rate, root.as_deref())
+    let mut built = build_from(rate, root.as_deref());
+    for kit in &catalog().curated {
+        built.push(Kit {
+            name: kit.info.name,
+            sounds: kit
+                .info
+                .sounds()
+                .zip(&kit.samples)
+                .map(|(name, sample)| KitSound {
+                    name,
+                    sample: Arc::new(Sample::from_audio(&sample.to_audio(), rate)),
+                    pitch: 0.0,
+                })
+                .collect(),
+        });
+    }
+    built
 }
 
 fn build_from(rate: f64, custom_root: Option<&Path>) -> Vec<Kit> {
@@ -826,6 +1024,62 @@ fn chord(sr: f32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn curated_catalog_requires_complete_distinct_decodable_slots() {
+        let root = std::env::temp_dir().join(format!("opendj-curated-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut slots = Vec::new();
+        for i in 0..16 {
+            // Minimal mono 16-bit PCM WAV, with one nonzero frame.
+            let mut wav = Vec::new();
+            wav.extend_from_slice(b"RIFF");
+            wav.extend_from_slice(&38u32.to_le_bytes());
+            wav.extend_from_slice(b"WAVEfmt ");
+            wav.extend_from_slice(&16u32.to_le_bytes());
+            wav.extend_from_slice(&1u16.to_le_bytes());
+            wav.extend_from_slice(&1u16.to_le_bytes());
+            wav.extend_from_slice(&48_000u32.to_le_bytes());
+            wav.extend_from_slice(&96_000u32.to_le_bytes());
+            wav.extend_from_slice(&2u16.to_le_bytes());
+            wav.extend_from_slice(&16u16.to_le_bytes());
+            wav.extend_from_slice(b"data");
+            wav.extend_from_slice(&2u32.to_le_bytes());
+            wav.extend_from_slice(&1000i16.to_le_bytes());
+            let path = root.join(format!("{i}.wav"));
+            std::fs::write(&path, wav).unwrap();
+            slots.push(serde_json::json!({"slot": i + 1, "name": format!("sound-{i}"), "selected_path": path}));
+        }
+        // The real Samba pack contains this PCM fmt extension. The fallback
+        // decodes it without changing the source file.
+        let extended = root.join("0.wav");
+        let mut wav = std::fs::read(&extended).unwrap();
+        wav[4..8].copy_from_slice(&42u32.to_le_bytes());
+        wav[16..20].copy_from_slice(&20u32.to_le_bytes());
+        wav.splice(36..36, [0u8; 4]);
+        std::fs::write(&extended, &wav).unwrap();
+        assert!(!curated_sample(&extended).unwrap().is_empty());
+        assert_eq!(std::fs::read(&extended).unwrap(), wav);
+        slots.reverse();
+        let kits: Vec<_> = (0..8)
+            .map(|i| serde_json::json!({"style": format!("kit-{i}"), "slots": slots}))
+            .collect();
+        let mut manifest = serde_json::json!({"kits": kits});
+        let path = root.join("catalog.json");
+        std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let result = read_curated(&path).unwrap();
+        assert_eq!(result.len(), 8);
+        assert_eq!(result[0].samples.len(), 16);
+        assert_eq!(
+            result[0].info.sounds().collect::<Vec<_>>(),
+            (0..16).map(|i| format!("sound-{i}")).collect::<Vec<_>>()
+        );
+        manifest["kits"][0]["slots"][0]["selected_path"] =
+            serde_json::json!(root.join("missing.wav"));
+        std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(read_curated(&path).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn every_kit_has_its_sounds_short_and_in_range() {

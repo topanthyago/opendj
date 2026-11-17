@@ -192,7 +192,7 @@ impl GrooveControls {
     pub fn new_scoped(reg: &ControlRegistry, g: &str) -> Self {
         let fresh = reg.get(g, "pattern1_row1").is_none();
         let rows = |f: &dyn Fn(usize) -> ControlHandle| std::array::from_fn(f);
-        let kit_count = kits::KITS.len() as f64;
+        let kit_count = kits::infos().len() as f64;
         let lib = patterns::library();
         // Parse catalog metadata before the audio callback can request it.
         let _ = patterns::set_defaults(0, 0);
