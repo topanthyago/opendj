@@ -755,6 +755,10 @@ impl RepeatState {
             0.25 + (phase - middle) * 0.25 / (0.5 - middle)
         }
     }
+
+    fn tick(&self, beat: f64, divisor: f64) -> i64 {
+        (self.straight_beat(beat) * divisor + 1e-9).floor() as i64
+    }
 }
 
 /// A hit the Groove Box played, for the deck's scrolling waveform.
@@ -1541,10 +1545,8 @@ impl GrooveBox {
         let repeat_rate = (self.pads.c.repeat_rate.get().round() as usize)
             .min(groove_pads::REPEAT_BEATS.len() - 1);
         let repeat_divisor = 1.0 / groove_pads::REPEAT_BEATS[repeat_rate];
-        let mut repeat_tick = repeat_span.map(|span| {
-            (repeat_before.straight_beat(span.beat - span.per_frame) * repeat_divisor + 1e-9)
-                .floor() as i64
-        });
+        let mut repeat_tick =
+            repeat_span.map(|span| repeat_before.tick(span.beat - span.per_frame, repeat_divisor));
         let held: [f32; ROWS] = std::array::from_fn(|row| self.pads.velocity(row));
         let manual_rows: [bool; ROWS] =
             std::array::from_fn(|row| self.hits[..manual_end].iter().any(|hit| hit.row == row));
@@ -1569,8 +1571,7 @@ impl GrooveBox {
                 .map_or(&repeat_before, |(_, state)| state);
             let repeat_beat = repeat_span.map(|span| span.beat_at(f));
             let repeat_pulse = repeat_beat.is_some_and(|beat| {
-                let tick =
-                    (repeat_state.straight_beat(beat) * repeat_divisor + 1e-9).floor() as i64;
+                let tick = repeat_state.tick(beat, repeat_divisor);
                 let pulse = repeat_tick != Some(tick);
                 repeat_tick = Some(tick);
                 pulse
@@ -1608,11 +1609,17 @@ impl GrooveBox {
                             repeat_state.straight_beat(span_now.unwrap().beat_at(f)),
                         );
                     }
-                    // Simultaneous live and written notes trigger one voice.
+                    // Written steps round to the nearest sample, while repeat
+                    // pulses land on the first sample at or after their beat.
+                    let repeat_on_next_sample = repeat_span.is_some_and(|span| {
+                        Some(repeat_state.tick(span.beat_at(f + 1), repeat_divisor)) != repeat_tick
+                    });
                     if !row_audible[row]
                         || (!manual
                             && held[row] > 0.0
-                            && (repeat_pulse || (f == 0 && manual_rows[row])))
+                            && (repeat_pulse
+                                || repeat_on_next_sample
+                                || (f == 0 && manual_rows[row])))
                     {
                         continue;
                     }
@@ -2223,6 +2230,38 @@ mod tests {
         g.render(false, own(120.0), &mut out, |_| {});
         assert_eq!(g.played, [0; ROWS]);
         assert!(out.iter().all(|frame| *frame == [0.0; 2]));
+    }
+
+    #[test]
+    fn note_repeat_coalesces_written_hits_at_fractional_sample_positions() {
+        for bpm in [136.0, 137.0, 111.0] {
+            for rate in [2, 3] {
+                let period = RATE * 60.0 / bpm * groove_pads::REPEAT_BEATS[rate];
+                let total = 24_000;
+                let expected: Vec<usize> = (0..)
+                    .map(|n| (n as f64 * period - 1e-6).max(0.0).ceil() as usize)
+                    .take_while(|&frame| frame < total)
+                    .collect();
+                for buffer in [64, 257, 4096] {
+                    let mut g = repeat_box();
+                    g.c.patterns[0][0].set(0xffff as f64);
+                    g.pads.c.note_repeat.set_bool(true);
+                    g.pads.c.repeat_rate.set(rate as f64);
+                    g.pads.c.pads[0].set(1.0);
+                    let mut out = vec![[0.0; 2]; buffer];
+                    let mut heard = Vec::new();
+                    let mut offset = 0;
+                    while offset < total {
+                        let count = buffer.min(total - offset);
+                        g.render(true, own(bpm), &mut out[..count], |frame| {
+                            heard.push(offset + frame)
+                        });
+                        offset += count;
+                    }
+                    assert_eq!(heard, expected, "bpm {bpm}, rate {rate}, buffer {buffer}");
+                }
+            }
+        }
     }
 
     #[test]
