@@ -28,6 +28,7 @@ pub mod engine;
 pub mod filename;
 mod gridfit;
 pub mod groove;
+pub mod groove_banks;
 pub mod groove_dice;
 pub mod groove_fills;
 pub mod groove_pads;

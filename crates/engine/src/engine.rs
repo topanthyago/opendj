@@ -22,7 +22,8 @@ use crate::effects::{
     fade, fade_step, input_target, ColorFx, EffectRack, StemFx, BLOCK, COLOR_FX, MAIN, TAPS,
     TAP_GAP, TARGETS,
 };
-use crate::groove::{pick_source, GrooveBox};
+use crate::groove::pick_source;
+use crate::groove_banks::GrooveBanks as GrooveBox;
 use crate::inputs::{
     Ducker, Input, InputFeed, Routing, AUXILIARIES, INSTRUMENT, MICROPHONE, MIXER, NUM_INPUTS,
 };
@@ -3802,7 +3803,7 @@ impl Engine {
             if groove_on
                 .iter()
                 .enumerate()
-                .any(|(i, &on)| on && self.grooves[i].c.follow_breaks.get_bool())
+                .any(|(i, &on)| on && self.grooves[i].wants_breaks())
             {
                 break_leader = leading;
             }
@@ -8384,7 +8385,12 @@ mod tests {
         let mut out = vec![0.0; 512 * 2];
         for _ in 0..100 {
             engine.process(&mut out, 2);
-            heard.extend(engine.looper_source[1].iter().flat_map(|s| *s));
+            // Only this call's rendered frames belong to the signal.
+            heard.extend(
+                engine.looper_source[1][..out.len() / 2]
+                    .iter()
+                    .flat_map(|s| *s),
+            );
         }
         assert!(level_at(&heard, 600.0) > 0.15);
         assert!(level_at(&heard, 220.0) < 0.01);

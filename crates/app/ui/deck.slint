@@ -1,3 +1,4 @@
+import { GroovePadCalibrationButton, GrooveEncoderCalibrationButton } from "groove_calibration.slint";
 // A deck: a header with cover, title,
 // overview and tempo, then from the outer side the tempo column, the pads,
 // the loop controls, and the jog with play and CUE under it beside the
@@ -3897,6 +3898,8 @@ component GrooveBox inherits Rectangle {
             height: 30px;
             spacing: 4px;
             PlayButton { group: group; tint: tint; width: root.width < 600px ? 38px : 42px; }
+            GroovePadCalibrationButton { tint: tint; }
+            GrooveEncoderCalibrationButton { tint: tint; }
             Text { width: 36px; text: "CLOCK"; color: Theme.text; font-size: 9px; font-weight: 600; vertical-alignment: center; }
             GrooveLibraryBar { deck: deck; compact: root.width < 600px; g: g; tint: tint; horizontal-stretch: 1; height: 30px; }
         }

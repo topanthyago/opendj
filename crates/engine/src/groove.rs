@@ -97,8 +97,6 @@ const CHOKE_FRAMES: usize = 64;
 #[derive(Clone)]
 pub struct GrooveControls {
     pub enabled: ControlHandle,
-    /// 0: the original Groove Box; 1: the embedded Maschine engine.
-    pub backend: ControlHandle,
     pub kit: ControlHandle,
     pub groove: ControlHandle,
     pub groove_queued: ControlHandle,
@@ -200,7 +198,6 @@ impl GrooveControls {
         let most = lib.iter().map(|g| g.grooves.len()).max().unwrap_or(0) as f64;
         let c = Self {
             enabled: reg.toggle(g, "enabled"),
-            backend: reg.create(g, "backend", 0.0, 0.0, 1.0, Behavior::Free),
             kit: reg.create(g, "kit", 0.0, 0.0, kit_count - 1.0, Behavior::Free),
             groove: reg.create(g, "groove", 0.0, 0.0, (GROOVES - 1) as f64, Behavior::Free),
             groove_queued: reg.indicator(g, "groove_queued", (GROOVES - 1) as f64),
@@ -450,7 +447,7 @@ impl GrooveControls {
 /// before the engine and its audio/editor threads are started.
 pub fn create_restore_controls(registry: &ControlRegistry) {
     for deck in 0..NUM_DECKS {
-        GrooveControls::new(registry, deck);
+        crate::groove_banks::register(registry, deck);
         crate::controls::live_input_controls(registry, deck);
     }
 }
@@ -1058,6 +1055,15 @@ impl GrooveBox {
     /// Whether any sound is still ringing.
     pub fn sounding(&self) -> bool {
         self.voices.iter().flatten().any(|v| v.sample.is_some())
+    }
+
+    /// Ends a group's active sounds with the same short fade as a retrigger.
+    pub fn stop_voices(&mut self) {
+        for voice in self.voices.iter_mut().flatten() {
+            if voice.sample.is_some() {
+                voice.fade = CHOKE_FRAMES;
+            }
+        }
     }
 
     /// Renders one buffer into `out` (cleared first). `play` is the deck's
@@ -1689,7 +1695,6 @@ mod tests {
 
         let restored = GrooveControls::new(&reg, 0);
         restored.enabled.set_bool(true);
-        restored.backend.set_bool(true);
         restored.kit.set(1.0);
         restored.patterns[0][0].set(0x1357 as f64);
         restored.soft[0][0].set(0x0022 as f64);
@@ -1699,7 +1704,7 @@ mod tests {
         reg.get("[Channel1]", "live_pan").unwrap().set(0.25);
 
         let engine = GrooveControls::new(&reg, 0);
-        assert!(engine.enabled.get_bool() && engine.backend.get_bool());
+        assert!(engine.enabled.get_bool());
         assert_eq!(engine.kit.get(), 1.0);
         assert_eq!(engine.patterns[0][0].get(), 0x1357 as f64);
         assert_eq!(engine.soft[0][0].get(), 0x0022 as f64);
@@ -2401,13 +2406,13 @@ mod tests {
         g.pads.c.mode.set(mode::PLAY as f64);
         g.pads.c.record.set_bool(true);
         // 120 BPM: a 16th is 6000 frames. Play into step 2, then press the
-        // pad 9 (row 1 again) a little before step 3.
+        // pad 1 a little before step 3.
         let mut out = vec![[0.0; 2]; 6000];
         g.render(true, own(120.0), &mut out, |_| {});
         g.render(true, own(120.0), &mut out, |_| {});
         let mut out = vec![[0.0; 2]; 5000];
         g.render(true, own(120.0), &mut out, |_| {});
-        g.pads.c.pads[8].set(0.8);
+        g.pads.c.pads[0].set(0.8);
         let mut kicks = Vec::new();
         let mut out = vec![[0.0; 2]; 2000];
         g.render(true, own(120.0), &mut out, |f| kicks.push(f));

@@ -55,6 +55,7 @@ mod diagnostics;
 mod file_drop;
 mod files;
 mod groove_box;
+mod groove_calibration;
 mod inbox;
 mod instrument_art;
 mod instrument_knobs;
@@ -732,6 +733,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The Groove Boxes: their kits' names, and what they held last time,
     // saved again as it changes.
     groove_box::install(&app);
+    groove_calibration::install(&app, &registry);
     instruments::install(&app);
     mixer_picker::install(&app, engine.clone());
     presets::install(&app, engine.clone(), registry.clone());

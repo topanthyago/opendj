@@ -22,6 +22,7 @@
 //! `[Recording],status` is 0 (off) or 2 (recording). `[Recording],duration`
 //! counts the seconds recorded.
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -853,12 +854,13 @@ fn watched(registry: &ControlRegistry, known: &mut Vec<Watched>) -> Vec<usize> {
     if keys.len() == known.len() {
         return added;
     }
+    let existing: HashSet<String> = known.iter().map(|watched| watched.name.clone()).collect();
     for key in keys {
         if key.group == "[Recording]" || NOT_LOGGED.contains(&key.item.as_str()) {
             continue;
         }
         let name = key.to_string();
-        if known.iter().any(|w| w.name == name) {
+        if existing.contains(&name) {
             continue;
         }
         let Some(handle) = registry.get(&key.group, &key.item) else {

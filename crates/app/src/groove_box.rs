@@ -66,7 +66,7 @@ pub(crate) fn kept_keys() -> Vec<String> {
 /// Shows the kits' names and the groove library's.
 pub fn install(app: &AppWindow) {
     let ui = app.global::<GrooveUi>();
-    let kits: Vec<GrooveKit> = kits::KITS
+    let kits: Vec<GrooveKit> = kits::infos()
         .iter()
         .map(|k| GrooveKit {
             name: k.name.into(),
@@ -144,6 +144,7 @@ fn merge_ninth_row(values: &mut Map<String, Value>) {
 /// Keeps the Groove Boxes: puts back what was saved, then saves what
 /// changes (looked at every couple of seconds).
 pub struct Keeper {
+    scopes: Vec<String>,
     controls: Vec<Vec<(String, ControlHandle)>>,
     seen: Vec<Vec<f64>>,
     last_look: Instant,
@@ -151,8 +152,15 @@ pub struct Keeper {
 
 impl Keeper {
     pub fn new(registry: &ControlRegistry) -> Self {
-        let keys = kept_keys();
-        let controls: Vec<Vec<(String, ControlHandle)>> = (0..NUM_DECKS)
+        let mut keys = kept_keys();
+        keys.push("group_selected".into());
+        for group in 1..=opendj_engine::groove_banks::GROUPS {
+            for name in ["enabled", "mute", "solo", "level", "color"] {
+                keys.push(format!("group{group}_{name}"));
+            }
+        }
+        let mut scopes: Vec<String> = (0..NUM_DECKS).map(groove_group).collect();
+        let mut controls: Vec<Vec<(String, ControlHandle)>> = (0..NUM_DECKS)
             .map(|d| {
                 let g = groove_group(d);
                 keys.iter()
@@ -171,9 +179,30 @@ impl Keeper {
                     .collect()
             })
             .collect();
+        let mut group_keys = opendj_engine::groove_banks::kept_keys();
+        group_keys.push("initialized".into());
+        for row in 1..=ROWS {
+            group_keys.push(format!("row{row}_color"));
+        }
+        for deck in 0..NUM_DECKS {
+            for group in 0..opendj_engine::groove_banks::GROUPS {
+                let scope = opendj_engine::groove_banks::group_scope(deck, group);
+                controls.push(
+                    group_keys
+                        .iter()
+                        .filter_map(|key| {
+                            registry
+                                .get(&scope, key)
+                                .map(|control| (key.clone(), control))
+                        })
+                        .collect(),
+                );
+                scopes.push(scope);
+            }
+        }
         let saved = settings::load()["groove_box"].clone();
-        for (d, deck) in controls.iter().enumerate() {
-            let Some(mut values) = saved[groove_group(d)].as_object().cloned() else {
+        for (scope, deck) in scopes.iter().zip(&controls) {
+            let Some(mut values) = saved[scope].as_object().cloned() else {
                 continue;
             };
             upgrade(&mut values);
@@ -185,6 +214,7 @@ impl Keeper {
         }
         let seen = snapshot(&controls);
         Self {
+            scopes,
             controls,
             seen,
             last_look: Instant::now(),
@@ -203,13 +233,13 @@ impl Keeper {
         }
         self.seen = now;
         let mut all = Map::new();
-        for (d, deck) in self.controls.iter().enumerate() {
+        for (scope, deck) in self.scopes.iter().zip(&self.controls) {
             let mut values: Map<String, Value> = deck
                 .iter()
                 .map(|(k, c)| (k.clone(), json!(c.get())))
                 .collect();
             values.insert("layout".into(), json!(LAYOUT));
-            all.insert(groove_group(d), Value::Object(values));
+            all.insert(scope.clone(), Value::Object(values));
         }
         settings::set("groove_box", Value::Object(all));
     }
