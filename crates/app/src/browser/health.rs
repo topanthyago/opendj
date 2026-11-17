@@ -988,16 +988,16 @@ impl Browser {
             if t.info.missing {
                 continue;
             }
-            match saved.get(&t.id) {
-                // Looked at before bitrates were: look again.
-                Some(found)
-                    if found.mtime == cover_scan::mtime(path) && found.bitrate.is_some() =>
-                {
-                    covers.insert(t.id, found.cover);
-                    bitrates.extend(found.bitrate.map(|b| (t.id, b)));
-                }
-                _ => look.push((t.id, path.to_path_buf(), t.album.clone())),
+            if let Some(found) = saved.get(&t.id) {
+                covers.insert(t.id, found.cover);
+                bitrates.extend(found.bitrate.map(|b| (t.id, b)));
             }
+            look.push((
+                t.id,
+                path.to_path_buf(),
+                t.album.clone(),
+                saved.get(&t.id).copied(),
+            ));
         }
         let mut folders = settings::music_folders();
         folders.extend(self.folders.all().into_iter().map(Path::to_path_buf));
@@ -1018,14 +1018,14 @@ impl Browser {
         }
         self.health = facts;
         self.removed = db.removed_count().unwrap_or(0);
-        for (id, path, album) in look {
+        for (id, path, album, cached) in look {
             let music = self.index_of.get(&id).is_some_and(|&i| {
                 !self
                     .health
                     .finds(Check::NotMusic, &self.library[i], &HashSet::new())
             });
-            if music && !cover_scan::offloaded(&path) {
-                self.cover_scan.add(id, &path, &album);
+            if music {
+                self.cover_scan.add_cached(id, &path, &album, cached);
             }
         }
     }
