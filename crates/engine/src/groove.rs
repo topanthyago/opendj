@@ -125,6 +125,7 @@ pub struct GrooveControls {
     /// The groove's beat at the end of the last buffer while it runs (beat 0
     /// a bar line), for the scrolling waveform's step lanes.
     pub beat: ControlHandle,
+    pub origin: ControlHandle,
     /// On while the groove follows a playing deck or Link.
     pub following: ControlHandle,
     /// 1 (the default): follow the mix's tempo; 0: keep `bpm`.
@@ -155,6 +156,7 @@ pub struct GrooveControls {
     pub accent: [[ControlHandle; ROWS]; GROOVES],
     /// `patternG_rowR_maybe`: steps that play only half the time.
     pub maybe: [[ControlHandle; ROWS]; GROOVES],
+    pub extended: Arc<crate::groove_pages::ExtendedPatterns>,
     /// 0-1: how much the groove varies by itself as it plays (weak hits
     /// drop out, ghost notes come in, loudness wavers).
     pub vary: ControlHandle,
@@ -255,10 +257,18 @@ impl GrooveControls {
                 "position",
                 -1.0,
                 -1.0,
-                (STEPS - 1) as f64,
+                (crate::groove_pages::MAX_STEPS - 1) as f64,
                 Behavior::Indicator,
             ),
             beat: reg.create(g, "beat", 0.0, f64::MIN, f64::MAX, Behavior::Indicator),
+            origin: reg.create(
+                g,
+                "pattern_origin",
+                0.0,
+                f64::MIN,
+                f64::MAX,
+                Behavior::Indicator,
+            ),
             following: reg.indicator(g, "following", 1.0),
             follow: reg.create(g, "follow", 1.0, 0.0, 1.0, Behavior::Free),
             tempo_scale: reg.create(g, "tempo_scale", 1.0, 0.5, 2.0, Behavior::Free),
@@ -279,7 +289,7 @@ impl GrooveControls {
                         &format!("pattern{}_row{}", p + 1, r + 1),
                         0.0,
                         0.0,
-                        65535.0,
+                        u32::MAX as f64,
                         Behavior::Free,
                     )
                 })
@@ -291,7 +301,7 @@ impl GrooveControls {
                         &format!("pattern{}_row{}_soft", p + 1, r + 1),
                         0.0,
                         0.0,
-                        65535.0,
+                        u32::MAX as f64,
                         Behavior::Free,
                     )
                 })
@@ -303,7 +313,7 @@ impl GrooveControls {
                         &format!("pattern{}_row{}_accent", p + 1, r + 1),
                         0.0,
                         0.0,
-                        65535.0,
+                        u32::MAX as f64,
                         Behavior::Free,
                     )
                 })
@@ -315,7 +325,7 @@ impl GrooveControls {
                         &format!("pattern{}_row{}_maybe", p + 1, r + 1),
                         0.0,
                         0.0,
-                        65535.0,
+                        u32::MAX as f64,
                         Behavior::Free,
                     )
                 })
@@ -403,6 +413,7 @@ impl GrooveControls {
             }),
             preview: rows(&|r| reg.push(g, &format!("row{}_preview", r + 1))),
             erase_rows: rows(&|r| reg.toggle(g, &format!("row{}_erase", r + 1))),
+            extended: Arc::new(crate::groove_pages::ExtendedPatterns::new(reg, g)),
         };
         // A new Groove Box opens with the library's first groove.
         if fresh {
@@ -420,6 +431,11 @@ impl GrooveControls {
             return;
         };
         let slot = slot.min(GROOVES - 1);
+        self.extended.reset_length(slot);
+        self.extended.page.set(0.0);
+        for row in 0..LEGACY_ROWS {
+            self.clear_row(slot, row);
+        }
         // Cymbal plays the ride when the groove has one, else the crash.
         let ride = p.rows[RIDE].hits != 0;
         let cymbal = if ride { RIDE } else { CRASH };
@@ -437,20 +453,78 @@ impl GrooveControls {
 
     /// Groove `slot`'s tracks as they are now.
     pub fn tracks(&self, slot: usize) -> [Track; ROWS] {
-        std::array::from_fn(|r| Track {
-            hits: self.patterns[slot][r].get() as u32,
-            soft: self.soft[slot][r].get() as u32,
-            accent: self.accent[slot][r].get() as u32,
-            maybe: self.maybe[slot][r].get() as u32,
-        })
+        self.tracks_page(slot, 0)
     }
 
     /// Writes track `row` of groove `slot`.
     pub fn set_track(&self, slot: usize, row: usize, t: Track) {
-        self.patterns[slot][row].set((t.hits & 0xffff) as f64);
-        self.soft[slot][row].set((t.soft & t.hits & 0xffff) as f64);
-        self.accent[slot][row].set((t.accent & t.hits & 0xffff) as f64);
-        self.maybe[slot][row].set((t.maybe & t.hits & 0xffff) as f64);
+        self.set_track_page(slot, 0, row, t);
+    }
+
+    pub(crate) fn chunk_masks(&self, slot: usize, chunk: usize) -> [&[ControlHandle; ROWS]; 4] {
+        if chunk == 0 {
+            [
+                &self.patterns[slot],
+                &self.soft[slot],
+                &self.accent[slot],
+                &self.maybe[slot],
+            ]
+        } else {
+            let masks = &self.extended.chunks[chunk - 1].masks;
+            [
+                &masks[0][slot],
+                &masks[1][slot],
+                &masks[2][slot],
+                &masks[3][slot],
+            ]
+        }
+    }
+
+    pub fn page_values(&self, slot: usize, page: usize, row: usize) -> [u32; 4] {
+        let shift = (page % 2) * STEPS;
+        self.chunk_masks(slot, page / 2)
+            .map(|rows| (rows[row].get() as u32 >> shift) & 0xffff)
+    }
+
+    pub fn tracks_page(&self, slot: usize, page: usize) -> [Track; ROWS] {
+        std::array::from_fn(|row| {
+            let [hits, soft, accent, maybe] = self.page_values(slot, page, row);
+            Track {
+                hits,
+                soft,
+                accent,
+                maybe,
+            }
+        })
+    }
+
+    pub fn set_track_page(&self, slot: usize, page: usize, row: usize, track: Track) {
+        let shift = (page % 2) * STEPS;
+        let keep = !(0xffffu32 << shift);
+        let values = [
+            track.hits,
+            track.soft & track.hits,
+            track.accent & track.hits,
+            track.maybe & track.hits,
+        ];
+        for (rows, value) in self.chunk_masks(slot, page / 2).into_iter().zip(values) {
+            let combined = (rows[row].get() as u32 & keep) | ((value & 0xffff) << shift);
+            rows[row].set(combined as f64);
+        }
+    }
+
+    pub fn clear_pattern(&self, slot: usize) {
+        for row in 0..ROWS {
+            self.clear_row(slot, row);
+        }
+    }
+
+    pub fn clear_row(&self, slot: usize, row: usize) {
+        for chunk in 0..crate::groove_pages::CHUNKS {
+            for rows in self.chunk_masks(slot, chunk) {
+                rows[row].set(0.0);
+            }
+        }
     }
 
     /// The kit sound (one of [`kits::ROLES`]) track `row` plays, for
@@ -508,6 +582,11 @@ pub struct Clock {
 }
 
 impl Clock {
+    pub fn seek(&mut self, beat: f64) {
+        self.beat = beat;
+        self.start_at = self.beat;
+        self.pending = None;
+    }
     /// Starts the groove: on the leader's next downbeat, or at once.
     pub fn start(&mut self, source: Source) {
         self.running = true;
@@ -803,6 +882,7 @@ pub(crate) struct GrooveStep {
     pub frame: usize,
     pub step: usize,
     pub pattern: usize,
+    pub origin_step: i64,
     pub beat: f64,
     pub break_active: bool,
 }
@@ -920,20 +1000,31 @@ fn roll(c: &GrooveControls, dice: &mut Dice, slot: usize) {
         return;
     };
     c.dice_pending.set(0.0);
-    let before = c.tracks(slot);
+    let before = std::array::from_fn(|page| c.tracks_page(slot, page));
     dice.remember(slot, before);
     let genre = c.genre.get().round() as usize;
-    for (r, &was) in before.iter().enumerate() {
-        let chosen = match row {
-            Some(only) => only == r,
-            None => !c.lock[r].get_bool(),
-        };
-        if !chosen || r >= LEGACY_ROWS {
-            continue;
+    for (page, tracks) in before
+        .iter()
+        .enumerate()
+        .take(c.extended.steps(slot).div_ceil(STEPS))
+    {
+        for (r, &was) in tracks.iter().enumerate() {
+            let chosen = match row {
+                Some(only) => only == r,
+                None => !c.lock[r].get_bool(),
+            };
+            if !chosen || r >= LEGACY_ROWS {
+                continue;
+            }
+            let mut t = was;
+            groove_dice::apply(mv, &mut t, c.role(r), genre, &dice.habits, &mut dice.rng);
+            let valid = ((1u32 << (c.extended.steps(slot) - page * STEPS).min(STEPS)) - 1) & 0xffff;
+            t.hits = (t.hits & valid) | (was.hits & !valid);
+            t.soft = (t.soft & valid) | (was.soft & !valid);
+            t.accent = (t.accent & valid) | (was.accent & !valid);
+            t.maybe = (t.maybe & valid) | (was.maybe & !valid);
+            c.set_track_page(slot, page, r, t);
         }
-        let mut t = was;
-        groove_dice::apply(mv, &mut t, c.role(r), genre, &dice.habits, &mut dice.rng);
-        c.set_track(slot, r, t);
     }
     c.can_undo.set(1.0);
 }
@@ -969,6 +1060,7 @@ pub struct GrooveBox {
     pub pads: PadSurface,
     repeat_clock: Clock,
     pad_mode_seen: u8,
+    origin_step: i64,
     /// The bank's Group ERASE hold, independent of editor focus.
     pub(crate) erase_all: bool,
     /// A live hit recorded into a step still to come: that step skips the
@@ -991,6 +1083,19 @@ pub struct GrooveBox {
 }
 
 impl GrooveBox {
+    pub(crate) fn transport_origin(&self) -> f64 {
+        self.origin_step as f64 / 4.0
+    }
+
+    pub(crate) fn seek_transport(&mut self, beat: f64, playing: bool) {
+        self.clock.seek(beat);
+        self.clock.running = playing;
+        self.was_running = playing;
+        self.bar_played = false;
+        self.repeat_clock.seek(beat);
+        self.skip.fill(None);
+        self.stop_voices();
+    }
     pub fn new(reg: &ControlRegistry, deck: usize, kits: Arc<[Kit]>, rate: f64) -> Self {
         Self::new_scoped(reg, deck, &groove_group(deck), kits, rate)
     }
@@ -1032,6 +1137,7 @@ impl GrooveBox {
             pads,
             repeat_clock: Clock::default(),
             pad_mode_seen,
+            origin_step: 0,
             erase_all: false,
             skip: [None; ROWS],
             key: None,
@@ -1061,8 +1167,10 @@ impl GrooveBox {
             self.dice.pending = None;
             self.c.dice_pending.set(0.0);
             if let Some((slot, tracks)) = self.dice.take_undo() {
-                for (r, t) in tracks.into_iter().enumerate() {
-                    self.c.set_track(slot, r, t);
+                for (page, rows) in tracks.into_iter().enumerate() {
+                    for (row, track) in rows.into_iter().enumerate() {
+                        self.c.set_track_page(slot, page, row, track);
+                    }
                 }
             }
             self.c.can_undo.set(self.dice.can_undo() as u8 as f64);
@@ -1225,6 +1333,7 @@ impl GrooveBox {
         self.groove_seen = self.c.groove.version();
         if play && !self.was_running {
             self.clock.start(source);
+            self.origin_step = (self.clock.start_at * 4.0).round() as i64;
             self.playing = chosen;
             self.queued = None;
             self.bar_played = false;
@@ -1246,6 +1355,7 @@ impl GrooveBox {
         let mut n = self.take_pads(chosen, !audible);
         let manual_end = n;
         let initial_playing = self.playing;
+        let initial_origin = self.origin_step;
         let repeat_before = RepeatState::new(&self.c);
         let mut repeat_change = None;
         if !audible {
@@ -1273,6 +1383,7 @@ impl GrooveBox {
             let any_solo = self.c.solo.iter().any(|s| s.get_bool());
             let mut queued = self.queued;
             let mut playing = self.playing;
+            let mut origin_step = self.origin_step;
             let mut bar_played = self.bar_played;
             let mut last_step = None;
             let clock = &self.clock;
@@ -1312,7 +1423,7 @@ impl GrooveBox {
             span.steps_with_swing(
                 frames,
                 || c.swing.get(),
-                |frame, step, beat| {
+                |frame, _, beat| {
                     if !clock.plays(beat) {
                         return;
                     }
@@ -1321,14 +1432,28 @@ impl GrooveBox {
                     // boundary for queued changes and break recovery.
                     let jumped = !crossed_jump && span.jump.is_some_and(|(at, _)| frame >= at);
                     crossed_jump |= jumped;
-                    if step == 0 || jumped {
+                    let absolute_step = (beat * 4.0 + 1e-6).floor() as i64;
+                    let relative = absolute_step - origin_step;
+                    let cycle_boundary = relative.rem_euclid(c.extended.steps(playing) as i64) == 0;
+                    let bar_boundary =
+                        relative.rem_euclid(c.extended.bar_steps(playing) as i64) == 0;
+                    let changing = queued.is_some() && (bar_boundary || jumped);
+                    if changing || queued.is_none() && bar_played && cycle_boundary {
                         if let Some(q) = queued.take() {
                             playing = q;
-                        } else if bar_played {
-                            playing = next_pattern(playing);
+                            origin_step = absolute_step;
+                        } else {
+                            let next = next_pattern(playing);
+                            if next != playing {
+                                playing = next;
+                                origin_step = absolute_step;
+                            }
                         }
+                    }
+                    if bar_boundary || jumped {
                         if load_pending_set(c, pending_set) {
                             skip.fill(None);
+                            origin_step = absolute_step;
                             repeat_change = Some((frame, RepeatState::new(c)));
                         }
                         roll(c, dice, chosen);
@@ -1336,16 +1461,23 @@ impl GrooveBox {
                         c.break_active.set_bool(breaks.active);
                     }
                     bar_played = true;
-                    last_step = Some(step);
+                    let flat_step = (absolute_step - origin_step)
+                        .rem_euclid(c.extended.steps(playing) as i64)
+                        as usize;
+                    let bar_steps = c.extended.bar_steps(playing);
+                    let metric_step =
+                        (absolute_step - origin_step).rem_euclid(bar_steps as i64) as usize;
+                    let step = metric_step * STEPS / bar_steps;
+                    last_step = Some(flat_step);
                     let erasing: [bool; ROWS] =
                         std::array::from_fn(|row| erase_all || c.erase_rows[row].get_bool());
                     for (row, &erase) in erasing.iter().enumerate() {
                         if erase {
-                            for values in [&c.patterns, &c.soft, &c.accent, &c.maybe] {
-                                let cell = &values[playing][row];
-                                cell.set((cell.get() as u32 & !(1 << step)) as f64);
+                            for values in c.chunk_masks(playing, flat_step / 32) {
+                                let cell = &values[row];
+                                cell.set((cell.get() as u32 & !(1 << (flat_step % 32))) as f64);
                             }
-                            if skip[row] == Some(step) {
+                            if skip[row] == Some(flat_step) {
                                 skip[row] = None;
                             }
                         }
@@ -1353,8 +1485,9 @@ impl GrooveBox {
                     if *step_count < MAX_STEP_SIGNALS {
                         step_signals[*step_count] = GrooveStep {
                             frame,
-                            step,
+                            step: flat_step,
                             pattern: playing,
+                            origin_step,
                             beat,
                             break_active: breaks.active,
                         };
@@ -1364,7 +1497,7 @@ impl GrooveBox {
                         *in_fill = false;
                         *crash_next = false;
                         for pending in skip.iter_mut() {
-                            if *pending == Some(step) {
+                            if *pending == Some(flat_step) {
                                 *pending = None;
                             }
                         }
@@ -1379,10 +1512,12 @@ impl GrooveBox {
                         if erasing[row] {
                             continue;
                         }
-                        let bits = c.patterns[playing][row].get() as u32;
+                        let [bits, soft, accent, maybe] =
+                            c.page_values(playing, flat_step / STEPS, row);
+                        let bit_step = flat_step % STEPS;
                         written[row] = bits;
                         let role = c.role(row);
-                        let mut velocity = if bits & (1 << step) == 0 {
+                        let mut velocity = if bits & (1 << bit_step) == 0 {
                             // Vary brings in ghost notes on the steps the genre likes.
                             if bits == 0
                                 || row >= LEGACY_ROWS
@@ -1392,12 +1527,11 @@ impl GrooveBox {
                             }
                             Level::Soft.gain() * 0.7
                         } else {
-                            if *skip == Some(step) {
+                            if *skip == Some(flat_step) {
                                 *skip = None;
                                 continue;
                             }
-                            let maybe = c.maybe[playing][row].get() as u32;
-                            if maybe & (1 << step) != 0 && rng.unit() >= 0.5 {
+                            if maybe & (1 << bit_step) != 0 && rng.unit() >= 0.5 {
                                 continue;
                             }
                             if row < LEGACY_ROWS
@@ -1405,9 +1539,7 @@ impl GrooveBox {
                             {
                                 continue;
                             }
-                            let soft = c.soft[playing][row].get() as u32;
-                            let accent = c.accent[playing][row].get() as u32;
-                            Level::of(step, soft, accent).gain()
+                            Level::of(bit_step, soft, accent).gain()
                         };
                         if vary > 0.0 {
                             velocity = groove_dice::humanize(velocity, vary, rng);
@@ -1415,7 +1547,7 @@ impl GrooveBox {
                         normal[row] = velocity;
                     }
                     // A fill (held, or Auto fill's) or Remix takes over the step.
-                    let bar = (beat / 4.0 + 1e-6).floor() as i64;
+                    let bar = (beat * 4.0 / bar_steps as f64 + 1e-6).floor() as i64;
                     let fill = if fill_held {
                         Some(groove_fills::held_fill(bar, seed))
                     } else {
@@ -1435,7 +1567,7 @@ impl GrooveBox {
                             result
                         };
                         if f.steps() >= 8
-                            && step == STEPS - 1
+                            && metric_step + 1 == bar_steps
                             && (!pattern_fill || written[CYMBAL_ROW] != 0)
                         {
                             *crash_next = true;
@@ -1483,12 +1615,14 @@ impl GrooveBox {
                 c.break_active.set_bool(breaks.active);
             }
             self.playing = playing;
+            self.origin_step = origin_step;
             self.queued = queued;
             self.bar_played = bar_played;
             self.c.fill_playing.set(self.in_fill as u8 as f64);
             // The step under the playhead, for the screen and LEDs.
             let now = span.beat_at(frames / 2);
-            let step = ((now * 4.0).floor() as i64).rem_euclid(STEPS as i64);
+            let step = ((now * 4.0).floor() as i64 - self.origin_step)
+                .rem_euclid(self.c.extended.steps(self.playing) as i64);
             self.c.position.set(if self.clock.plays(now) {
                 step as f64
             } else {
@@ -1500,12 +1634,16 @@ impl GrooveBox {
             self.crash_next = false;
         }
         self.c.groove_playing.set(self.playing as f64);
+        self.c.origin.set(self.origin_step as f64 / 4.0);
         self.c
             .groove_queued
             .set(self.queued.unwrap_or(self.playing) as f64);
         for pattern in 0..GROOVES {
-            self.c.occupied[pattern]
-                .set_bool(self.c.patterns[pattern].iter().any(|row| row.get() != 0.0));
+            self.c.occupied[pattern].set_bool((0..crate::groove_pages::CHUNKS).any(|chunk| {
+                self.c.chunk_masks(pattern, chunk)[0]
+                    .iter()
+                    .any(|row| row.get() != 0.0)
+            }));
         }
         self.show_pads(chosen);
         if !audible {
@@ -1560,6 +1698,7 @@ impl GrooveBox {
         });
         let recording = repeating && self.pads.c.record.get_bool() && self.clock.running;
         let mut repeat_pattern = initial_playing;
+        let mut repeat_origin = initial_origin;
         let mut next_step = 0;
         let mut next_hit = 0;
         let mut peak = [0f32; ROWS];
@@ -1580,6 +1719,7 @@ impl GrooveBox {
                 while next_step < self.step_count && self.step_signals[next_step].frame <= f {
                     let signal = self.step_signals[next_step];
                     repeat_pattern = signal.pattern;
+                    repeat_origin = signal.origin_step;
                     for skip in &mut self.skip {
                         if *skip == Some(signal.step) {
                             *skip = None;
@@ -1606,7 +1746,8 @@ impl GrooveBox {
                         self.record_live(
                             repeat_pattern,
                             row,
-                            repeat_state.straight_beat(span_now.unwrap().beat_at(f)),
+                            repeat_state.straight_beat(span_now.unwrap().beat_at(f))
+                                - repeat_origin as f64 / 4.0,
                         );
                     }
                     // Written steps round to the nearest sample, while repeat
@@ -1650,7 +1791,11 @@ impl GrooveBox {
                         continue;
                     }
                     if recording {
-                        self.record_live(repeat_pattern, row, repeat_state.straight_beat(beat));
+                        self.record_live(
+                            repeat_pattern,
+                            row,
+                            repeat_state.straight_beat(beat) - repeat_origin as f64 / 4.0,
+                        );
                     }
                     if !row_audible[row] {
                         continue;
@@ -1702,11 +1847,12 @@ impl GrooveBox {
     }
 
     fn record_live(&mut self, pattern: usize, row: usize, beat: f64) {
-        let step = groove_pads::nearest_step(beat);
-        let cell = &self.c.patterns[pattern][row];
-        cell.set((cell.get() as u32 | (1 << step)) as f64);
+        let length = self.c.extended.steps(pattern);
+        let step = groove_pads::nearest_step_in(beat, length);
+        let cell = &self.c.chunk_masks(pattern, step / 32)[0][row];
+        cell.set((cell.get() as u32 | (1 << (step % 32))) as f64);
         self.c.occupied[pattern].set_bool(true);
-        let now = ((beat * 4.0).floor() as i64).rem_euclid(STEPS as i64) as usize;
+        let now = ((beat * 4.0).floor() as i64).rem_euclid(length as i64) as usize;
         if step != now {
             self.skip[row] = Some(step);
         }
@@ -1722,10 +1868,7 @@ impl GrooveBox {
                 self.pad_edits[self.pad_edit_count] = Some(GroovePadEdit::Clear { row });
                 self.pad_edit_count += 1;
             }
-            self.c.patterns[chosen][row].set(0.0);
-            self.c.soft[chosen][row].set(0.0);
-            self.c.maybe[chosen][row].set(0.0);
-            self.c.accent[chosen][row].set(0.0);
+            self.c.clear_row(chosen, row);
         }
         let mode = self.pads.mode();
         let mut n = 0;
@@ -1754,8 +1897,9 @@ impl GrooveBox {
                         && self.clock.running
                         && !self.pads.c.note_repeat.get_bool()
                     {
-                        let beat = self.clock.beat;
-                        let step = groove_pads::nearest_step(beat);
+                        let beat = self.clock.beat - self.origin_step as f64 / 4.0;
+                        let step =
+                            groove_pads::nearest_step_in(beat, self.c.extended.steps(self.playing));
                         if embedded {
                             self.pad_edits[self.pad_edit_count] =
                                 Some(GroovePadEdit::Record { row, step });
@@ -1784,16 +1928,21 @@ impl GrooveBox {
                     }
                 }
                 _ => {
+                    let step = self.c.extended.page.get() as usize * STEPS + k;
+                    if step >= self.c.extended.steps(chosen) {
+                        continue;
+                    }
                     if embedded {
                         self.pad_edits[self.pad_edit_count] =
-                            Some(GroovePadEdit::Toggle { row, step: k });
+                            Some(GroovePadEdit::Toggle { row, step });
                         self.pad_edit_count += 1;
                     }
-                    let cell = &self.c.patterns[chosen][row];
-                    let bits = cell.get() as u32 ^ (1 << k);
+                    let cell = &self.c.chunk_masks(chosen, step / 32)[0][row];
+                    let bit = 1 << (step % 32);
+                    let bits = cell.get() as u32 ^ bit;
                     cell.set(bits as f64);
                     // Stopped, a new hit is heard, as a click on the screen.
-                    if !self.clock.running && bits & (1 << k) != 0 && n < MAX_HITS {
+                    if !self.clock.running && bits & bit != 0 && n < MAX_HITS {
                         self.hits[n] = Hit::new(&self.c, 0, row, 1.0, false);
                         n += 1;
                     }
@@ -1815,13 +1964,24 @@ impl GrooveBox {
     fn show_pads(&self, chosen: usize) {
         let row = self.pads.row();
         let position = self.c.position.get();
-        let playhead = (self.clock.running && self.playing == chosen && position >= 0.0)
-            .then_some(position as usize);
+        if self.c.extended.follow.get_bool()
+            && self.clock.running
+            && self.playing == chosen
+            && position >= 0.0
+        {
+            self.c.extended.page.set((position as usize / STEPS) as f64);
+        }
+        let page = self.c.extended.page.get() as usize;
+        let playhead = (self.clock.running
+            && self.playing == chosen
+            && position >= 0.0
+            && position as usize / STEPS == page)
+            .then_some(position as usize % STEPS);
         let kit = (self.c.kit.get().round() as usize).min(self.kits.len().saturating_sub(1));
-        let colors = groove_pads::colors(&groove_pads::View {
+        let mut colors = groove_pads::colors(&groove_pads::View {
             mode: self.pads.mode(),
             row,
-            steps: self.c.patterns[chosen][row].get() as u32,
+            steps: self.c.page_values(chosen, page, row)[0],
             playhead,
             held: &|k| self.pads.held(k),
             muted: &|r| self.c.mute[r].get_bool(),
@@ -1830,6 +1990,13 @@ impl GrooveBox {
             kit,
             grooves: self.genre_size(),
         });
+        if self.pads.mode() == mode::STEPS {
+            for (index, color) in colors.iter_mut().enumerate() {
+                if page * STEPS + index >= self.c.extended.steps(chosen) {
+                    *color = groove_pads::light::OFF;
+                }
+            }
+        }
         self.pads.show(&colors);
     }
 
@@ -2165,6 +2332,79 @@ mod tests {
         }
         g.pads.c.mode.set(mode::PLAY as f64);
         g
+    }
+
+    #[test]
+    fn longer_patterns_play_across_pages_before_looping() {
+        let mut g = repeat_box();
+        g.c.extended.length[0].set(32.0);
+        g.c.patterns[0][0].set((1u32 | (1 << 16)) as f64);
+        let mut out = vec![[0.0; 2]; 240_000];
+        let mut kicks = Vec::new();
+        g.render(true, own(120.0), &mut out, |frame| kicks.push(frame));
+        assert_eq!(kicks, vec![0, 96_000, 192_000]);
+    }
+
+    #[test]
+    fn step_editor_and_audio_reach_later_chunks() {
+        let mut g = repeat_box();
+        g.c.extended.length[0].set(64.0);
+        g.c.extended.page.set(2.0);
+        g.pads.c.mode.set(mode::STEPS as f64);
+        g.pads.c.pads[8].set(1.0);
+        g.render(false, own(120.0), &mut [[0.0; 2]; 64], |_| {});
+        assert_eq!(g.c.chunk_masks(0, 1)[0][0].get(), 256.0);
+        g.pads.c.pads[8].set(0.0);
+        let mut out = vec![[0.0; 2]; 288_000];
+        let mut kicks = Vec::new();
+        g.render(true, own(120.0), &mut out, |frame| kicks.push(frame));
+        assert_eq!(kicks, vec![240_000]);
+    }
+
+    #[test]
+    fn three_four_patterns_loop_every_three_quarter_notes() {
+        let mut g = repeat_box();
+        g.c.extended.length[0].set(12.0);
+        g.c.extended.numerator[0].set(3.0);
+        g.c.patterns[0][0].set(1.0);
+        let mut out = vec![[0.0; 2]; 144_000];
+        let mut kicks = Vec::new();
+        g.render(true, own(120.0), &mut out, |frame| kicks.push(frame));
+        assert_eq!(kicks, vec![0, 72_000]);
+    }
+
+    #[test]
+    fn repeat_records_past_the_first_sixteen_steps() {
+        let mut g = repeat_box();
+        g.c.extended.length[0].set(64.0);
+        g.pads.c.note_repeat.set_bool(true);
+        g.pads.c.repeat_rate.set(2.0);
+        g.pads.c.record.set_bool(true);
+        g.pads.c.pads[0].set(0.5);
+        let mut out = [[0.0; 2]; 4096];
+        for _ in 0..40 {
+            g.render(true, own(120.0), &mut out, |_| {});
+        }
+        assert!(g.c.patterns[0][0].get() as u32 & (1 << 20) != 0);
+        assert_eq!(g.c.chunk_masks(0, 1)[0][0].get(), 0.0);
+    }
+
+    #[test]
+    fn chained_patterns_advance_at_their_own_cycle_end() {
+        let mut g = repeat_box();
+        g.c.extended.length[0].set(20.0);
+        g.c.pattern_chain.set_bool(true);
+        g.c.pattern_chain_start.set(0.0);
+        g.c.pattern_chain_end.set(1.0);
+        let mut out = [[0.0; 2]; 4096];
+        for _ in 0..29 {
+            g.render(true, own(120.0), &mut out, |_| {});
+        }
+        assert_eq!(g.c.groove_playing.get(), 0.0);
+        for _ in 0..2 {
+            g.render(true, own(120.0), &mut out, |_| {});
+        }
+        assert_eq!(g.c.groove_playing.get(), 1.0);
     }
 
     #[test]

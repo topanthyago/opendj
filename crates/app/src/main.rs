@@ -2097,6 +2097,11 @@ fn bind_controls(app: &AppWindow, registry: Arc<ControlRegistry>) -> impl Fn() -
     controls.on_parameter(move |i, _| g(i).map(|c| c.get_parameter() as f32).unwrap_or(0.0));
     let g = get.clone();
     controls.on_value(move |i, _| g(i).map(|c| c.get() as f32).unwrap_or(0.0));
+    let g = get.clone();
+    controls.on_mask_page(move |i, shift, _| {
+        g(i).map(|c| groove_box::mask_page(c.get(), shift))
+            .unwrap_or(0.0)
+    });
     // Where a controller's knob or fader is while it waits to pick the
     // control up; -1 while it is where the control is, or not known.
     let g = get.clone();
@@ -2118,6 +2123,12 @@ fn bind_controls(app: &AppWindow, registry: Arc<ControlRegistry>) -> impl Fn() -
     controls.on_set_value(move |i, v| {
         if let Some(c) = g(i) {
             c.set(v as f64)
+        }
+    });
+    let g = get.clone();
+    controls.on_set_mask_step(move |i, step, on| {
+        if let Some(c) = g(i) {
+            groove_box::set_mask_step(&c, step, on);
         }
     });
     let g = get.clone();

@@ -19,6 +19,20 @@ use crate::{settings, AppWindow, GrooveGenre, GrooveKit, GrooveName, GrooveUi};
 /// kit's own order; before 3, nine rows (8 crash, 9 ride), now eight.
 pub(crate) const LAYOUT: f64 = 3.0;
 
+/// Slint uses f32, which cannot preserve every bit of a packed u32 pattern.
+pub(crate) fn mask_page(value: f64, shift: i32) -> f32 {
+    ((value as u32 >> shift.clamp(0, 16)) & 0xffff) as f32
+}
+
+pub(crate) fn set_mask_step(control: &ControlHandle, step: i32, on: bool) {
+    if !(0..32).contains(&step) {
+        return;
+    }
+    let bit = 1u32 << step;
+    let value = control.get() as u32;
+    control.set(if on { value | bit } else { value & !bit } as f64);
+}
+
 /// The controls a Groove Box keeps, by name.
 pub(crate) fn kept_keys() -> Vec<String> {
     let mut keys: Vec<String> = [
@@ -49,14 +63,8 @@ pub(crate) fn kept_keys() -> Vec<String> {
     .into_iter()
     .map(String::from)
     .collect();
-    for g in 1..=GROOVES {
-        for r in 1..=ROWS {
-            keys.push(format!("pattern{g}_row{r}"));
-            keys.push(format!("pattern{g}_row{r}_soft"));
-            keys.push(format!("pattern{g}_row{r}_accent"));
-            keys.push(format!("pattern{g}_row{r}_maybe"));
-        }
-    }
+    keys.extend(opendj_engine::groove_pages::state_keys());
+    keys.extend(opendj_engine::groove_pages::VIEW_KEYS.map(String::from));
     for r in 1..=ROWS {
         for k in [
             "mute", "solo", "level", "pitch", "decay", "tone", "pan", "sound", "lock",
@@ -114,6 +122,30 @@ pub(crate) fn upgrade(values: &mut Map<String, Value>) {
     }
     if layout < 3.0 {
         merge_ninth_row(values);
+    }
+    let has_patterns = values
+        .keys()
+        .any(|key| key.starts_with("pattern") && key.contains("_row"));
+    let has_lengths = values
+        .keys()
+        .any(|key| key.starts_with("pattern") && key.ends_with("_length"));
+    if has_patterns && !has_lengths {
+        values.insert("step_page".into(), json!(0));
+        for pattern in 0..GROOVES {
+            values.insert(format!("pattern{}_length", pattern + 1), json!(16));
+            values.insert(format!("pattern{}_meter_num", pattern + 1), json!(4));
+            values.insert(format!("pattern{}_meter_unit", pattern + 1), json!(1));
+            for chunk in 1..opendj_engine::groove_pages::CHUNKS {
+                for row in 0..ROWS {
+                    for kind in 0..4 {
+                        values.insert(
+                            opendj_engine::groove_pages::mask_key(pattern, chunk, row, kind),
+                            json!(0),
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -184,6 +216,7 @@ impl Keeper {
             })
             .collect();
         let mut group_keys = opendj_engine::groove_banks::kept_keys();
+        group_keys.extend(opendj_engine::groove_pages::VIEW_KEYS.map(String::from));
         group_keys.push("initialized".into());
         for row in 1..=ROWS {
             group_keys.push(format!("row{row}_color"));
@@ -261,6 +294,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn skin_edits_preserve_every_bit_of_both_packed_pages() {
+        let registry = ControlRegistry::new();
+        let control = registry.create(
+            "[Test]",
+            "mask",
+            0.0,
+            0.0,
+            u32::MAX as f64,
+            opendj_control::Behavior::Free,
+        );
+        control.set(u32::MAX as f64);
+        assert_eq!(mask_page(control.get(), 0), 65535.0);
+        assert_eq!(mask_page(control.get(), 16), 65535.0);
+        set_mask_step(&control, 31, false);
+        set_mask_step(&control, 0, false);
+        assert_eq!(control.get(), 0x7ffffffeu32 as f64);
+        set_mask_step(&control, 31, true);
+        set_mask_step(&control, 0, true);
+        assert_eq!(control.get(), u32::MAX as f64);
+        set_mask_step(&control, -1, false);
+        set_mask_step(&control, 32, false);
+        assert_eq!(control.get(), u32::MAX as f64);
+    }
+
+    #[test]
     fn every_kept_control_exists() {
         let reg = ControlRegistry::new();
         let (_engine, _input) = opendj_engine::engine::Engine::new(&reg, 48_000.0);
@@ -317,7 +375,9 @@ mod tests {
         assert_eq!(v["pattern1_row8_accent"], json!(1.0));
         assert_eq!(v["pattern2_row8"], json!(1.0), "a crash stays");
         assert_eq!(v["row8_sound"], json!(8.0), "and plays the ride");
-        assert!(v.keys().all(|k| !k.contains("row9")));
+        assert!(!v.contains_key("pattern1_row9"));
+        assert!(!v.contains_key("pattern2_row9"));
+        assert!(!v.contains_key("row9_level"));
     }
 
     #[test]
@@ -331,5 +391,28 @@ mod tests {
         let mut new = json!({"kit": 1.0, "layout": LAYOUT});
         upgrade(new.as_object_mut().unwrap());
         assert_eq!(new["kit"], json!(1.0));
+    }
+
+    #[test]
+    fn legacy_pattern_data_gets_one_bar_and_empty_extra_chunks() {
+        let mut values = json!({"layout": 3.0, "kit": 8.0, "pattern1_row1": 4369.0});
+        upgrade(values.as_object_mut().unwrap());
+        assert_eq!(values["pattern1_length"], json!(16));
+        assert_eq!(values["pattern1_meter_num"], json!(4));
+        assert_eq!(values["pattern1_meter_unit"], json!(1));
+        assert_eq!(values["pattern1_row1"], json!(4369.0));
+        assert_eq!(values["pattern16_chunk4_row16_maybe"], json!(0));
+    }
+
+    #[test]
+    fn extended_presets_and_kit_only_presets_keep_their_fields() {
+        for mut values in [
+            json!({"layout": 3.0, "pattern1_length": 64.0, "pattern1_chunk2_row1": 2147483648.0}),
+            json!({"layout": 3.0, "kit": 12.0}),
+        ] {
+            let before = values.clone();
+            upgrade(values.as_object_mut().unwrap());
+            assert_eq!(values, before);
+        }
     }
 }

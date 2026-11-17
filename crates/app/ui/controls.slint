@@ -17,11 +17,14 @@ export global Controls {
     pure callback parameter(index: int, tick: int) -> float;
     // raw control value (buttons, meters)
     pure callback value(index: int, tick: int) -> float;
+    // Extract a 16-bit page before converting a packed pattern to Slint's f32.
+    pure callback mask-page(index: int, shift: int, tick: int) -> float;
     // Where a controller's knob or fader is (0..1) while it waits to pick
     // the control up after it moved on screen; -1 otherwise.
     pure callback hardware(index: int, tick: int) -> float;
     callback set-parameter(index: int, parameter: float);
     callback set-value(index: int, value: float);
+    callback set-mask-step(index: int, step: int, on: bool);
     callback toggle(index: int);
     callback reset(index: int);
     // The tempo fader ranges, as fractions of normal speed (the same as

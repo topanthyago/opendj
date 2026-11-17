@@ -474,7 +474,12 @@ pub struct Dice {
     /// (move, track: None for every unlocked track), for the next bar.
     pub pending: Option<(Move, Option<usize>)>,
     /// Before each move: the groove it changed and its tracks.
-    undo: [(usize, [Track; crate::groove::ROWS]); UNDO],
+    undo: Box<
+        [(
+            usize,
+            [[Track; crate::groove::ROWS]; crate::groove_pages::PAGES],
+        )],
+    >,
     undo_len: usize,
     undo_at: usize,
 }
@@ -485,21 +490,37 @@ impl Dice {
             habits,
             rng: Rng(seed | 1),
             pending: None,
-            undo: [(0, [Track::default(); crate::groove::ROWS]); UNDO],
+            undo: vec![
+                (
+                    0,
+                    [[Track::default(); crate::groove::ROWS]; crate::groove_pages::PAGES]
+                );
+                UNDO
+            ]
+            .into_boxed_slice(),
             undo_len: 0,
             undo_at: 0,
         }
     }
 
     /// Keeps groove `slot`'s tracks before a move.
-    pub fn remember(&mut self, slot: usize, tracks: [Track; crate::groove::ROWS]) {
+    pub fn remember(
+        &mut self,
+        slot: usize,
+        tracks: [[Track; crate::groove::ROWS]; crate::groove_pages::PAGES],
+    ) {
         self.undo[self.undo_at] = (slot, tracks);
         self.undo_at = (self.undo_at + 1) % UNDO;
         self.undo_len = (self.undo_len + 1).min(UNDO);
     }
 
     /// The last tracks kept, to put back.
-    pub fn take_undo(&mut self) -> Option<(usize, [Track; crate::groove::ROWS])> {
+    pub fn take_undo(
+        &mut self,
+    ) -> Option<(
+        usize,
+        [[Track; crate::groove::ROWS]; crate::groove_pages::PAGES],
+    )> {
         if self.undo_len == 0 {
             return None;
         }

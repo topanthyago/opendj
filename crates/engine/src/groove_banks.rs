@@ -32,6 +32,9 @@ pub fn group_scope(deck: usize, group: usize) -> String {
 pub fn register(registry: &ControlRegistry, deck: usize) {
     let scope = groove_group(deck);
     GrooveControls::new(registry, deck);
+    registry
+        .indicator(&scope, "transport_seek_version", 1.0)
+        .set(1.0);
     crate::groove_pads::PadControls::new(registry, deck);
     registry
         .indicator(&scope, "pattern_api_version", 2.0)
@@ -120,13 +123,7 @@ pub fn kept_keys() -> Vec<String> {
     .into_iter()
     .map(String::from)
     .collect();
-    for pattern in 1..=GROOVES {
-        for row in 1..=ROWS {
-            for suffix in ["", "_soft", "_accent", "_maybe"] {
-                keys.push(format!("pattern{pattern}_row{row}{suffix}"));
-            }
-        }
-    }
+    keys.extend(crate::groove_pages::state_keys());
     for row in 1..=ROWS {
         for name in [
             "mute", "solo", "level", "pitch", "decay", "tone", "pan", "sound", "lock",
@@ -147,6 +144,8 @@ fn action_keys() -> Vec<String> {
         "dice_undo",
         "row_clear",
         "note_repeat",
+        "step_page",
+        "step_page_follow",
     ]
     .into_iter()
     .map(String::from)
@@ -251,16 +250,26 @@ impl Group {
     fn select_pattern(&self, target: f64) {
         self.engine.c.pattern_chain.set_bool(false);
         self.engine.c.groove.set(target);
+        let pattern = self.engine.c.groove.get() as usize;
+        let last_page = self
+            .engine
+            .c
+            .extended
+            .steps(pattern)
+            .div_ceil(crate::groove::STEPS)
+            - 1;
+        self.engine
+            .c
+            .extended
+            .page
+            .set(self.engine.c.extended.page.get().min(last_page as f64));
         self.enabled.set_bool(true);
     }
 
     fn erase_pattern(&self, pattern: usize) {
         let c = &self.engine.c;
-        for row in 0..ROWS {
-            for values in [&c.patterns, &c.soft, &c.accent, &c.maybe] {
-                values[pattern][row].set(0.0);
-            }
-        }
+        c.clear_pattern(pattern);
+        c.extended.reset_length(pattern);
         if c.groove.get() as usize == pattern {
             self.enabled.set_bool(false);
         }
@@ -303,9 +312,17 @@ pub struct GrooveBanks {
     editor_pad_mode: ControlHandle,
     editor_record: ControlHandle,
     editor_colors: [ControlHandle; ROWS],
+    editor_sound_colors: [ControlHandle; ROWS],
     scratch: Vec<[f32; 2]>,
     rate: f64,
     running: bool,
+    seek: ControlHandle,
+    seek_seen: u32,
+    seek_amount: ControlHandle,
+    transport_beat: ControlHandle,
+    cursor_step: ControlHandle,
+    source_offset: f64,
+    next_start: Option<f64>,
     undo: ControlHandle,
     redo: ControlHandle,
     erase: PatternErase,
@@ -471,10 +488,22 @@ impl GrooveBanks {
         let pattern_select = registry.push(&scope, "pattern_select");
         let pattern_stop = registry.push(&scope, "pattern_stop");
         let copy = registry.push(&scope, "copy");
+        let seek = registry.push(&scope, "seek");
         let total = (editor.len() + 5 + ROWS) * GROUPS;
         let mut this = Self {
             c,
             clock: Clock::default(),
+            seek_seen: seek.version(),
+            seek,
+            seek_amount: registry.create(&scope, "seek_amount", 0.0, -32.0, 32.0, Behavior::Free),
+            transport_beat: registry.indicator(&scope, "transport_beat", f64::MAX),
+            cursor_step: registry.indicator(
+                &scope,
+                "cursor_step",
+                (crate::groove_pages::MAX_STEPS - 1) as f64,
+            ),
+            source_offset: 0.0,
+            next_start: None,
             key: None,
             last_bpm: crate::groove::DEFAULT_BPM,
             hit_tx: None,
@@ -497,6 +526,8 @@ impl GrooveBanks {
                     name != "dice_row"
                         && name != "dice"
                         && name != "note_repeat"
+                        && name != "step_page"
+                        && name != "step_page_follow"
                         && !name.starts_with("pad")
                 })
                 .collect(),
@@ -509,6 +540,9 @@ impl GrooveBanks {
                 registry
                     .get(&scope, &format!("pad{}_color", row + 1))
                     .expect("Groove pad color")
+            }),
+            editor_sound_colors: std::array::from_fn(|row| {
+                registry.indicator(&scope, &format!("row{}_color", row + 1), 0xffffff as f64)
             }),
             scratch: vec![[0.0; 2]; BLOCK],
             rate,
@@ -707,10 +741,12 @@ impl GrooveBanks {
         for row in 0..ROWS {
             self.c.meter[row].set(group.engine.c.meter[row].get());
             self.editor_colors[row].set(group.engine.pads.c.colors[row].get());
+            self.editor_sound_colors[row].set(group.colors[row].get());
         }
         for (target, source) in [
             (&self.c.position, &group.engine.c.position),
             (&self.c.beat, &group.engine.c.beat),
+            (&self.c.origin, &group.engine.c.origin),
             (&self.c.groove_playing, &group.engine.c.groove_playing),
             (&self.c.groove_queued, &group.engine.c.groove_queued),
             (&self.c.fill_playing, &group.engine.c.fill_playing),
@@ -781,9 +817,7 @@ impl GrooveBanks {
                 if take_pulse(&group.row_clear[row], &mut group.row_clear_seen[row]) {
                     let c = &group.engine.c;
                     let pattern = c.groove.get() as usize;
-                    for values in [&c.patterns, &c.soft, &c.accent, &c.maybe] {
-                        values[pattern][row].set(0.0);
-                    }
+                    c.clear_row(pattern, row);
                 }
             }
         }
@@ -827,8 +861,10 @@ impl GrooveBanks {
             match self.copy_kind.get() as usize {
                 0 if source < ROWS && target < ROWS => {
                     for pattern in 0..GROOVES {
-                        for values in [&group.patterns, &group.soft, &group.accent, &group.maybe] {
-                            values[pattern][target].set(values[pattern][source].get());
+                        for chunk in 0..crate::groove_pages::CHUNKS {
+                            for values in group.chunk_masks(pattern, chunk) {
+                                values[target].set(values[source].get());
+                            }
                         }
                     }
                     for values in [
@@ -844,12 +880,27 @@ impl GrooveBanks {
                     ] {
                         values[target].set(values[source].get());
                     }
+                    self.groups[group_index].colors[target]
+                        .set(self.groups[group_index].colors[source].get());
                 }
                 1 if source < GROOVES && target < GROOVES => {
-                    for row in 0..ROWS {
-                        for values in [&group.patterns, &group.soft, &group.accent, &group.maybe] {
-                            values[target][row].set(values[source][row].get());
+                    for chunk in 0..crate::groove_pages::CHUNKS {
+                        for (from, to) in group
+                            .chunk_masks(source, chunk)
+                            .into_iter()
+                            .zip(group.chunk_masks(target, chunk))
+                        {
+                            for row in 0..ROWS {
+                                to[row].set(from[row].get());
+                            }
                         }
+                    }
+                    for values in [
+                        &group.extended.length,
+                        &group.extended.numerator,
+                        &group.extended.unit,
+                    ] {
+                        values[target].set(values[source].get());
                     }
                 }
                 2 if source < GROUPS && target < GROUPS => {
@@ -873,15 +924,60 @@ impl GrooveBanks {
     ) {
         self.receive_editor();
         self.edits();
+        let mut source = Source {
+            bpm: source.bpm,
+            beat: source.beat.map(|beat| beat + self.source_offset),
+        };
         if play != self.running {
             if play {
                 self.clock.start(source);
+                if let Some(beat) = self.next_start.take() {
+                    self.clock.seek(beat);
+                    for group in &mut self.groups {
+                        group.engine.seek_transport(beat, group.enabled.get_bool());
+                    }
+                }
             } else {
                 self.clock.stop();
             }
             self.running = play;
         }
+        if take_pulse(&self.seek, &mut self.seek_seen) {
+            let engine = &self.groups[self.selected_index].engine;
+            let pattern = engine.c.groove_playing.get() as usize;
+            let length = engine.c.extended.steps(pattern) as f64 / 4.0;
+            let origin = engine.transport_origin();
+            let now = if play {
+                self.clock.beat
+            } else {
+                self.transport_beat.get()
+            };
+            let target = origin + (now - origin + self.seek_amount.get()).rem_euclid(length);
+            let delta = target - self.clock.beat;
+            self.source_offset += delta;
+            source.beat = source.beat.map(|beat| beat + delta);
+            self.clock.seek(target);
+            self.transport_beat.set(target);
+            self.next_start = (!play).then_some(target);
+            let selected = &self.groups[self.selected_index].engine;
+            if selected.c.extended.follow.get_bool() {
+                let step = ((target - origin) * 4.0).floor() as usize;
+                selected
+                    .c
+                    .extended
+                    .page
+                    .set((step / crate::groove::STEPS) as f64);
+            }
+            for group in &mut self.groups {
+                group
+                    .engine
+                    .seek_transport(target, play && group.enabled.get_bool());
+            }
+        }
         let span = self.clock.advance(out.len(), self.rate, source);
+        if play {
+            self.transport_beat.set(self.clock.beat);
+        }
         let synchronized = Source {
             bpm: source.bpm,
             // The free-running bank clock also aligns live repeats while
@@ -958,6 +1054,12 @@ impl GrooveBanks {
             }
         }
         self.last_bpm = source.bpm;
+        let selected = &self.groups[self.selected_index].engine;
+        let pattern = selected.c.groove_playing.get() as usize;
+        let position =
+            ((self.transport_beat.get() - selected.transport_origin()) * 4.0).floor() as i64;
+        self.cursor_step
+            .set(position.rem_euclid(selected.c.extended.steps(pattern) as i64) as f64);
         // Keep all changes made by one continuous ERASE hold in a single
         // preallocated history entry, committed after the final release.
         if !self.groups.iter().any(|group| {
@@ -1011,6 +1113,48 @@ mod tests {
 
     fn c(registry: &ControlRegistry, name: &str) -> ControlHandle {
         registry.get("[Groove1]", name).expect("test control")
+    }
+
+    #[test]
+    fn transport_jog_moves_the_loop_and_keeps_sound_focus() {
+        let (registry, mut bank) = fixture();
+        bank.groups[0].engine.c.extended.length[0].set(32.0);
+        bank.groups[0].engine.pads.c.row.set(7.0);
+        c(&registry, "seek_amount").set(4.0);
+        c(&registry, "seek").set_bool(true);
+        c(&registry, "seek").set_bool(false);
+        render(&mut bank);
+        assert_eq!(c(&registry, "transport_beat").get(), 4.0);
+        assert_eq!(bank.groups[0].engine.pads.row(), 6);
+        assert!(!bank.running);
+        advance(&mut bank, BLOCK);
+        assert!(bank.clock.beat >= 4.0 && bank.clock.beat < 4.5);
+        assert!(bank.groups[0].engine.c.position.get() >= 16.0);
+    }
+
+    #[test]
+    fn pattern_copy_and_undo_include_long_pages_and_metre() {
+        let (registry, mut bank) = fixture();
+        let controls = &bank.groups[0].engine.c;
+        controls.extended.length[15].set(64.0);
+        controls.extended.numerator[15].set(6.0);
+        controls.extended.unit[15].set(2.0);
+        controls.chunk_masks(15, 1)[0][0].set((1u32 << 31) as f64);
+        render(&mut bank);
+        c(&registry, "copy_group").set(0.0);
+        c(&registry, "copy_kind").set(1.0);
+        c(&registry, "copy_source").set(15.0);
+        c(&registry, "copy_target").set(2.0);
+        c(&registry, "copy").set_bool(true);
+        render(&mut bank);
+        let controls = &bank.groups[0].engine.c;
+        assert_eq!(controls.extended.steps(2), 64);
+        assert_eq!(controls.extended.bar_steps(2), 12);
+        assert_eq!(controls.chunk_masks(2, 1)[0][0].get(), (1u32 << 31) as f64);
+        c(&registry, "undo").set_bool(true);
+        render(&mut bank);
+        assert_eq!(bank.groups[0].engine.c.extended.steps(2), 16);
+        assert_eq!(bank.groups[0].engine.c.chunk_masks(2, 1)[0][0].get(), 0.0);
     }
 
     fn render(bank: &mut GrooveBanks) -> Vec<[f32; 2]> {

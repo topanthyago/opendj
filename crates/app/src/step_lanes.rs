@@ -7,6 +7,7 @@
 //! the next bar and the fills, as the Groove Box will play them.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use opendj_control::{ControlHandle, ControlRegistry};
 use opendj_engine::groove::{fill_seed, groove_group, GrooveHit, GROOVES, ROWS, STEPS};
@@ -34,6 +35,12 @@ pub struct GrooveHandles {
     auto_fill: ControlHandle,
     fill: ControlHandle,
     patterns: [[ControlHandle; ROWS]; GROOVES],
+    extra: Arc<[[[ControlHandle; ROWS]; GROOVES]]>,
+    lengths: [ControlHandle; GROOVES],
+    numerators: [ControlHandle; GROOVES],
+    units: [ControlHandle; GROOVES],
+    origin: ControlHandle,
+    chain: [ControlHandle; 3],
     mute: [ControlHandle; ROWS],
     solo: [ControlHandle; ROWS],
     seed: u32,
@@ -57,6 +64,27 @@ impl GrooveHandles {
             patterns: std::array::from_fn(|p| {
                 std::array::from_fn(|r| c(&format!("pattern{}_row{}", p + 1, r + 1)))
             }),
+            extra: (1..opendj_engine::groove_pages::CHUNKS)
+                .map(|chunk| {
+                    std::array::from_fn(|pattern| {
+                        std::array::from_fn(|row| {
+                            c(&opendj_engine::groove_pages::mask_key(
+                                pattern, chunk, row, 0,
+                            ))
+                        })
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into(),
+            lengths: std::array::from_fn(|p| c(&format!("pattern{}_length", p + 1))),
+            numerators: std::array::from_fn(|p| c(&format!("pattern{}_meter_num", p + 1))),
+            units: std::array::from_fn(|p| c(&format!("pattern{}_meter_unit", p + 1))),
+            origin: c("pattern_origin"),
+            chain: [
+                c("pattern_chain"),
+                c("pattern_chain_start"),
+                c("pattern_chain_end"),
+            ],
             mute: std::array::from_fn(|r| c(&format!("row{}_mute", r + 1))),
             solo: std::array::from_fn(|r| c(&format!("row{}_solo", r + 1))),
             seed: fill_seed(deck),
@@ -73,6 +101,23 @@ impl GrooveHandles {
             patterns: std::array::from_fn(|p| {
                 std::array::from_fn(|r| self.patterns[p][r].get() as u32)
             }),
+            extra: std::array::from_fn(|chunk| {
+                std::array::from_fn(|pattern| {
+                    std::array::from_fn(|row| self.extra[chunk][pattern][row].get() as u32)
+                })
+            }),
+            lengths: std::array::from_fn(|p| {
+                (self.lengths[p].get() as usize).clamp(1, opendj_engine::groove_pages::MAX_STEPS)
+            }),
+            bars: std::array::from_fn(|p| {
+                let numerator = (self.numerators[p].get() as usize).clamp(1, 16);
+                let unit = (self.units[p].get() as usize).min(3);
+                numerator * 16 / opendj_engine::groove_pages::DENOMINATORS[unit]
+            }),
+            origin: (self.origin.get() * 4.0).round() as i64,
+            chain: self.chain[0]
+                .get_bool()
+                .then(|| (self.chain[1].get() as usize, self.chain[2].get() as usize)),
             playing: (self.playing.get().round() as usize).min(GROOVES - 1),
             queued: (self.queued.get().round() as usize).min(GROOVES - 1),
             auto_fill: self.auto_fill.get().round() as u8,
@@ -98,6 +143,11 @@ pub struct GrooveState {
     pub running: bool,
     /// Each groove's tracks, a bit per step.
     pub patterns: [[u32; ROWS]; GROOVES],
+    pub extra: [[[u32; ROWS]; GROOVES]; opendj_engine::groove_pages::CHUNKS - 1],
+    pub lengths: [usize; GROOVES],
+    pub bars: [usize; GROOVES],
+    pub origin: i64,
+    pub chain: Option<(usize, usize)>,
     /// The groove playing, and the one to play from the next bar.
     pub playing: usize,
     pub queued: usize,
@@ -237,15 +287,29 @@ pub fn coming(state: &GrooveState, from: f64, to: f64) -> Vec<(i64, usize, bool)
     let mut out = Vec::new();
     let first = (from * 4.0).floor() as i64 + 1;
     let last = (to * 4.0).floor() as i64;
-    let this_bar = (from / 4.0).floor() as i64;
+    let mut groove = state.playing;
+    let mut origin = state.origin;
+    let mut queued = (state.queued != state.playing).then_some(state.queued);
+    let this_bar = (from * 4.0 / state.bars[groove] as f64).floor() as i64;
     for s in first..=last {
-        let bar = s.div_euclid(STEPS as i64);
-        let step = s.rem_euclid(STEPS as i64) as usize;
-        let groove = if bar > this_bar {
-            state.queued
-        } else {
-            state.playing
-        };
+        let relative = s - origin;
+        if queued.is_some() && relative.rem_euclid(state.bars[groove] as i64) == 0 {
+            groove = queued.take().unwrap();
+            origin = s;
+        } else if queued.is_none() && relative.rem_euclid(state.lengths[groove] as i64) == 0 {
+            if let Some((start, end)) = state.chain {
+                groove = if groove < start || groove >= end {
+                    start
+                } else {
+                    groove + 1
+                };
+                origin = s;
+            }
+        }
+        let flat_step = (s - origin).rem_euclid(state.lengths[groove] as i64) as usize;
+        let bar = s.div_euclid(state.bars[groove] as i64);
+        let step = (s - origin).rem_euclid(state.bars[groove] as i64) as usize * STEPS
+            / state.bars[groove];
         let fill = if state.fill_held && bar == this_bar {
             Some(held_fill(bar, state.seed))
         } else {
@@ -254,7 +318,15 @@ pub fn coming(state: &GrooveState, from: f64, to: f64) -> Vec<(i64, usize, bool)
         for row in (0..ROWS).filter(|&r| state.audible[r]) {
             let hit = match fill {
                 Some(f) => f.hits(step)[row] > 0.0,
-                None => state.patterns[groove][row] >> step & 1 == 1,
+                None => {
+                    let chunk = flat_step / 32;
+                    let bits = if chunk == 0 {
+                        state.patterns[groove][row]
+                    } else {
+                        state.extra[chunk - 1][groove][row]
+                    };
+                    bits >> (flat_step % 32) & 1 == 1
+                }
             };
             if hit {
                 out.push((s, row, fill.is_some()));
@@ -278,6 +350,11 @@ mod tests {
             bpm: 120.0,
             running: true,
             patterns,
+            extra: [[[0; ROWS]; GROOVES]; opendj_engine::groove_pages::CHUNKS - 1],
+            lengths: [16; GROOVES],
+            bars: [16; GROOVES],
+            origin: 0,
+            chain: None,
             playing: 0,
             queued: 0,
             auto_fill: 0,
@@ -293,6 +370,26 @@ mod tests {
         // From just after beat 0 to the end of the bar: kicks on 2, 3, 4.
         let hits = coming(&s, 0.1, 3.99);
         assert_eq!(hits, vec![(4, 0, false), (8, 0, false), (12, 0, false)]);
+    }
+
+    #[test]
+    fn coming_hits_include_the_final_page_of_a_long_pattern() {
+        let mut s = state();
+        s.patterns[0][0] = 0;
+        s.lengths[0] = 128;
+        s.extra[2][0][0] = 1 << 31;
+        assert_eq!(coming(&s, 31.0, 31.99), vec![(127, 0, false)]);
+    }
+
+    #[test]
+    fn queued_patterns_follow_the_current_metre_and_origin() {
+        let mut s = state();
+        s.origin = 8;
+        s.bars[0] = 12;
+        s.lengths[0] = 24;
+        s.patterns[0][0] = 0;
+        s.queued = 1;
+        assert_eq!(coming(&s, 2.1, 7.99), vec![(20, 0, false)]);
     }
 
     #[test]

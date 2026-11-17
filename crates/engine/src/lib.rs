@@ -32,6 +32,7 @@ pub mod groove_banks;
 pub mod groove_dice;
 pub mod groove_fills;
 pub mod groove_pads;
+pub mod groove_pages;
 pub mod growing;
 pub mod harmony;
 pub mod import;

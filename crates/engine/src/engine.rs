@@ -3770,7 +3770,14 @@ impl Engine {
                         0.0
                     },
                 ),
-                vol: (d.volume, volume),
+                vol: (
+                    if d.c.mute.get_bool() && !external {
+                        0.0
+                    } else {
+                        d.volume
+                    },
+                    volume,
+                ),
                 xf: (self.xfade[i], xfade_target[i]),
                 pfl: d.c.pfl.get_bool() && !external,
                 metronome: (d.c.metronome.get_bool()
@@ -7486,6 +7493,28 @@ mod tests {
         }
         assert!(peak[2] > 0.05, "cue left {peak:?}");
         assert!(peak[3] < 1e-4, "main right {peak:?}");
+    }
+
+    #[test]
+    fn cue_only_activation_has_no_first_buffer_master_leak() {
+        let (reg, mut engine, _) = setup();
+        run(&mut engine, 0.02);
+        reg.get("[Groove1]", "enabled").unwrap().set_bool(true);
+        reg.get("[Channel1]", "mute").unwrap().set_bool(true);
+        reg.get("[Channel1]", "pfl").unwrap().set_bool(true);
+        reg.get("[Master]", "headMix").unwrap().set(-1.0);
+        reg.get("[Master]", "headGain").unwrap().set(1.0);
+        reg.get("[Groove1]", "row1_preview").unwrap().set_bool(true);
+        let mut buffer = vec![0.0f32; 512 * 4];
+        let mut heard_cue = false;
+        for _ in 0..8 {
+            engine.process(&mut buffer, 4);
+            for frame in buffer.as_chunks::<4>().0 {
+                assert_eq!(&frame[..2], &[0.0, 0.0]);
+                heard_cue |= frame[2].abs() > 1e-4 || frame[3].abs() > 1e-4;
+            }
+        }
+        assert!(heard_cue);
     }
 
     #[test]

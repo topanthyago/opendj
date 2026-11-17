@@ -805,6 +805,8 @@ pub(crate) struct MasterControls {
 }
 
 pub(crate) fn create_global_controls(reg: &ControlRegistry) -> MasterControls {
+    reg.indicator("[Master]", "cue_isolation_supported", 1.0)
+        .set(1.0);
     for g in ["[Master]", "[App]"] {
         reg.indicator(g, "num_decks", 4.0).set(NUM_DECKS as f64);
         reg.indicator(g, "num_samplers", 64.0);

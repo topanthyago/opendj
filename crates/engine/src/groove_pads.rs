@@ -304,7 +304,11 @@ pub fn colors(v: &View) -> [u8; PADS] {
 
 /// The step a live hit at `beat` is written into: the nearest 16th.
 pub fn nearest_step(beat: f64) -> usize {
-    ((beat * 4.0).round() as i64).rem_euclid(STEPS as i64) as usize
+    nearest_step_in(beat, STEPS)
+}
+
+pub fn nearest_step_in(beat: f64, steps: usize) -> usize {
+    ((beat * 4.0).round() as i64).rem_euclid(steps as i64) as usize
 }
 
 #[cfg(test)]

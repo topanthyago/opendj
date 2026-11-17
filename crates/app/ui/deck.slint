@@ -3069,6 +3069,9 @@ component JogSection inherits VerticalLayout {
 // The Groove Box's eight recurring track colors, a rainbow from the kick down.
 global GrooveColors {
     out property <[color]> track: [#ef3e6e, #f5824a, #f2cf45, #33d17a, #1fd6c1, #5cb3f7, #8d7ff5, #d16be0];
+    pure function from-packed(value: float) -> color {
+        return rgb(mod(floor(value / 65536), 256), mod(floor(value / 256), 256), mod(value, 256));
+    }
 }
 
 // A drum sound's icon, picked by its name in the kit (Kick, Snare, Closed hat,
@@ -3179,15 +3182,19 @@ component GrooveTrack inherits HorizontalLayout {
     in property <int> kit;
     in property <int> position;
     in property <color> tint;
+    property <int> page: Controls.value(Controls.resolve(groove-group, "step_page"), Controls.tick);
+    property <int> chunk: floor(page / 2);
+    property <int> bit-shift: mod(page, 2) * 16;
+    property <int> length: Controls.value(Controls.resolve(groove-group, "pattern" + (slot + 1) + "_length"), Controls.tick);
     property <string> rk: "row" + (row-index + 1);
-    property <int> index: Controls.resolve(groove-group, "pattern" + (slot + 1) + "_" + rk);
-    property <float> bits: Controls.value(index, Controls.tick);
-    property <int> soft-index: Controls.resolve(groove-group, "pattern" + (slot + 1) + "_" + rk + "_soft");
-    property <float> soft: Controls.value(soft-index, Controls.tick);
-    property <int> accent-index: Controls.resolve(groove-group, "pattern" + (slot + 1) + "_" + rk + "_accent");
-    property <float> accent: Controls.value(accent-index, Controls.tick);
-    property <int> maybe-index: Controls.resolve(groove-group, "pattern" + (slot + 1) + "_" + rk + "_maybe");
-    property <float> maybe: Controls.value(maybe-index, Controls.tick);
+    property <int> index: Controls.resolve(groove-group, "pattern" + (slot + 1) + (chunk == 0 ? "" : "_chunk" + (chunk + 1)) + "_" + rk);
+    property <float> bits: Controls.mask-page(index, bit-shift, Controls.tick);
+    property <int> soft-index: Controls.resolve(groove-group, "pattern" + (slot + 1) + (chunk == 0 ? "" : "_chunk" + (chunk + 1)) + "_" + rk + "_soft");
+    property <float> soft: Controls.mask-page(soft-index, bit-shift, Controls.tick);
+    property <int> accent-index: Controls.resolve(groove-group, "pattern" + (slot + 1) + (chunk == 0 ? "" : "_chunk" + (chunk + 1)) + "_" + rk + "_accent");
+    property <float> accent: Controls.mask-page(accent-index, bit-shift, Controls.tick);
+    property <int> maybe-index: Controls.resolve(groove-group, "pattern" + (slot + 1) + (chunk == 0 ? "" : "_chunk" + (chunk + 1)) + "_" + rk + "_maybe");
+    property <float> maybe: Controls.mask-page(maybe-index, bit-shift, Controls.tick);
     property <bool> empty: bits < 1;
     property <int> sound: Controls.value(Controls.resolve(groove-group, rk + "_sound"), Controls.tick);
     property <string> sound-name: GrooveUi.kits[kit].sounds[sound];
@@ -3290,7 +3297,9 @@ component GrooveTrack inherits HorizontalLayout {
         property <bool> is-accent: mod(floor(accent / pow(2, s)), 2) >= 1;
         property <bool> is-maybe: mod(floor(maybe / pow(2, s)), 2) >= 1;
         property <color> lit: is-accent ? tint.brighter(0.45) : is-soft ? tint.with-alpha(0.5) : is-maybe ? tint.with-alpha(0.35) : tint;
-        property <bool> here: position == s;
+        property <bool> valid: root.page * 16 + s < root.length;
+        opacity: valid ? 1 : 0.15;
+        property <bool> here: position == root.page * 16 + s;
         border-radius: 2px;
         background: on ? (here ? lit.brighter(0.7) : lit)
             : tint.with-alpha((empty ? 0.07 : 0.15) + (here ? 0.12 : 0) + (mod(s, 4) == 0 ? 0.04 : 0) + (cta.has-hover ? 0.12 : 0));
@@ -3299,19 +3308,20 @@ component GrooveTrack inherits HorizontalLayout {
         // A step that plays half the time.
         if on && is-maybe: Text { text: "50%"; color: Theme.text; font-size: 8px; font-weight: 700; }
         cta := TouchArea {
+            enabled: valid;
             mouse-cursor: pointer;
             clicked => {
                 // A step taken away forgets its level.
                 if on && is-soft {
-                    Controls.set-value(soft-index, soft - pow(2, s));
+                    Controls.set-mask-step(soft-index, s + root.bit-shift, false);
                 }
                 if on && is-accent {
-                    Controls.set-value(accent-index, accent - pow(2, s));
+                    Controls.set-mask-step(accent-index, s + root.bit-shift, false);
                 }
                 if on && is-maybe {
-                    Controls.set-value(maybe-index, maybe - pow(2, s));
+                    Controls.set-mask-step(maybe-index, s + root.bit-shift, false);
                 }
-                Controls.set-value(index, on ? bits - pow(2, s) : bits + pow(2, s));
+                Controls.set-mask-step(index, s + root.bit-shift, !on);
                 // Stopped, a step added plays its sound so you hear what you add.
                 if !playing && !on {
                     Controls.set-value(preview-index, 1);
@@ -3322,15 +3332,15 @@ component GrooveTrack inherits HorizontalLayout {
             pointer-event(e) => {
                 if e.button == PointerEventButton.right && e.kind == PointerEventKind.down && on {
                     if is-accent {
-                        Controls.set-value(accent-index, accent - pow(2, s));
-                        Controls.set-value(soft-index, soft + pow(2, s));
+                        Controls.set-mask-step(accent-index, s + root.bit-shift, false);
+                        Controls.set-mask-step(soft-index, s + root.bit-shift, true);
                     } else if is-soft {
-                        Controls.set-value(soft-index, soft - pow(2, s));
-                        Controls.set-value(maybe-index, maybe + pow(2, s));
+                        Controls.set-mask-step(soft-index, s + root.bit-shift, false);
+                        Controls.set-mask-step(maybe-index, s + root.bit-shift, true);
                     } else if is-maybe {
-                        Controls.set-value(maybe-index, maybe - pow(2, s));
+                        Controls.set-mask-step(maybe-index, s + root.bit-shift, false);
                     } else {
-                        Controls.set-value(accent-index, accent + pow(2, s));
+                        Controls.set-mask-step(accent-index, s + root.bit-shift, true);
                     }
                 }
             }
@@ -3564,18 +3574,22 @@ component GroovePads inherits HorizontalLayout {
     in property <int> position;
     property <int> row-index: Controls.resolve(g, "row_selected");
     property <int> track: max(1, min(16, Controls.value(row-index, Controls.tick))) - 1;
+    property <int> page: Controls.value(Controls.resolve(g, "step_page"), Controls.tick);
+    property <int> chunk: floor(page / 2);
+    property <int> bit-shift: mod(page, 2) * 16;
+    property <int> length: Controls.value(Controls.resolve(g, "pattern" + (slot + 1) + "_length"), Controls.tick);
     property <string> rk: "row" + (track + 1);
     property <int> focused-sound: Controls.value(Controls.resolve(g, rk + "_sound"), Controls.tick);
     property <string> focused-sound-name: GrooveUi.kits[kit].sounds[focused-sound];
-    property <color> tint: GrooveColors.track[mod(track, 8)];
-    property <int> index: Controls.resolve(g, "pattern" + (slot + 1) + "_" + rk);
-    property <float> bits: Controls.value(index, Controls.tick);
-    property <int> soft-index: Controls.resolve(g, "pattern" + (slot + 1) + "_" + rk + "_soft");
-    property <float> soft: Controls.value(soft-index, Controls.tick);
-    property <int> accent-index: Controls.resolve(g, "pattern" + (slot + 1) + "_" + rk + "_accent");
-    property <float> accent: Controls.value(accent-index, Controls.tick);
-    property <int> maybe-index: Controls.resolve(g, "pattern" + (slot + 1) + "_" + rk + "_maybe");
-    property <float> maybe: Controls.value(maybe-index, Controls.tick);
+    property <color> tint: GrooveColors.from-packed(Controls.value(Controls.resolve(g, rk + "_color"), Controls.tick));
+    property <int> index: Controls.resolve(g, "pattern" + (slot + 1) + (chunk == 0 ? "" : "_chunk" + (chunk + 1)) + "_" + rk);
+    property <float> bits: Controls.mask-page(index, bit-shift, Controls.tick);
+    property <int> soft-index: Controls.resolve(g, "pattern" + (slot + 1) + (chunk == 0 ? "" : "_chunk" + (chunk + 1)) + "_" + rk + "_soft");
+    property <float> soft: Controls.mask-page(soft-index, bit-shift, Controls.tick);
+    property <int> accent-index: Controls.resolve(g, "pattern" + (slot + 1) + (chunk == 0 ? "" : "_chunk" + (chunk + 1)) + "_" + rk + "_accent");
+    property <float> accent: Controls.mask-page(accent-index, bit-shift, Controls.tick);
+    property <int> maybe-index: Controls.resolve(g, "pattern" + (slot + 1) + (chunk == 0 ? "" : "_chunk" + (chunk + 1)) + "_" + rk + "_maybe");
+    property <float> maybe: Controls.mask-page(maybe-index, bit-shift, Controls.tick);
     property <int> preview-index: Controls.resolve(g, rk + "_preview");
     property <bool> playing: Controls.value(Controls.resolve(group, "play"), Controls.tick) > 0;
     spacing: 8px;
@@ -3640,7 +3654,9 @@ component GroovePads inherits HorizontalLayout {
                 property <bool> is-soft: mod(floor(soft / pow(2, s)), 2) >= 1;
                 property <bool> is-accent: mod(floor(accent / pow(2, s)), 2) >= 1;
                 property <bool> is-maybe: mod(floor(maybe / pow(2, s)), 2) >= 1;
-                property <bool> here: position == s;
+                property <bool> valid: root.page * 16 + s < root.length;
+                opacity: valid ? 1 : 0.15;
+                property <bool> here: position == root.page * 16 + s;
                 x: column * parent.width / 4 + 3px;
                 y: line * parent.height / 4 + 3px;
                 width: parent.width / 4 - 6px;
@@ -3653,26 +3669,27 @@ component GroovePads inherits HorizontalLayout {
                 Text { x: 6px; y: 4px; text: s + 1; color: on ? Theme.s-000000a0 : Theme.text-dim; font-size: 9px; font-weight: 700; }
                 if on && is-maybe: Text { text: "50%"; color: Theme.text; font-size: 10px; font-weight: 700; }
                 sta := TouchArea {
+                    enabled: valid;
                     mouse-cursor: pointer;
                     clicked => {
-                        if on && is-soft { Controls.set-value(soft-index, soft - pow(2, s)); }
-                        if on && is-accent { Controls.set-value(accent-index, accent - pow(2, s)); }
-                        if on && is-maybe { Controls.set-value(maybe-index, maybe - pow(2, s)); }
-                        Controls.set-value(index, on ? bits - pow(2, s) : bits + pow(2, s));
+                        if on && is-soft { Controls.set-mask-step(soft-index, s + root.bit-shift, false); }
+                        if on && is-accent { Controls.set-mask-step(accent-index, s + root.bit-shift, false); }
+                        if on && is-maybe { Controls.set-mask-step(maybe-index, s + root.bit-shift, false); }
+                        Controls.set-mask-step(index, s + root.bit-shift, !on);
                         if !playing && !on { Controls.set-value(preview-index, 1); }
                     }
                     pointer-event(e) => {
                         if e.button == PointerEventButton.right && e.kind == PointerEventKind.down && on {
                             if is-accent {
-                                Controls.set-value(accent-index, accent - pow(2, s));
-                                Controls.set-value(soft-index, soft + pow(2, s));
+                                Controls.set-mask-step(accent-index, s + root.bit-shift, false);
+                                Controls.set-mask-step(soft-index, s + root.bit-shift, true);
                             } else if is-soft {
-                                Controls.set-value(soft-index, soft - pow(2, s));
-                                Controls.set-value(maybe-index, maybe + pow(2, s));
+                                Controls.set-mask-step(soft-index, s + root.bit-shift, false);
+                                Controls.set-mask-step(maybe-index, s + root.bit-shift, true);
                             } else if is-maybe {
-                                Controls.set-value(maybe-index, maybe - pow(2, s));
+                                Controls.set-mask-step(maybe-index, s + root.bit-shift, false);
                             } else {
-                                Controls.set-value(accent-index, accent + pow(2, s));
+                                Controls.set-mask-step(accent-index, s + root.bit-shift, true);
                             }
                         }
                     }
@@ -3695,7 +3712,7 @@ component GrooveSoundPads inherits Rectangle {
         property <string> sound-name: GrooveUi.kits[kit].sounds[sound];
         property <float> meter: Controls.value(Controls.resolve(g, rk + "_meter"), Controls.tick);
         property <int> preview-index: Controls.resolve(g, rk + "_preview");
-        property <color> pad-tint: GrooveColors.track[mod(r, 8)];
+        property <color> pad-tint: GrooveColors.from-packed(Controls.value(Controls.resolve(g, rk + "_color"), Controls.tick));
         x: mod(r, 4) * root.width / 4 + 2px;
         y: (3 - floor(r / 4)) * root.height / 4 + 2px;
         width: root.width / 4 - 4px;
@@ -3754,6 +3771,69 @@ component GrooveSoundPads inherits Rectangle {
 }
 
 // The foreground kit selector writes only the selected Group's kit control.
+component GroovePatternSetup inherits Rectangle {
+    in property <string> g;
+    in property <color> tint;
+    property <int> slot: Controls.value(Controls.resolve(g, "groove"), Controls.tick);
+    property <string> pk: "pattern" + (slot + 1);
+    property <int> length: Controls.value(Controls.resolve(g, pk + "_length"), Controls.tick);
+    property <int> numerator: Controls.value(Controls.resolve(g, pk + "_meter_num"), Controls.tick);
+    property <int> unit: Controls.value(Controls.resolve(g, pk + "_meter_unit"), Controls.tick);
+    property <int> page: Controls.value(Controls.resolve(g, "step_page"), Controls.tick);
+    property <[int]> denominators: [2,4,8,16];
+    property <int> page-count: max(1, ceil(length / 16));
+    width: 104px;
+    height: 28px;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: tint.with-alpha(0.5);
+    background: Theme.control;
+    Text {
+        text: length / 4 + " ♩ · " + numerator + "/" + denominators[unit];
+        color: Theme.text;
+        font-size: 10px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    TouchArea { mouse-cursor: pointer; clicked => { options.show(); } }
+    options := PopupWindow {
+        y: root.height + 4px;
+        width: 292px;
+        GrooveMenuBackground { }
+        VerticalLayout {
+            padding: 6px;
+            Text { text: "DURAÇÃO · P" + (slot + 1); height: 22px; color: Theme.text-dim; font-size: 10px; }
+            for count in [4,8,16,32]: GrooveMenuItem {
+                text: count + " tempos";
+                checked: length == count * 4;
+                clicked => { Controls.set-value(Controls.resolve(g, pk + "_length"), count * 4); }
+            }
+            Rectangle { height: 1px; background: Theme.border; }
+            HorizontalLayout {
+                height: 64px;
+                ControlKnob { group: g; key: pk + "_length"; label: "PASSOS"; size: 34px; tint: tint; }
+                ControlKnob { group: g; key: pk + "_meter_num"; label: "COMPASSO"; size: 34px; tint: tint; }
+                ControlKnob { group: g; key: pk + "_meter_unit"; label: "UNIDADE"; size: 34px; tint: tint; }
+            }
+            Text { text: numerator + "/" + denominators[unit] + " · " + length + " passos"; height: 24px; color: Theme.text; font-size: 11px; }
+            Rectangle { height: 1px; background: Theme.border; }
+            GrooveMenuItem {
+                text: "Acompanhar reprodução";
+                checked: Controls.value(Controls.resolve(g, "step_page_follow"), Controls.tick) > 0;
+                clicked => { Controls.set-value(Controls.resolve(g, "step_page_follow"), self.checked ? 0 : 1); }
+            }
+            for number in page-count: GrooveMenuItem {
+                text: "Passos " + (number * 16 + 1) + "–" + min(length, number * 16 + 16);
+                checked: page == number;
+                clicked => {
+                    Controls.set-value(Controls.resolve(g, "step_page_follow"), 0);
+                    Controls.set-value(Controls.resolve(g, "step_page"), number);
+                }
+            }
+        }
+    }
+}
+
 component GrooveKitSelector inherits Rectangle {
     in property <string> g;
     in property <color> tint;
@@ -3910,6 +3990,7 @@ component GrooveBox inherits Rectangle {
             Text { width: 44px; text: "PATTERN"; color: Theme.text-dim; font-size: 9px; vertical-alignment: center; }
             GrooveSlots { g: g; deck: deck; transport-group: group; compact: root.width < 640px; tint: group-tint; }
             GrooveDice { g: g; width: 30px; height: 30px; tint: tint; }
+            if Controls.value(Controls.resolve(g, "pattern_length_version"), Controls.tick) > 0: GroovePatternSetup { g: g; tint: group-tint; }
             GrooveTempo { g: g; width: 60px; height: 30px; tint: tint; }
             Rectangle { horizontal-stretch: 1; }
             Rectangle {
@@ -3976,7 +4057,7 @@ component GrooveBox inherits Rectangle {
                         row-index: r;
                         kit: kit;
                         position: position;
-                        tint: GrooveColors.track[mod(r, 8)];
+                        tint: GrooveColors.from-packed(Controls.value(Controls.resolve(g, "row" + (r + 1) + "_color"), Controls.tick));
                     }
                 }
             }
@@ -5897,6 +5978,21 @@ export component Deck inherits Rectangle {
             height: mixer ? 0px : self.fixed-height;
         }
         if mixer: MixerTitle { deck: deck; in-view: root.mixer-keys || root.mixer-groove-shown; view: root.mixer-groove-shown ? 2 : root.mixer-keys ? 1 : 0; }
+
+        if Controls.value(Controls.resolve(group, "mute"), Controls.tick) > 0
+            && Controls.value(Controls.resolve(group, "pfl"), Controls.tick) > 0
+            && Controls.value(Controls.resolve("[Master]", "external_mixer"), Controls.tick) == 0: Rectangle {
+            height: 20px;
+            background: tint.with-alpha(0.18);
+            Text {
+                text: "SÓ FONES · MASTER CORTADO";
+                color: tint;
+                font-size: 10px;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
 
         Rectangle {
             background: Theme.panel;
