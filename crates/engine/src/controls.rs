@@ -281,12 +281,34 @@ pub(crate) struct DeckControls {
     pub(crate) sync_key_edge: Edge,
 }
 
+/// The live-input controls are also restored before the audio engine starts.
+/// Reusing these definitions keeps their ranges identical in both paths.
+pub(crate) fn live_input_controls(
+    reg: &ControlRegistry,
+    deck: usize,
+) -> (ControlHandle, ControlHandle, ControlHandle) {
+    let group = deck_group(deck);
+    (
+        reg.create(
+            &group,
+            "live_input",
+            0.0,
+            0.0,
+            crate::inputs::MIXER as f64,
+            Behavior::Free,
+        ),
+        reg.create(&group, "live_trim", 0.0, -12.0, 24.0, Behavior::Linear),
+        reg.create(&group, "live_pan", 0.0, -1.0, 1.0, Behavior::Linear),
+    )
+}
+
 impl DeckControls {
     pub(crate) fn create(reg: &ControlRegistry, deck: usize) -> Self {
         let g = deck_group(deck);
         let g = g.as_str();
         let eqg = eq_group(deck);
         let qg = quick_effect_group(deck);
+        let (live_input, live_trim, live_pan) = live_input_controls(reg, deck);
         alias(reg, g, "peak_indicator", g, "PeakIndicator");
         alias(reg, g, "vu_meter", g, "VuMeter");
         alias(reg, g, "vu_meter_left", g, "VuMeterL");
@@ -539,16 +561,9 @@ impl DeckControls {
             bpmlock: reg.toggle(g, "bpmlock"),
             metronome: reg.toggle(g, "metronome"),
             beats_edit: reg.toggle(g, "beats_edit"),
-            live_input: reg.create(
-                g,
-                "live_input",
-                0.0,
-                0.0,
-                crate::inputs::MIXER as f64,
-                Behavior::Free,
-            ),
-            live_trim: reg.create(g, "live_trim", 0.0, -12.0, 24.0, Behavior::Linear),
-            live_pan: reg.create(g, "live_pan", 0.0, -1.0, 1.0, Behavior::Linear),
+            live_input,
+            live_trim,
+            live_pan,
             pitch: reg.create(g, "pitch", 0.0, -6.0, 6.0, Behavior::Linear),
             key: reg.indicator(g, "key", 24.0),
             file_key: reg.indicator(g, "file_key", 24.0),

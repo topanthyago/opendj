@@ -237,6 +237,20 @@ mod tests {
     }
 
     #[test]
+    fn every_kept_control_exists_before_audio_starts() {
+        let reg = ControlRegistry::new();
+        opendj_engine::groove::create_restore_controls(&reg);
+        for deck in 0..NUM_DECKS {
+            for key in kept_keys() {
+                assert!(reg.get(&groove_group(deck), &key).is_some(), "{key}");
+            }
+            for key in ["live_input", "live_trim", "live_pan"] {
+                assert!(reg.get(&format!("[Channel{}]", deck + 1), key).is_some());
+            }
+        }
+    }
+
+    #[test]
     fn settings_and_presets_keep_break_preferences_but_not_actions() {
         let keys = kept_keys();
         for key in [

@@ -186,6 +186,7 @@ impl GrooveControls {
     pub fn new(reg: &ControlRegistry, deck: usize) -> Self {
         let g = groove_group(deck);
         let g = g.as_str();
+        let fresh = reg.get(g, "pattern1_row1").is_none();
         let rows = |f: &dyn Fn(usize) -> ControlHandle| std::array::from_fn(f);
         let kit_count = kits::KITS.len() as f64;
         let lib = patterns::library();
@@ -371,7 +372,9 @@ impl GrooveControls {
             preview: rows(&|r| reg.push(g, &format!("row{}_preview", r + 1))),
         };
         // A new Groove Box opens with the library's first groove.
-        c.load_groove(0, 0, 1);
+        if fresh {
+            c.load_groove(0, 0, 1);
+        }
         c
     }
 
@@ -436,6 +439,15 @@ impl GrooveControls {
     fn slots(&self) -> (usize, usize) {
         let chosen = (self.groove.get().round() as usize).min(GROOVES - 1);
         (chosen, chosen ^ 1)
+    }
+}
+
+/// Create exactly the controls needed by the app's saved Groove Box state,
+/// before the engine and its audio/editor threads are started.
+pub fn create_restore_controls(registry: &ControlRegistry) {
+    for deck in 0..NUM_DECKS {
+        GrooveControls::new(registry, deck);
+        crate::controls::live_input_controls(registry, deck);
     }
 }
 
@@ -1644,6 +1656,39 @@ mod tests {
     use super::*;
 
     const RATE: f64 = 48_000.0;
+
+    #[test]
+    fn early_restore_survives_engine_control_creation() {
+        let reg = ControlRegistry::new();
+        create_restore_controls(&reg);
+        for deck in 0..NUM_DECKS {
+            let channel = format!("[Channel{}]", deck + 1);
+            for key in ["live_input", "live_trim", "live_pan"] {
+                assert!(reg.get(&channel, key).is_some());
+            }
+        }
+
+        let restored = GrooveControls::new(&reg, 0);
+        restored.enabled.set_bool(true);
+        restored.backend.set_bool(true);
+        restored.kit.set(1.0);
+        restored.patterns[0][0].set(0x1357 as f64);
+        restored.soft[0][0].set(0x0022 as f64);
+        restored.sound[ROWS - 1].set(8.0);
+        reg.get("[Channel1]", "live_input").unwrap().set(3.0);
+        reg.get("[Channel1]", "live_trim").unwrap().set(-5.0);
+        reg.get("[Channel1]", "live_pan").unwrap().set(0.25);
+
+        let engine = GrooveControls::new(&reg, 0);
+        assert!(engine.enabled.get_bool() && engine.backend.get_bool());
+        assert_eq!(engine.kit.get(), 1.0);
+        assert_eq!(engine.patterns[0][0].get(), 0x1357 as f64);
+        assert_eq!(engine.soft[0][0].get(), 0x0022 as f64);
+        assert_eq!(engine.sound[ROWS - 1].get(), 8.0);
+        for (key, value) in [("live_input", 3.0), ("live_trim", -5.0), ("live_pan", 0.25)] {
+            assert_eq!(reg.get("[Channel1]", key).unwrap().get(), value);
+        }
+    }
 
     fn own(bpm: f64) -> Source {
         Source { bpm, beat: None }

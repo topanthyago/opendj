@@ -606,6 +606,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ui_family = ui_font::install();
 
     let registry = ControlRegistry::new();
+    // Restore before the audio/editor workers can treat saved values as edits.
+    opendj_engine::groove::create_restore_controls(&registry);
+    let groove_keeper = RefCell::new(groove_box::Keeper::new(&registry));
     let engine = Rc::new(AudioEngine::start(
         registry.clone(),
         &settings::audio_setup(),
@@ -739,7 +742,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     mixer_picker::install(&app, engine.clone());
     presets::install(&app, engine.clone(), registry.clone());
     instrument_knobs::install(&app, engine.clone());
-    let groove_keeper = RefCell::new(groove_box::Keeper::new(&registry));
     let maschine_surface = match std::array::from_fn(|deck| engine.maschine(deck)) {
         [Some(a), Some(b), Some(c), Some(d)] => Some(
             maschine_surface::MaschineSurfaceProvider::new(registry.clone(), [a, b, c, d]),
