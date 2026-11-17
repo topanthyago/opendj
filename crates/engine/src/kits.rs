@@ -46,8 +46,20 @@ pub const ROLES: [&str; 9] = [
     "Ride",
 ];
 
-/// The number of sounds in each built-in kit.
-pub const MAX_SOUNDS: usize = 16;
+/// Maximum sound choices in a built-in kit.
+pub const MAX_SOUNDS: usize = 24;
+const CURATED_SOUNDS: usize = 16;
+const ORIGINAL_SOUNDS: usize = 16;
+const ALT_NAMES: [&str; 8] = [
+    "Kick alt",
+    "Snare alt",
+    "Closed hat alt",
+    "Open hat alt",
+    "Clap alt",
+    "Percussion alt",
+    "Bass 808 (55 Hz)",
+    "FX short",
+];
 
 pub struct KitSound {
     pub name: &'static str,
@@ -95,6 +107,14 @@ pub const KITS: [KitInfo; 8] = [
             "Woodblock",
             "Tambourine",
             "Percussion",
+            "Kick alt",
+            "Snare alt",
+            "Closed hat alt",
+            "Open hat alt",
+            "Clap alt",
+            "Percussion alt",
+            "Bass 808 (55 Hz)",
+            "FX short",
         ],
         roles: None,
     },
@@ -109,6 +129,14 @@ pub const KITS: [KitInfo; 8] = [
             "Woodblock",
             "Tambourine",
             "Percussion",
+            "Kick alt",
+            "Snare alt",
+            "Closed hat alt",
+            "Open hat alt",
+            "Clap alt",
+            "Percussion alt",
+            "Bass 808 (55 Hz)",
+            "FX short",
         ],
         roles: None,
     },
@@ -123,6 +151,14 @@ pub const KITS: [KitInfo; 8] = [
             "Clave",
             "Woodblock",
             "Tambourine",
+            "Kick alt",
+            "Snare alt",
+            "Closed hat alt",
+            "Open hat alt",
+            "Clap alt",
+            "Percussion alt",
+            "Bass 808 (55 Hz)",
+            "FX short",
         ],
         roles: None,
     },
@@ -137,6 +173,14 @@ pub const KITS: [KitInfo; 8] = [
             "Clave",
             "Woodblock",
             "Tambourine",
+            "Kick alt",
+            "Snare alt",
+            "Closed hat alt",
+            "Open hat alt",
+            "Clap alt",
+            "Percussion alt",
+            "Bass 808 (55 Hz)",
+            "FX short",
         ],
         roles: None,
     },
@@ -151,6 +195,14 @@ pub const KITS: [KitInfo; 8] = [
             "Clave",
             "Woodblock",
             "Tambourine",
+            "Kick alt",
+            "Snare alt",
+            "Closed hat alt",
+            "Open hat alt",
+            "Clap alt",
+            "Percussion alt",
+            "Bass 808 (55 Hz)",
+            "FX short",
         ],
         roles: None,
     },
@@ -165,6 +217,14 @@ pub const KITS: [KitInfo; 8] = [
             "High tom",
             "Clave",
             "Woodblock",
+            "Kick alt",
+            "Snare alt",
+            "Closed hat alt",
+            "Open hat alt",
+            "Clap alt",
+            "Percussion alt",
+            "Bass 808 (55 Hz)",
+            "FX short",
         ],
         roles: None,
     },
@@ -179,6 +239,14 @@ pub const KITS: [KitInfo; 8] = [
             "Shaker",
             "Tambourine",
             "Woodblock",
+            "Kick alt",
+            "Snare alt",
+            "Closed hat alt",
+            "Open hat alt",
+            "Clap alt",
+            "Percussion alt",
+            "Bass 808 (55 Hz)",
+            "FX short",
         ],
         roles: Some(&[
             "Kick",
@@ -203,6 +271,14 @@ pub const KITS: [KitInfo; 8] = [
             "Tom",
             "Woodblock",
             "Percussion",
+            "Kick alt",
+            "Snare alt",
+            "Closed hat alt",
+            "Open hat alt",
+            "Clap alt",
+            "Percussion alt",
+            "Bass 808 (55 Hz)",
+            "FX short",
         ],
         roles: Some(&[
             "Bumbo sintetico",
@@ -223,6 +299,7 @@ pub const KITS: [KitInfo; 8] = [
 struct CuratedKit {
     info: KitInfo,
     samples: Vec<Sample>,
+    row_map: [usize; 16],
 }
 
 struct Catalog {
@@ -302,6 +379,28 @@ fn read_curated(path: &Path) -> Result<Vec<CuratedKit>, String> {
         .and_then(|v| v.as_array())
         .filter(|kits| kits.len() == 8)
         .ok_or("catalog must contain eight kits")?;
+    let v2 = manifest.get("layout").and_then(|v| v.as_str()) == Some("native16-v2");
+    let v2_roles = [
+        "kick",
+        "snare",
+        "closed_hat",
+        "open_hat",
+        "clap",
+        "rim_or_clave",
+        "percussion",
+        "accent_cymbal",
+        "kick_alt",
+        "snare_alt",
+        "closed_hat_alt",
+        "percussion_alt",
+        "tom_low",
+        "tom_high",
+        "bass_808",
+        "fx_short",
+    ];
+    if !v2 {
+        eprintln!("Groove: legacy curated catalog has coarse roles; preserving its legacy mapping without asserting hat or cymbal types");
+    }
     let mut result = Vec::new();
     for kit in kits {
         let read_kit = || -> Result<CuratedKit, String> {
@@ -313,9 +412,9 @@ fn read_curated(path: &Path) -> Result<Vec<CuratedKit>, String> {
             let slots = kit
                 .get("slots")
                 .and_then(|v| v.as_array())
-                .filter(|s| s.len() == MAX_SOUNDS)
+                .filter(|s| s.len() == CURATED_SOUNDS)
                 .ok_or("expected 16 slots")?;
-            let mut ordered: [Option<(&str, &str)>; MAX_SOUNDS] = [None; MAX_SOUNDS];
+            let mut ordered: [Option<(&str, &str)>; CURATED_SOUNDS] = [None; CURATED_SOUNDS];
             let mut paths = std::collections::HashSet::new();
             for slot in slots {
                 let index = slot
@@ -323,8 +422,11 @@ fn read_curated(path: &Path) -> Result<Vec<CuratedKit>, String> {
                     .and_then(|v| v.as_u64())
                     .and_then(|n| usize::try_from(n).ok())
                     .and_then(|n| n.checked_sub(1))
-                    .filter(|&n| n < MAX_SOUNDS)
+                    .filter(|&n| n < CURATED_SOUNDS)
                     .ok_or("invalid slot number")?;
+                if v2 && slot.get("role").and_then(|v| v.as_str()) != Some(v2_roles[index]) {
+                    return Err("V2 slot role does not match native layout".into());
+                }
                 let name = slot
                     .get("name")
                     .and_then(|v| v.as_str())
@@ -339,8 +441,8 @@ fn read_curated(path: &Path) -> Result<Vec<CuratedKit>, String> {
                     return Err("duplicate slot or sample path".into());
                 }
             }
-            let mut samples = Vec::with_capacity(MAX_SOUNDS);
-            let mut names = Vec::with_capacity(MAX_SOUNDS);
+            let mut samples = Vec::with_capacity(CURATED_SOUNDS);
+            let mut names = Vec::with_capacity(CURATED_SOUNDS);
             for entry in ordered {
                 let (name, path) = entry.ok_or("missing slot")?;
                 let sample = curated_sample(Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
@@ -366,6 +468,11 @@ fn read_curated(path: &Path) -> Result<Vec<CuratedKit>, String> {
                     extras,
                 },
                 samples,
+                row_map: if v2 {
+                    std::array::from_fn(|i| i)
+                } else {
+                    [0, 2, 4, 5, 6, 10, 11, 14, 1, 3, 8, 9, 12, 13, 7, 15]
+                },
             })
         };
         let style = kit
@@ -392,6 +499,21 @@ fn catalog() -> &'static Catalog {
         infos.extend(curated.iter().map(|kit| kit.info.clone()));
         Catalog { infos, curated }
     })
+}
+
+/// Default sound indices for the sixteen performance rows. The older V1
+/// catalog retains its legacy arrangement; its coarse roles do not identify
+/// open/closed hats or cymbals reliably.
+pub fn default_row_map(kit: usize) -> [usize; 16] {
+    const BUILTIN: [usize; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 21, 9, 10, 22, 23];
+    if kit < KITS.len() {
+        BUILTIN
+    } else {
+        catalog()
+            .curated
+            .get(kit - KITS.len())
+            .map_or(BUILTIN, |kit| kit.row_map)
+    }
 }
 
 /// Built-in kits followed by successfully decoded curated kits.
@@ -509,53 +631,113 @@ fn build_from(rate: f64, custom_root: Option<&Path>) -> Vec<Kit> {
     let sr = rate as f32;
     KITS.iter()
         .enumerate()
-        .map(|(k, info)| Kit {
-            name: info.name,
-            sounds: info
-                .sounds()
-                .enumerate()
-                .map(|(n, name)| {
-                    if let Some(sample) =
-                        custom_root.and_then(|root| custom_sound(root, info.name, n, rate))
-                    {
-                        let pitch = if n == 0 {
-                            let mono: Vec<f32> = (0..sample.len())
-                                .map(|i| {
-                                    let [left, right] = sample.frame(i);
-                                    (left + right) * 0.5
-                                })
-                                .collect();
-                            pitch_of(&mono, sr)
+        .map(|(k, info)| {
+            let mut kit = Kit {
+                name: info.name,
+                sounds: info
+                    .sounds()
+                    .take(ORIGINAL_SOUNDS)
+                    .enumerate()
+                    .map(|(n, name)| {
+                        if let Some(sample) =
+                            custom_root.and_then(|root| custom_sound(root, info.name, n, rate))
+                        {
+                            let pitch = if n == 0 {
+                                let mono: Vec<f32> = (0..sample.len())
+                                    .map(|i| {
+                                        let [left, right] = sample.frame(i);
+                                        (left + right) * 0.5
+                                    })
+                                    .collect();
+                                pitch_of(&mono, sr)
+                            } else {
+                                0.0
+                            };
+                            return KitSound {
+                                name,
+                                sample: Arc::new(sample),
+                                pitch,
+                            };
+                        }
+                        if let Some(sample) = recorded_sound(k, n, rate) {
+                            return KitSound {
+                                name,
+                                sample: Arc::new(sample),
+                                pitch: 0.0,
+                            };
+                        }
+                        let source = native_source(k, n);
+                        let role = if k >= 6 {
+                            ROLES.get(n).copied().unwrap_or(name)
                         } else {
-                            0.0
+                            name
                         };
-                        return KitSound {
+                        let mono = sound(source, n, role, sr);
+                        KitSound {
                             name,
-                            sample: Arc::new(sample),
-                            pitch,
+                            pitch: if n == 0 { pitch_of(&mono, sr) } else { 0.0 },
+                            sample: Arc::new(Sample::from_mono(&mono, rate)),
+                        }
+                    })
+                    .collect(),
+            };
+            for (index, name) in ALT_NAMES.iter().enumerate() {
+                let (sample, pitch) = match index {
+                    6 => {
+                        let len = (sr * 1.2) as usize;
+                        let mono: Vec<_> = (0..len)
+                            .map(|i| {
+                                let t = i as f32 / sr;
+                                let attack = (t / 0.005).min(1.0);
+                                (std::f32::consts::TAU * 55.0 * t).sin()
+                                    * attack
+                                    * (-3.0 * t).exp()
+                                    * 0.8
+                            })
+                            .collect();
+                        (Sample::from_mono(&mono, rate), 55.0)
+                    }
+                    _ => {
+                        let source = [0, 1, 2, 3, 4, 6, 0, 7][index];
+                        let factor = [1.14, 0.88, 1.22, 0.83, 1.12, 0.86, 1.0, 1.65][index];
+                        let input = &kit.sounds[source].sample;
+                        let limit = if index == 7 {
+                            (rate * 0.3) as usize
+                        } else {
+                            usize::MAX
                         };
+                        let len = ((input.len() as f64 / factor) as usize).min(limit);
+                        let mono: Vec<_> = (0..len)
+                            .map(|i| {
+                                let pos = i as f64 * factor;
+                                let a = input.frame(pos as usize);
+                                let b = input.frame(pos as usize + 1);
+                                let t = pos.fract() as f32;
+                                let envelope = if index == 7 {
+                                    1.0 - i as f32 / len.max(1) as f32
+                                } else {
+                                    1.0
+                                };
+                                ((a[0] + a[1]) * (1.0 - t) + (b[0] + b[1]) * t) * 0.5 * envelope
+                            })
+                            .collect();
+                        (
+                            Sample::from_mono(&mono, rate),
+                            if source == 0 {
+                                kit.sounds[0].pitch * factor as f32
+                            } else {
+                                0.0
+                            },
+                        )
                     }
-                    if let Some(sample) = recorded_sound(k, n, rate) {
-                        return KitSound {
-                            name,
-                            sample: Arc::new(sample),
-                            pitch: 0.0,
-                        };
-                    }
-                    let source = native_source(k, n);
-                    let role = if k >= 6 {
-                        ROLES.get(n).copied().unwrap_or(name)
-                    } else {
-                        name
-                    };
-                    let mono = sound(source, n, role, sr);
-                    KitSound {
-                        name,
-                        pitch: if n == 0 { pitch_of(&mono, sr) } else { 0.0 },
-                        sample: Arc::new(Sample::from_mono(&mono, rate)),
-                    }
-                })
-                .collect(),
+                };
+                kit.sounds.push(KitSound {
+                    name,
+                    sample: Arc::new(sample),
+                    pitch,
+                });
+            }
+            kit
         })
         .collect()
 }
@@ -1079,6 +1261,33 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         assert!(read_curated(&path).is_err());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn builtins_offer_legacy_indices_and_sixteen_canonical_rows() {
+        let expected = [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 21, 9, 10, 22, 23];
+        for (index, kit) in build_from(48_000.0, None).iter().enumerate() {
+            let map = default_row_map(index);
+            assert_eq!(map, expected);
+            let unique: std::collections::HashSet<_> = map.into_iter().collect();
+            assert_eq!(unique.len(), 16);
+            assert_eq!(kit.sounds.len(), MAX_SOUNDS);
+            for sound in &kit.sounds[16..] {
+                assert!(!sound.sample.is_empty());
+                assert!((0..sound.sample.len()).all(|i| sound
+                    .sample
+                    .frame(i)
+                    .iter()
+                    .all(|v| v.is_finite())));
+            }
+            let bass = &kit.sounds[22];
+            let frames: Vec<_> = (0..bass.sample.len())
+                .map(|i| bass.sample.frame(i)[0])
+                .collect();
+            assert!((pitch_of(&frames, 48_000.0) - 55.0).abs() < 1.0);
+            assert_eq!(bass.pitch, 55.0);
+            assert!(kit.sounds[23].sample.seconds() <= 0.3);
+        }
     }
 
     #[test]
