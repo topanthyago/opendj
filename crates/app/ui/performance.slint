@@ -649,10 +649,12 @@ export component GrooveSlots inherits HorizontalLayout {
     in property <bool> compact;
     in property <color> tint;
     in property <length> control-height: 30px;
-    property <bool> native: Controls.value(Controls.resolve(g, "pattern_api_version"), Controls.tick) >= 1;
+    property <int> pattern-api: Controls.value(Controls.resolve(g, "pattern_api_version"), Controls.tick);
+    property <bool> native: pattern-api >= 1;
     property <int> slot-count: native ? max(1, min(16, Controls.value(Controls.resolve(g, "pattern_slots"), Controls.tick))) : 4;
     property <int> selected-group: Controls.value(Controls.resolve(g, "group_selected"), Controls.tick);
     property <string> group-name: ["A", "B", "C", "D", "E", "F", "G", "H"][selected-group];
+    property <string> group-scope: "[Groove" + (deck + 1) + "Group" + (selected-group + 1) + "]";
     property <int> selected: Controls.value(Controls.resolve(g, "groove"), Controls.tick);
     property <int> sounding: Controls.value(Controls.resolve(g, "groove_playing"), Controls.tick);
     property <int> queued: Controls.value(Controls.resolve(g, "groove_queued"), Controls.tick);
@@ -662,7 +664,10 @@ export component GrooveSlots inherits HorizontalLayout {
     property <int> sequence-start: native ? Controls.value(Controls.resolve(g, "pattern_chain_start"), Controls.tick) : 0;
     property <int> sequence-end: native ? Controls.value(Controls.resolve(g, "pattern_chain_end"), Controls.tick) : 3;
     function choose(slot: int) {
-        if native {
+        if pattern-api >= 2 {
+            Controls.set-value(Controls.resolve(group-scope, "pattern_target"), slot);
+            Controls.set-value(Controls.resolve(group-scope, "pattern_select"), 1);
+        } else if native {
             Controls.set-value(Controls.resolve(g, "pattern_target"), slot);
             Controls.set-value(Controls.resolve(g, "pattern_select"), 1);
         } else {
@@ -671,7 +676,8 @@ export component GrooveSlots inherits HorizontalLayout {
         }
     }
     function stop-group() {
-        if native { Controls.set-value(Controls.resolve(g, "pattern_stop"), 1); }
+        if pattern-api >= 2 { Controls.set-value(Controls.resolve(group-scope, "pattern_stop"), 1); }
+        else if native { Controls.set-value(Controls.resolve(g, "pattern_stop"), 1); }
         else { Controls.set-value(Controls.resolve(g, "group_enabled"), 0); }
     }
     spacing: 4px;
