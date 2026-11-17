@@ -729,6 +729,34 @@ impl Hit {
     }
 }
 
+#[derive(Clone, Copy)]
+struct RepeatState {
+    hits: [Hit; ROWS],
+    swing: f64,
+}
+
+impl RepeatState {
+    fn new(c: &GrooveControls) -> Self {
+        Self {
+            hits: std::array::from_fn(|row| Hit::new(c, 0, row, 0.0, false)),
+            swing: c.swing.get().clamp(0.0, 0.75),
+        }
+    }
+
+    /// Undo the same delayed odd-sixteenth positions used by Span::steps.
+    /// Interpolate inside each pair so finer and triplet rates follow it.
+    fn straight_beat(&self, beat: f64) -> f64 {
+        let pair = (beat * 2.0).floor() * 0.5;
+        let phase = beat - pair;
+        let middle = 0.25 * (1.0 + self.swing);
+        pair + if phase < middle {
+            phase * 0.25 / middle
+        } else {
+            0.25 + (phase - middle) * 0.25 / (0.5 - middle)
+        }
+    }
+}
+
 /// A hit the Groove Box played, for the deck's scrolling waveform.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct GrooveHit {
@@ -770,6 +798,7 @@ pub(crate) enum GroovePadEdit {
 pub(crate) struct GrooveStep {
     pub frame: usize,
     pub step: usize,
+    pub pattern: usize,
     pub beat: f64,
     pub break_active: bool,
 }
@@ -934,6 +963,8 @@ pub struct GrooveBox {
     pad_edit_count: usize,
     /// A controller's pads (see [`crate::groove_pads`]).
     pub pads: PadSurface,
+    repeat_clock: Clock,
+    pad_mode_seen: u8,
     /// The bank's Group ERASE hold, independent of editor focus.
     pub(crate) erase_all: bool,
     /// A live hit recorded into a step still to come: that step skips the
@@ -969,6 +1000,7 @@ impl GrooveBox {
     ) -> Self {
         let c = GrooveControls::new_scoped(reg, group);
         let pads = PadSurface::new_scoped(reg, group);
+        let pad_mode_seen = pads.mode();
         let load_set_seen = c.load_set.version();
         let groove_seen = c.groove.version();
         Self {
@@ -994,6 +1026,8 @@ impl GrooveBox {
             pad_edits: [None; MAX_MANUAL_HITS],
             pad_edit_count: 0,
             pads,
+            repeat_clock: Clock::default(),
+            pad_mode_seen,
             erase_all: false,
             skip: [None; ROWS],
             key: None,
@@ -1056,6 +1090,9 @@ impl GrooveBox {
     /// Start the embedded scheduler in phase with a newly selected backend.
     pub(crate) fn restart_clock(&mut self) {
         self.clock.stop();
+        self.repeat_clock.stop();
+        self.pads.c.note_repeat.set_bool(false);
+        self.pads.release_unchanged();
         self.was_running = false;
         self.skip.fill(None);
     }
@@ -1135,6 +1172,14 @@ impl GrooveBox {
         self.manual_count = 0;
         self.pad_edit_count = 0;
         let frames = out.len();
+        let pad_mode = self.pads.mode();
+        if pad_mode != self.pad_mode_seen {
+            self.pads.release_unchanged();
+            self.pad_mode_seen = pad_mode;
+        }
+        if pad_mode != mode::PLAY {
+            self.pads.c.note_repeat.set_bool(false);
+        }
         let genre = self.c.genre.get().round() as usize;
         let (chosen, partner) = self.c.slots();
         if self.c.load.get_bool() {
@@ -1195,6 +1240,10 @@ impl GrooveBox {
         self.queued = (!in_turn).then_some(chosen);
         self.last_bpm = source.bpm;
         let mut n = self.take_pads(chosen, !audible);
+        let manual_end = n;
+        let initial_playing = self.playing;
+        let repeat_before = RepeatState::new(&self.c);
+        let mut repeat_change = None;
         if !audible {
             for hit in &self.hits[..n] {
                 self.manual_hits[self.manual_count] = GrooveManualHit {
@@ -1276,6 +1325,7 @@ impl GrooveBox {
                         }
                         if load_pending_set(c, pending_set) {
                             skip.fill(None);
+                            repeat_change = Some((frame, RepeatState::new(c)));
                         }
                         roll(c, dice, chosen);
                         breaks.bar();
@@ -1300,6 +1350,7 @@ impl GrooveBox {
                         step_signals[*step_count] = GrooveStep {
                             frame,
                             step,
+                            pattern: playing,
                             beat,
                             break_active: breaks.active,
                         };
@@ -1421,6 +1472,7 @@ impl GrooveBox {
                 }
                 if load_pending_set(c, pending_set) {
                     skip.fill(None);
+                    repeat_change = span.jump.map(|(frame, _)| (frame, RepeatState::new(c)));
                 }
                 roll(c, dice, chosen);
                 breaks.bar();
@@ -1467,13 +1519,74 @@ impl GrooveBox {
                 self.trigger(kit, row, 1.0);
             }
         }
+        let repeating = self.pads.c.note_repeat.get_bool();
+        let repeat_span = if repeating {
+            if let Some(span) = span_now {
+                self.repeat_clock.beat = self.clock.beat;
+                self.repeat_clock.running = true;
+                Some(span)
+            } else {
+                if !self.repeat_clock.running {
+                    self.repeat_clock.start(Source {
+                        bpm: source.bpm,
+                        beat: source.beat.or(Some(self.clock.beat)),
+                    });
+                }
+                Some(self.repeat_clock.advance(frames, self.rate, source))
+            }
+        } else {
+            self.repeat_clock.stop();
+            None
+        };
+        let repeat_rate = (self.pads.c.repeat_rate.get().round() as usize)
+            .min(groove_pads::REPEAT_BEATS.len() - 1);
+        let repeat_divisor = 1.0 / groove_pads::REPEAT_BEATS[repeat_rate];
+        let mut repeat_tick = repeat_span.map(|span| {
+            (repeat_before.straight_beat(span.beat - span.per_frame) * repeat_divisor + 1e-9)
+                .floor() as i64
+        });
+        let held: [f32; ROWS] = std::array::from_fn(|row| self.pads.velocity(row));
+        let manual_rows: [bool; ROWS] =
+            std::array::from_fn(|row| self.hits[..manual_end].iter().any(|hit| hit.row == row));
+        let any_solo = self.c.solo.iter().any(ControlHandle::get_bool);
+        let row_audible: [bool; ROWS] = std::array::from_fn(|row| {
+            if any_solo {
+                self.c.solo[row].get_bool()
+            } else {
+                !self.c.mute[row].get_bool()
+            }
+        });
+        let recording = repeating && self.pads.c.record.get_bool() && self.clock.running;
+        let mut repeat_pattern = initial_playing;
+        let mut next_step = 0;
         let mut next_hit = 0;
         let mut peak = [0f32; ROWS];
         self.played = [0; ROWS];
-        for h in &self.hits[..n] {
-            self.played[h.row] += 1;
-        }
         for (f, frame) in out.iter_mut().enumerate() {
+            let repeat_state = repeat_change
+                .as_ref()
+                .filter(|(at, _)| f >= *at)
+                .map_or(&repeat_before, |(_, state)| state);
+            let repeat_beat = repeat_span.map(|span| span.beat_at(f));
+            let repeat_pulse = repeat_beat.is_some_and(|beat| {
+                let tick =
+                    (repeat_state.straight_beat(beat) * repeat_divisor + 1e-9).floor() as i64;
+                let pulse = repeat_tick != Some(tick);
+                repeat_tick = Some(tick);
+                pulse
+            });
+            if repeating {
+                while next_step < self.step_count && self.step_signals[next_step].frame <= f {
+                    let signal = self.step_signals[next_step];
+                    repeat_pattern = signal.pattern;
+                    for skip in &mut self.skip {
+                        if *skip == Some(signal.step) {
+                            *skip = None;
+                        }
+                    }
+                    next_step += 1;
+                }
+            }
             while next_hit < n && self.hits[next_hit].frame == f {
                 let Hit {
                     row,
@@ -1482,7 +1595,28 @@ impl GrooveBox {
                     ..
                 } = self.hits[next_hit];
                 let hit = self.hits[next_hit];
+                let manual = next_hit < manual_end;
                 next_hit += 1;
+                if repeating {
+                    if self.erase_all || self.c.erase_rows[row].get_bool() {
+                        continue;
+                    }
+                    if manual && recording {
+                        self.record_live(
+                            repeat_pattern,
+                            row,
+                            repeat_state.straight_beat(span_now.unwrap().beat_at(f)),
+                        );
+                    }
+                    // Simultaneous live and written notes trigger one voice.
+                    if !row_audible[row]
+                        || (!manual
+                            && held[row] > 0.0
+                            && (repeat_pulse || (f == 0 && manual_rows[row])))
+                    {
+                        continue;
+                    }
+                }
                 if let (Some(tx), Some(span)) = (self.hit_tx.as_mut(), span_now) {
                     // A full queue means the app isn't reading: dropped.
                     let _ = tx.push(GrooveHit {
@@ -1495,7 +1629,43 @@ impl GrooveBox {
                 if row == 0 {
                     kick(f);
                 }
+                self.played[row] += 1;
                 self.trigger_hit(hit);
+            }
+            if repeat_pulse {
+                let beat = repeat_beat.unwrap();
+                for row in 0..ROWS {
+                    if held[row] <= 0.0
+                        || (f == 0 && manual_rows[row])
+                        || self.erase_all
+                        || self.c.erase_rows[row].get_bool()
+                    {
+                        continue;
+                    }
+                    if recording {
+                        self.record_live(repeat_pattern, row, repeat_state.straight_beat(beat));
+                    }
+                    if !row_audible[row] {
+                        continue;
+                    }
+                    let velocity = 0.25 + 0.75 * held[row];
+                    if let Some(tx) = self.hit_tx.as_mut() {
+                        let _ = tx.push(GrooveHit {
+                            beat,
+                            row: row as u8,
+                            velocity,
+                            fill: false,
+                        });
+                    }
+                    if row == 0 {
+                        kick(f);
+                    }
+                    self.played[row] += 1;
+                    let mut hit = repeat_state.hits[row];
+                    hit.frame = f;
+                    hit.velocity = velocity;
+                    self.trigger_hit(hit);
+                }
             }
             if !self.sounding_fast() {
                 continue;
@@ -1522,6 +1692,17 @@ impl GrooveBox {
     #[inline]
     fn sounding_fast(&self) -> bool {
         self.voices.iter().flatten().any(|v| v.sample.is_some())
+    }
+
+    fn record_live(&mut self, pattern: usize, row: usize, beat: f64) {
+        let step = groove_pads::nearest_step(beat);
+        let cell = &self.c.patterns[pattern][row];
+        cell.set((cell.get() as u32 | (1 << step)) as f64);
+        self.c.occupied[pattern].set_bool(true);
+        let now = ((beat * 4.0).floor() as i64).rem_euclid(STEPS as i64) as usize;
+        if step != now {
+            self.skip[row] = Some(step);
+        }
     }
 
     /// Acts on the pads pressed since the last buffer (see
@@ -1562,7 +1743,10 @@ impl GrooveBox {
                         );
                         n += 1;
                     }
-                    if self.pads.c.record.get_bool() && self.clock.running {
+                    if self.pads.c.record.get_bool()
+                        && self.clock.running
+                        && !self.pads.c.note_repeat.get_bool()
+                    {
                         let beat = self.clock.beat;
                         let step = groove_pads::nearest_step(beat);
                         if embedded {
@@ -1570,13 +1754,7 @@ impl GrooveBox {
                                 Some(GroovePadEdit::Record { row, step });
                             self.pad_edit_count += 1;
                         }
-                        let now = ((beat * 4.0).floor() as i64).rem_euclid(STEPS as i64) as usize;
-                        let cell = &self.c.patterns[self.playing][row];
-                        let bits = cell.get() as u32;
-                        cell.set((bits | (1 << step)) as f64);
-                        if step != now {
-                            self.skip[row] = Some(step);
-                        }
+                        self.record_live(self.playing, row, beat);
                     }
                 }
                 mode::GROOVES => {
@@ -1959,6 +2137,221 @@ mod tests {
         let kits: Arc<[Kit]> = kits::build(RATE).into();
         let g = GrooveBox::new(&reg, 0, kits, RATE);
         (reg, g)
+    }
+
+    fn repeat_box() -> GrooveBox {
+        let reg = ControlRegistry::new();
+        let sample = Arc::new(Sample::from_mono(&[0.5, 0.0, 0.0, 0.0], RATE));
+        let kit = Kit {
+            name: "Repeat test",
+            sounds: (0..ROWS)
+                .map(|_| kits::KitSound {
+                    name: "Pulse",
+                    pitch: 0.0,
+                    sample: sample.clone(),
+                })
+                .collect(),
+        };
+        let g = GrooveBox::new(&reg, 0, vec![kit].into(), RATE);
+        for row in &g.c.patterns[0] {
+            row.set(0.0);
+        }
+        g.pads.c.mode.set(mode::PLAY as f64);
+        g
+    }
+
+    #[test]
+    fn note_repeat_rates_are_sample_timed_at_every_audio_buffer_size() {
+        let bpm = 137.0;
+        let total = 24_000;
+        for rate in 0..groove_pads::REPEAT_BEATS.len() {
+            let period = RATE * 60.0 / bpm * groove_pads::REPEAT_BEATS[rate];
+            let expected: Vec<usize> = (0..)
+                .map(|n| (n as f64 * period - 1e-6).max(0.0).ceil() as usize)
+                .take_while(|&frame| frame < total)
+                .collect();
+            for buffer in [64, 257, 4096] {
+                let mut g = repeat_box();
+                g.pads.c.note_repeat.set_bool(true);
+                g.pads.c.repeat_rate.set(rate as f64);
+                g.pads.c.pads[0].set(1.0);
+                let mut out = vec![[0.0; 2]; buffer];
+                let mut kicks = Vec::new();
+                let mut heard = Vec::new();
+                let mut offset = 0;
+                while offset < total {
+                    let count = buffer.min(total - offset);
+                    g.render(true, own(bpm), &mut out[..count], |frame| {
+                        kicks.push(offset + frame)
+                    });
+                    heard.extend(
+                        out[..count]
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, frame)| frame[0] != 0.0)
+                            .map(|(frame, _)| offset + frame),
+                    );
+                    offset += count;
+                }
+                assert_eq!(kicks, expected, "rate {rate}, buffer {buffer}");
+                assert_eq!(
+                    heard, expected,
+                    "audible samples at rate {rate}, buffer {buffer}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn note_repeat_can_sustain_all_sounds_stopped_and_release_every_pad() {
+        let mut g = repeat_box();
+        g.pads.c.note_repeat.set_bool(true);
+        g.pads.c.repeat_rate.set(7.0);
+        for pad in &g.pads.c.pads {
+            pad.set(1.0);
+        }
+        let mut out = vec![[0.0; 2]; 40_000];
+        g.render(false, own(120.0), &mut out, |_| {});
+        assert_eq!(g.played, [20; ROWS]);
+        assert_eq!(out.iter().filter(|frame| frame[0] != 0.0).count(), 20);
+        assert!(!g.clock.running);
+        assert_eq!(g.c.position.get(), -1.0);
+        assert_eq!(g.c.patterns[0][0].get(), 0.0);
+        for pad in &g.pads.c.pads {
+            pad.set(0.0);
+        }
+        g.render(false, own(120.0), &mut out, |_| {});
+        assert_eq!(g.played, [0; ROWS]);
+        assert!(out.iter().all(|frame| *frame == [0.0; 2]));
+    }
+
+    #[test]
+    fn note_repeat_starts_for_an_already_held_pad_and_short_releases_do_not_stick() {
+        let mut g = repeat_box();
+        g.pads.c.pads[0].set(0.5);
+        let mut out = vec![[0.0; 2]; 12_000];
+        g.render(false, own(120.0), &mut out, |_| {});
+        assert_eq!(g.played[0], 1);
+        g.pads.c.note_repeat.set_bool(true);
+        g.render(false, own(120.0), &mut out, |_| {});
+        assert_eq!(g.played[0], 2);
+        g.pads.c.note_repeat.set_bool(false);
+        g.pads.c.note_repeat.set_bool(true);
+        g.pads.c.note_repeat.set_bool(false);
+        g.render(false, own(120.0), &mut out, |_| {});
+        assert_eq!(g.played[0], 0);
+        g.pads.c.pads[0].set(0.0);
+        g.render(false, own(120.0), &mut out, |_| {});
+        g.pads.c.note_repeat.set_bool(true);
+        g.pads.c.pads[0].set(1.0);
+        g.pads.c.pads[0].set(0.0);
+        g.render(false, own(120.0), &mut out, |_| {});
+        assert_eq!(g.played[0], 1);
+        g.render(false, own(120.0), &mut out, |_| {});
+        assert_eq!(g.played[0], 0);
+    }
+
+    #[test]
+    fn note_repeat_respects_sound_mute_solo_and_live_velocity() {
+        let mut g = repeat_box();
+        g.pads.c.note_repeat.set_bool(true);
+        g.pads.c.pads[0].set(1.0);
+        g.c.mute[0].set_bool(true);
+        let mut out = vec![[0.0; 2]; 12_000];
+        g.render(false, own(120.0), &mut out, |_| {});
+        assert_eq!(g.played[0], 0);
+        assert!(out.iter().all(|frame| *frame == [0.0; 2]));
+        g.c.mute[0].set_bool(false);
+        g.c.solo[1].set_bool(true);
+        g.pads.c.pads[1].set(0.5);
+        g.render(false, own(120.0), &mut out, |_| {});
+        assert_eq!(g.played[0], 0);
+        assert_eq!(g.played[1], 2);
+        assert!((out[0][0] - 0.5 * (0.25 + 0.75 * 0.5)).abs() < 0.001);
+        g.render(false, own(120.0), &mut out[..257], |_| {});
+        g.pads.c.pads[1].set(1.0);
+        g.render(false, own(120.0), &mut out[..6_000], |_| {});
+        assert_eq!(g.played[1], 1, "aftertouch waits for the next pulse");
+        assert!(
+            (out[..6_000]
+                .iter()
+                .map(|frame| frame[0])
+                .fold(0.0f32, f32::max)
+                - 0.5)
+                .abs()
+                < 0.001
+        );
+    }
+
+    #[test]
+    fn note_repeat_page_and_clock_reset_release_held_sounds() {
+        let mut g = repeat_box();
+        g.pads.c.note_repeat.set_bool(true);
+        g.pads.c.pads[0].set(1.0);
+        let mut out = vec![[0.0; 2]; 12_000];
+        g.render(false, own(120.0), &mut out, |_| {});
+        g.pads.c.mode.set(mode::STEPS as f64);
+        g.render(false, own(120.0), &mut out, |_| {});
+        assert!(!g.pads.c.note_repeat.get_bool());
+        assert!(!g.pads.c.pads[0].get_bool());
+        assert_eq!(g.c.patterns[0][0].get(), 0.0);
+        assert_eq!(g.played[0], 0);
+        g.pads.c.mode.set(mode::PLAY as f64);
+        g.pads.c.note_repeat.set_bool(true);
+        g.pads.c.pads[0].set(1.0);
+        g.render(false, own(120.0), &mut out, |_| {});
+        g.restart_clock();
+        g.render(false, own(120.0), &mut out, |_| {});
+        assert!(!g.pads.c.note_repeat.get_bool());
+        assert!(!g.pads.c.pads[0].get_bool());
+        assert_eq!(g.played[0], 0);
+    }
+
+    #[test]
+    fn note_repeat_records_the_actual_pattern_on_each_side_of_a_bar_switch() {
+        let mut g = repeat_box();
+        g.pads.c.note_repeat.set_bool(true);
+        g.pads.c.record.set_bool(true);
+        let mut before = vec![[0.0; 2]; 90_000];
+        g.render(true, own(120.0), &mut before, |_| {});
+        g.c.groove.set(15.0);
+        g.pads.c.pads[0].set(1.0);
+        let mut out = vec![[0.0; 2]; 12_000];
+        g.render(true, own(120.0), &mut out, |_| {});
+        assert_eq!(g.c.groove_playing.get(), 15.0);
+        assert_eq!(g.c.patterns[0][0].get() as u32, 1 << 15);
+        assert_eq!(g.c.patterns[15][0].get(), 1.0);
+        assert_eq!(g.played[0], 2);
+        assert!(g.c.occupied[15].get_bool());
+    }
+
+    #[test]
+    fn note_repeat_layers_with_written_events_between_its_pulses() {
+        let mut g = repeat_box();
+        g.c.patterns[0][0].set(2.0);
+        g.pads.c.note_repeat.set_bool(true);
+        g.pads.c.repeat_rate.set(0.0);
+        g.pads.c.pads[0].set(1.0);
+        let mut out = vec![[0.0; 2]; 30_001];
+        let mut kicks = Vec::new();
+        g.render(true, own(120.0), &mut out, |frame| kicks.push(frame));
+        assert_eq!(kicks, vec![0, 6_000, 24_000]);
+    }
+
+    #[test]
+    fn note_repeat_uses_group_swing_playing_and_stopped_and_records_straight_steps() {
+        for play in [false, true] {
+            let mut g = repeat_box();
+            g.c.swing.set(0.5);
+            g.pads.c.note_repeat.set_bool(true);
+            g.pads.c.record.set_bool(true);
+            g.pads.c.pads[0].set(1.0);
+            let mut out = vec![[0.0; 2]; 24_000];
+            let mut kicks = Vec::new();
+            g.render(play, own(120.0), &mut out, |frame| kicks.push(frame));
+            assert_eq!(kicks, vec![0, 9_000, 12_000, 21_000]);
+            assert_eq!(g.c.patterns[0][0].get(), if play { 15.0 } else { 0.0 });
+        }
     }
 
     #[test]

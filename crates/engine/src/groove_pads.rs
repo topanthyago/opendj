@@ -23,6 +23,8 @@
 //!   of the genre picked into the groove playing.
 //!
 //! `row_clear` empties the selected row of the groove on screen.
+//! `note_repeat` held repeats Play pads on the audio clock. `repeat_rate`
+//! selects quarter, eighth, sixteenth, thirty-second, then their triplets.
 
 use opendj_control::{Behavior, ControlHandle, ControlRegistry};
 
@@ -33,6 +35,16 @@ pub const PLAY_ROWS: usize = ROWS;
 use crate::kits;
 
 pub const PADS: usize = 16;
+pub const REPEAT_BEATS: [f64; 8] = [
+    1.0,
+    0.5,
+    0.25,
+    0.125,
+    2.0 / 3.0,
+    1.0 / 3.0,
+    1.0 / 6.0,
+    1.0 / 12.0,
+];
 
 /// What `[GrooveN],pad_mode` holds.
 pub mod mode {
@@ -81,6 +93,8 @@ pub struct PadControls {
     pub row: ControlHandle,
     pub record: ControlHandle,
     pub row_clear: ControlHandle,
+    pub note_repeat: ControlHandle,
+    pub repeat_rate: ControlHandle,
     pub pads: [ControlHandle; PADS],
     pub colors: [ControlHandle; PADS],
 }
@@ -91,11 +105,21 @@ impl PadControls {
     }
 
     pub fn new_scoped(reg: &ControlRegistry, g: &str) -> Self {
+        reg.indicator(g, "note_repeat_supported", 1.0).set(1.0);
         Self {
             mode: reg.create(g, "pad_mode", 0.0, 0.0, 2.0, Behavior::Free),
             row: reg.create(g, "row_selected", 1.0, 1.0, ROWS as f64, Behavior::Free),
             record: reg.toggle(g, "record"),
             row_clear: reg.push(g, "row_clear"),
+            note_repeat: reg.toggle(g, "note_repeat"),
+            repeat_rate: reg.create(
+                g,
+                "repeat_rate",
+                2.0,
+                0.0,
+                (REPEAT_BEATS.len() - 1) as f64,
+                Behavior::Free,
+            ),
             pads: std::array::from_fn(|k| {
                 reg.create(g, &format!("pad{}", k + 1), 0.0, 0.0, 1.0, Behavior::Free)
             }),
@@ -143,6 +167,22 @@ impl PadSurface {
     /// Whether pad `k` is held down now.
     pub fn held(&self, k: usize) -> bool {
         self.last[k] > 0.0
+    }
+
+    pub fn velocity(&self, k: usize) -> f32 {
+        self.last[k].clamp(0.0, 1.0) as f32
+    }
+
+    /// Release held pads when a page changes, preserving new input that has
+    /// arrived since the preceding audio buffer.
+    pub fn release_unchanged(&mut self) {
+        for k in 0..PADS {
+            if self.c.pads[k].version() == self.seen[k] {
+                self.c.pads[k].set(0.0);
+                self.last[k] = 0.0;
+                self.seen[k] = self.c.pads[k].version();
+            }
+        }
     }
 
     /// The presses since the last call. A press and release between two

@@ -115,6 +115,7 @@ pub fn kept_keys() -> Vec<String> {
         "duck_deck",
         "duck_amount",
         "row_selected",
+        "repeat_rate",
     ]
     .into_iter()
     .map(String::from)
@@ -145,6 +146,7 @@ fn action_keys() -> Vec<String> {
         "dice_row",
         "dice_undo",
         "row_clear",
+        "note_repeat",
     ]
     .into_iter()
     .map(String::from)
@@ -491,7 +493,12 @@ impl GrooveBanks {
             actions_seen: editor_actions.iter().map(ControlHandle::version).collect(),
             pulse_actions: action_names
                 .iter()
-                .map(|name| name != "dice_row" && name != "dice" && !name.starts_with("pad"))
+                .map(|name| {
+                    name != "dice_row"
+                        && name != "dice"
+                        && name != "note_repeat"
+                        && !name.starts_with("pad")
+                })
                 .collect(),
             erase_rows_seen,
             editor,
@@ -570,6 +577,7 @@ impl GrooveBanks {
         let selected = self.selected.get() as usize;
         if selected != self.selected_index {
             let group = &self.groups[self.selected_index];
+            group.engine.pads.c.note_repeat.set_bool(false);
             for pad in &group.engine.pads.c.pads {
                 pad.set(0.0);
             }
@@ -876,7 +884,9 @@ impl GrooveBanks {
         let span = self.clock.advance(out.len(), self.rate, source);
         let synchronized = Source {
             bpm: source.bpm,
-            beat: play.then_some(span.beat),
+            // The free-running bank clock also aligns live repeats while
+            // transport is stopped. PLAY resets it through Clock::start.
+            beat: Some(span.beat),
         };
         let any_solo = self.groups.iter().any(|group| group.solo.get_bool());
         let selected = self.selected_index;
@@ -952,6 +962,10 @@ impl GrooveBanks {
         // preallocated history entry, committed after the final release.
         if !self.groups.iter().any(|group| {
             group.erase.get_bool()
+                || (group.engine.clock.running
+                    && group.engine.pads.c.note_repeat.get_bool()
+                    && group.engine.pads.c.record.get_bool()
+                    && group.engine.pads.c.pads.iter().any(ControlHandle::get_bool))
                 || group
                     .engine
                     .c
@@ -1191,6 +1205,107 @@ mod tests {
         render(&mut bank);
         assert!(c(&registry, "group_enabled").get_bool());
         assert_eq!(bank.groups[0].engine.c.groove.get(), 1.0);
+    }
+
+    #[test]
+    fn note_repeat_auditions_a_disabled_group_stopped_and_respects_group_mute_solo() {
+        let (registry, mut bank) = fixture();
+        c(&registry, "group_enabled").set_bool(false);
+        c(&registry, "pad_mode").set(crate::groove_pads::mode::PLAY as f64);
+        c(&registry, "note_repeat").set_bool(true);
+        c(&registry, "repeat_rate").set(7.0);
+        c(&registry, "pad1").set(1.0);
+        let out = render(&mut bank);
+        assert!(out.iter().any(|frame| frame[0] != 0.0));
+        assert!(!bank.running);
+        assert!(!bank.groups[0].engine.clock.running);
+        assert!(bank.groups[0].engine.played[0] >= 2);
+        assert_eq!(c(&registry, "note_repeat_supported").get(), 1.0);
+        c(&registry, "group1_mute").set_bool(true);
+        assert!(render(&mut bank).iter().all(|frame| *frame == [0.0; 2]));
+        c(&registry, "group1_mute").set_bool(false);
+        c(&registry, "group2_solo").set_bool(true);
+        assert!(render(&mut bank).iter().all(|frame| *frame == [0.0; 2]));
+    }
+
+    #[test]
+    fn note_repeat_recording_is_one_undo_after_the_held_gesture() {
+        let (registry, mut bank) = fixture();
+        c(&registry, "pattern1_row1").set(0.0);
+        c(&registry, "pad_mode").set(crate::groove_pads::mode::PLAY as f64);
+        render(&mut bank);
+        let before = bank.cursor;
+        c(&registry, "record").set_bool(true);
+        c(&registry, "note_repeat").set_bool(true);
+        c(&registry, "pad1").set(1.0);
+        advance(&mut bank, 18_000);
+        assert_eq!(c(&registry, "pattern1_row1").get(), 7.0);
+        assert_eq!(bank.cursor, before);
+        c(&registry, "pad1").set(0.0);
+        c(&registry, "note_repeat").set_bool(false);
+        advance(&mut bank, 512);
+        assert_eq!(bank.cursor, before + 1);
+        c(&registry, "undo").set_bool(true);
+        render(&mut bank);
+        assert_eq!(c(&registry, "pattern1_row1").get(), 0.0);
+        c(&registry, "redo").set_bool(true);
+        render(&mut bank);
+        assert_eq!(c(&registry, "pattern1_row1").get(), 7.0);
+    }
+
+    #[test]
+    fn note_repeat_focus_change_releases_the_old_group_and_short_holds_stay_released() {
+        let (registry, mut bank) = fixture();
+        c(&registry, "pad_mode").set(crate::groove_pads::mode::PLAY as f64);
+        c(&registry, "note_repeat").set_bool(true);
+        c(&registry, "repeat_rate").set(7.0);
+        c(&registry, "pad1").set(1.0);
+        render(&mut bank);
+        assert!(bank.groups[0].engine.played[0] >= 2);
+        c(&registry, "group_selected").set(1.0);
+        render(&mut bank);
+        assert!(!bank.groups[0].engine.pads.c.note_repeat.get_bool());
+        assert!(!bank.groups[0].engine.pads.c.pads[0].get_bool());
+        assert_eq!(bank.groups[0].engine.played[0], 0);
+        assert!(!c(&registry, "note_repeat").get_bool());
+        c(&registry, "note_repeat").set_bool(true);
+        c(&registry, "note_repeat").set_bool(false);
+        render(&mut bank);
+        assert!(!bank.groups[1].engine.pads.c.note_repeat.get_bool());
+        assert_eq!(bank.groups[1].engine.played[0], 0);
+    }
+
+    #[test]
+    fn note_repeat_stopped_groups_share_the_banks_continuous_clock() {
+        let (registry, mut bank) = fixture();
+        c(&registry, "pad_mode").set(crate::groove_pads::mode::PLAY as f64);
+        c(&registry, "note_repeat").set_bool(true);
+        c(&registry, "pad2").set(1.0);
+        for _ in 0..3 {
+            render(&mut bank);
+        }
+        c(&registry, "group_selected").set(1.0);
+        registry
+            .get(&group_scope(0, 1), "note_repeat")
+            .unwrap()
+            .set_bool(true);
+        c(&registry, "repeat_rate").set(0.0);
+        c(&registry, "pad1").set(1.0);
+        let mut out = vec![[0.0; 2]; BLOCK];
+        let mut kicks = Vec::new();
+        for block in 3..6 {
+            bank.render(
+                false,
+                Source {
+                    bpm: 120.0,
+                    beat: None,
+                },
+                &mut out,
+                |frame| kicks.push(block * BLOCK + frame),
+            );
+        }
+        assert_eq!(kicks, vec![3 * BLOCK, 24_000]);
+        assert!(!bank.running);
     }
 
     #[test]
