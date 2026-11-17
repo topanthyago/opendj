@@ -34,8 +34,7 @@ pub mod view;
 use std::path::PathBuf;
 
 pub use controller::Controller;
-pub use deckard_surface as maschine_surface;
-pub use host::{maschine_group_rgb, MaschineProvider, LAYER_GROUP, LAYER_KEYS};
+pub use host::{LAYER_GROUP, LAYER_KEYS};
 pub use manager::{
     device_key, is_own_file, list_mappings, match_mapping, ConnectedController, Controllers,
     MappingChoice, NoteSink, Port,

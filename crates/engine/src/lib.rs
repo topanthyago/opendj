@@ -46,8 +46,6 @@ pub mod looper;
 pub mod loudness;
 pub mod lyrics;
 pub mod machine_capture;
-pub mod maschine;
-pub mod maschine_factory;
 pub mod meter;
 pub mod midi_clock;
 mod output;
@@ -154,7 +152,6 @@ pub struct AudioEngine {
     live_waves: Mutex<Option<[rtrb::Consumer<live_wave::LiveSlice>; NUM_DECKS]>>,
     /// Each Groove Box's hits as played, until the app takes them.
     groove_hits: Mutex<Option<[rtrb::Consumer<groove::GrooveHit>; NUM_DECKS]>>,
-    maschines: Vec<maschine::MaschineHandle>,
     machine_capture: Vec<Arc<Mutex<machine_capture::CaptureHandle>>>,
     /// The master for broadcasting, until the broadcaster takes it.
     broadcast_feed: Mutex<Option<recorder::Feed>>,
@@ -204,12 +201,10 @@ pub fn create_controls(registry: &Arc<ControlRegistry>) {
 }
 
 impl AudioEngine {
-    /// Access a deck's embedded Maschine document outside the audio callback.
-    pub fn maschine(&self, deck: usize) -> Option<maschine::MaschineHandle> {
-        self.maschines.get(deck).cloned()
-    }
-
     /// Capture a performed deck (0..4) or the Master (4) off the audio thread.
+    /// `[Capture],source` selects that same index for headphone monitoring.
+    /// `stem` selects mix (0), drums (1), bass (2), melody (3), or voice (4),
+    /// and `monitor` enables the headphone feed independently of capture.
     pub fn machine_capture(
         &self,
         deck: usize,
@@ -237,7 +232,6 @@ impl AudioEngine {
         let instrument_view = engine.instrument_view();
         let live_waves = engine.take_live_waves().expect("live waves");
         let groove_hits = engine.take_groove_hits().expect("groove hits");
-        let maschines = engine.take_maschine_handles();
         let machine_capture = engine.take_machine_capture_handles();
         let plugins = plugin_helper().map(|helper| {
             plugins::PluginHost::start(
@@ -290,7 +284,6 @@ impl AudioEngine {
             instrument_view,
             live_waves: Mutex::new(Some(live_waves)),
             groove_hits: Mutex::new(Some(groove_hits)),
-            maschines,
             machine_capture,
             broadcast_feed: Mutex::new(broadcast_feed),
             midi_clock,
@@ -784,16 +777,6 @@ impl AudioEngine {
     /// Each route's state, in the setup's order.
     pub fn route_status(&self) -> Vec<String> {
         self.output.borrow().route_status.clone()
-    }
-}
-
-impl Drop for AudioEngine {
-    fn drop(&mut self) {
-        for machine in &self.maschines {
-            if let Err(error) = machine.flush() {
-                eprintln!("Maschine autosave: {error}");
-            }
-        }
     }
 }
 

@@ -24,8 +24,6 @@ use std::rc::Rc;
 use base64::Engine as _;
 use opendj_control::ControlRegistry;
 use opendj_engine::groove::groove_group;
-use opendj_engine::groove_dice::Track;
-use opendj_engine::maschine::{LegacySoundSettings, NativeGroovePreset};
 use opendj_engine::plugins::{own_presets, plugin_presets, Plugin};
 use opendj_engine::AudioEngine;
 use serde_json::{json, Map, Value};
@@ -38,9 +36,8 @@ pub const GROOVE: &str = "groove";
 
 /// The Groove Box's controls a preset leaves alone: whether it plays, its
 /// tempo and ducking belong to the mix, not the sound.
-const GROOVE_SKIPPED: [&str; 7] = [
+const GROOVE_SKIPPED: [&str; 6] = [
     "enabled",
-    "backend",
     "bpm",
     "follow",
     "tempo_scale",
@@ -589,126 +586,19 @@ impl Ctx {
         let body = read(&preset.path)?;
         if preset.instrument == GROOVE {
             let g = groove_group(deck);
+            if body
+                .get("native_groove")
+                .is_some_and(|value| !value.is_null())
+            {
+                return Err("this preset requires the removed Deckard engine".into());
+            }
             let mut values = body["controls"]
                 .as_object()
                 .cloned()
                 .ok_or("the preset holds no groove")?;
             groove_box::upgrade(&mut values);
-            let embedded = self.value(&g, "backend") > 0.0;
-            let native = body.get("native_groove").and_then(Value::as_object);
-            if native.is_some() && !embedded {
-                return Err(
-                    "this preset contains a DECKARD group; select DECKARD to load it".into(),
-                );
-            }
-            if let Some(native) = native {
-                let decode = |name: &str| -> Result<Vec<u8>, String> {
-                    let text = native
-                        .get(name)
-                        .and_then(Value::as_str)
-                        .ok_or("the DECKARD preset is damaged")?;
-                    base64::engine::general_purpose::STANDARD
-                        .decode(text)
-                        .map_err(|_| "the DECKARD preset is damaged".into())
-                };
-                let origin = native
-                    .get("origin")
-                    .filter(|v| !v.is_null())
-                    .cloned()
-                    .map(serde_json::from_value::<Vec<u8>>)
-                    .transpose()
-                    .map_err(|_| "the DECKARD preset path is damaged")?;
-                let source_scene =
-                    native.get("scene").and_then(Value::as_u64).unwrap_or(0) as usize;
-                let rhythm = match native.get("rhythm") {
-                    None | Some(Value::Null) => None,
-                    Some(value) => Some(
-                        opendj_engine::maschine::rhythm::from_json(value)
-                            .ok_or("the DECKARD rhythm profile is damaged")?,
-                    ),
-                };
-                let m = format!("[Maschine{}]", deck + 1);
-                let group = self.value(&m, "group").round() as usize;
-                let scene = self.value(&m, "scene").round() as usize;
-                self.engine
-                    .maschine(deck)
-                    .ok_or("Maschine deck unavailable")?
-                    .load_native_groove_preset(
-                        group,
-                        scene,
-                        0,
-                        source_scene,
-                        NativeGroovePreset {
-                            group_file: decode("group")?,
-                            project: decode("project")?,
-                            origin,
-                            rhythm,
-                        },
-                    )?;
-            } else if embedded {
-                let tracks = std::array::from_fn(|slot| {
-                    std::array::from_fn(|row| {
-                        let key = format!("pattern{}_row{}", slot + 1, row + 1);
-                        let mask = |suffix: &str| {
-                            values
-                                .get(&format!("{key}{suffix}"))
-                                .and_then(Value::as_f64)
-                                .map(|v| v.clamp(0.0, 65535.0) as u32)
-                        };
-                        Some(Track {
-                            hits: mask("")?,
-                            soft: mask("_soft").unwrap_or(0),
-                            accent: mask("_accent").unwrap_or(0),
-                            maybe: mask("_maybe").unwrap_or(0),
-                        })
-                    })
-                });
-                let group = self
-                    .value(&format!("[Maschine{}]", deck + 1), "group")
-                    .round() as usize;
-                let kit = values
-                    .get("kit")
-                    .and_then(Value::as_f64)
-                    .map(|v| v.round() as usize);
-                let sound_settings = std::array::from_fn(|row| {
-                    let key = |name: &str| format!("row{}_{name}", row + 1);
-                    let provided = |name: &str| values.get(&key(name)).and_then(Value::as_f64);
-                    let sample_value = |name: &str| {
-                        provided(name).or_else(|| kit.map(|_| self.value(&g, &key(name))))
-                    };
-                    LegacySoundSettings {
-                        sound: sample_value("sound").map(|v| v.round() as usize),
-                        level: provided("level"),
-                        pitch: sample_value("pitch"),
-                        decay: sample_value("decay"),
-                        tone: sample_value("tone"),
-                        pan: provided("pan"),
-                        mute: provided("mute").map(|v| v > 0.0),
-                        solo: provided("solo").map(|v| v > 0.0),
-                    }
-                });
-                self.engine
-                    .maschine(deck)
-                    .ok_or("Maschine deck unavailable")?
-                    .load_legacy_groove_preset(
-                        group,
-                        tracks,
-                        values.get("swing").and_then(Value::as_f64),
-                        kit,
-                        sound_settings,
-                    )?;
-            }
             for key in groove_box::kept_keys() {
                 if GROOVE_SKIPPED.contains(&key.as_str()) {
-                    continue;
-                }
-                if native.is_some()
-                    && (key == "kit"
-                        || key == "groove"
-                        || key == "chain"
-                        || key.starts_with("pattern")
-                        || (key.starts_with("row") && !key.ends_with("_lock")))
-                {
                     continue;
                 }
                 if let Some(v) = values.get(&key).and_then(Value::as_f64) {
@@ -772,43 +662,20 @@ impl Ctx {
     /// Puts what deck `deck` plays now into a preset's body.
     fn fill(&self, deck: usize, key: &str, body: &mut Map<String, Value>) -> Result<(), String> {
         if key == GROOVE {
+            if body
+                .get("native_groove")
+                .is_some_and(|value| !value.is_null())
+            {
+                return Err(
+                    "save the Groove Box under a new name to preserve this Deckard preset".into(),
+                );
+            }
             let g = groove_group(deck);
             let mut controls = Map::new();
             for k in groove_box::kept_keys() {
                 if !GROOVE_SKIPPED.contains(&k.as_str()) {
                     controls.insert(k.clone(), json!(self.value(&g, &k)));
                 }
-            }
-            if self.value(&g, "backend") > 0.0 {
-                let m = format!("[Maschine{}]", deck + 1);
-                let group = self.value(&m, "group").round() as usize;
-                let scene = self.value(&m, "scene").round() as usize;
-                let handle = self
-                    .engine
-                    .maschine(deck)
-                    .ok_or("Maschine deck unavailable")?;
-                let native = handle.export_native_groove_preset(group)?;
-                let project = handle.snapshot()?;
-                let amount = project
-                    .groups
-                    .get(group)
-                    .ok_or("no such group")?
-                    .swing
-                    .amount
-                    / 100.0;
-                controls.insert(
-                    "swing".into(),
-                    json!(0.45 * (amount.abs() + amount * amount)),
-                );
-                body.insert("native_groove".into(), json!({
-                    "group": base64::engine::general_purpose::STANDARD.encode(native.group_file),
-                    "project": base64::engine::general_purpose::STANDARD.encode(native.project),
-                    "origin": native.origin,
-                    "rhythm": native.rhythm.as_ref().map(opendj_engine::maschine::rhythm::to_json),
-                    "scene": scene,
-                }));
-            } else {
-                body.remove("native_groove");
             }
             controls.insert("layout".into(), json!(groove_box::LAYOUT));
             body.insert("controls".into(), Value::Object(controls));

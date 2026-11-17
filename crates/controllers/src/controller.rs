@@ -160,28 +160,7 @@ impl Controller {
         mapping: Mapping,
         registry: Arc<ControlRegistry>,
     ) -> Result<Self, String> {
-        Self::with_device(name, mapping, registry, None, Default::default())
-    }
-
-    /// Runs an embedded Maschine surface through this controller's normal
-    /// input dispatch, timers and output path.
-    pub fn new_with_maschine_provider(
-        name: &str,
-        mapping: Mapping,
-        registry: Arc<ControlRegistry>,
-        provider: Arc<dyn crate::host::MaschineProvider>,
-    ) -> Result<Self, String> {
-        let source = Arc::new(std::sync::RwLock::new(Some(provider)));
-        Self::new_with_maschine_source(name, mapping, registry, source)
-    }
-
-    pub(crate) fn new_with_maschine_source(
-        name: &str,
-        mapping: Mapping,
-        registry: Arc<ControlRegistry>,
-        source: crate::host::MaschineSource,
-    ) -> Result<Self, String> {
-        Self::with_device(name, mapping, registry, None, source)
+        Self::with_device(name, mapping, registry, None)
     }
 
     /// Like [`Self::new`], for an HID mapping talking to `device`: its
@@ -193,7 +172,7 @@ impl Controller {
         registry: Arc<ControlRegistry>,
         device: Rc<dyn Io>,
     ) -> Result<Self, String> {
-        Self::with_device(name, mapping, registry, Some(device), Default::default())
+        Self::with_device(name, mapping, registry, Some(device))
     }
 
     fn with_device(
@@ -201,10 +180,8 @@ impl Controller {
         mapping: Mapping,
         registry: Arc<ControlRegistry>,
         device: Option<Rc<dyn Io>>,
-        source: crate::host::MaschineSource,
     ) -> Result<Self, String> {
         let host = Rc::new(RefCell::new(Host::new(registry, name.to_string())));
-        host.borrow_mut().maschine_source = source;
         if mapping.is_hid() {
             host.borrow_mut().hid = Some(HidLink {
                 io: device.unwrap_or_else(|| Rc::new(NoDevice)),

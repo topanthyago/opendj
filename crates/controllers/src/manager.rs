@@ -87,7 +87,6 @@ pub type NoteSink = Arc<dyn Fn([u8; 3]) + Send + Sync>;
 /// What the device thread and the app share besides `connected`.
 #[derive(Default)]
 struct Shared {
-    maschine: crate::host::MaschineSource,
     /// Where devices with no mapping send their notes: MIDI keyboards play
     /// the instrument.
     notes: Mutex<Option<NoteSink>>,
@@ -122,12 +121,6 @@ pub fn device_key(port: &str) -> String {
 }
 
 impl Controllers {
-    /// Share the app's existing embedded document with controller scripts.
-    /// Existing MIDI device threads pick up the provider on their next tick.
-    pub fn set_maschine_provider(&self, provider: Option<Arc<dyn crate::host::MaschineProvider>>) {
-        *self.shared.maschine.write().unwrap() = provider;
-    }
-
     /// Starts watching for devices. `choices` are the mappings picked
     /// before, by [`device_key`]; `versions` the DJ's own mappings used in
     /// place of Mixxx mappings (see [`Controllers::set_version`]).
@@ -694,14 +687,13 @@ fn watch_devices(
                     rx
                 });
                 let thread = {
-                    let (registry, path, own, port, d_stop, connected, maschine) = (
+                    let (registry, path, own, port, d_stop, connected) = (
                         registry.clone(),
                         path.clone(),
                         own.clone(),
                         port.clone(),
                         d_stop.clone(),
                         connected.clone(),
-                        shared.maschine.clone(),
                     );
                     std::thread::Builder::new()
                         .name(format!("midi {port}"))
@@ -716,7 +708,6 @@ fn watch_devices(
                                     &d_stop,
                                     &connected,
                                     rx,
-                                    maschine,
                                     |m| eprintln!("{name} <- {m:02X?}"),
                                 )
                             }
@@ -727,7 +718,6 @@ fn watch_devices(
                                 registry,
                                 &d_stop,
                                 &connected,
-                                maschine,
                             ),
                         })
                         .expect("spawn controller thread")
@@ -944,7 +934,6 @@ fn run_device(
     registry: Arc<ControlRegistry>,
     stop: &AtomicBool,
     connected: &Mutex<Vec<ConnectedController>>,
-    maschine: crate::host::MaschineSource,
 ) {
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let Ok(mut input) = MidiInput::new(CLIENT) else {
@@ -999,17 +988,7 @@ fn run_device(
             let _ = out.send(m);
         }
     };
-    run_controller(
-        port,
-        mapping_path,
-        own,
-        registry,
-        stop,
-        connected,
-        rx,
-        maschine,
-        send,
-    );
+    run_controller(port, mapping_path, own, registry, stop, connected, rx, send);
 }
 
 /// Runs a mapping until `stop` is set or the input ends.
@@ -1022,7 +1001,6 @@ fn run_controller(
     stop: &AtomicBool,
     connected: &Mutex<Vec<ConnectedController>>,
     rx: mpsc::Receiver<Vec<u8>>,
-    maschine: crate::host::MaschineSource,
     mut send: impl FnMut(&[u8]),
 ) {
     let mapping = match load_mapping(mapping_path, own) {
@@ -1034,14 +1012,13 @@ fn run_controller(
         }
     };
     let mapping_name = mapping.name.clone();
-    let mut controller =
-        match Controller::new_with_maschine_source(port, mapping, registry, maschine) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("{port}: mapping {mapping_name} failed to load: {e}");
-                return;
-            }
-        };
+    let mut controller = match Controller::new(port, mapping, registry) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{port}: mapping {mapping_name} failed to load: {e}");
+            return;
+        }
+    };
     controller.publish_positions();
     controller.follow_deck_choice(port);
     eprintln!("{port}: using mapping {mapping_name}");

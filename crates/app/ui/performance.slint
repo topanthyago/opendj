@@ -389,10 +389,6 @@ export component GroovePreset inherits PerformanceButton {
             width: parent.width - 8px;
             height: parent.height - 8px;
             VerticalLayout {
-                if deck == 2: GrooveMenuItem {
-                    text: "Deckard · 16 Sounds";
-                    clicked => { Controls.set-value(Controls.resolve("[Groove" + (deck + 1) + "]", "backend"), 1); menu.close(); }
-                }
                 GrooveMenuItem { text: "‹ Previous preset"; clicked => { PresetUi.step(deck, -1); } }
                 GrooveMenuItem { text: "› Next preset"; clicked => { PresetUi.step(deck, 1); } }
                 Rectangle { height: 1px; background: Theme.border; }

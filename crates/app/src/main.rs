@@ -75,12 +75,6 @@ mod mac_menu;
 mod mac_titlebar;
 mod macro_lanes;
 mod map_mode;
-mod maschine_browser;
-mod maschine_export;
-mod maschine_projects;
-mod maschine_sampling;
-mod maschine_surface;
-mod maschine_ui;
 mod media_controls;
 mod midi_clock;
 mod mini_player;
@@ -742,19 +736,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     mixer_picker::install(&app, engine.clone());
     presets::install(&app, engine.clone(), registry.clone());
     instrument_knobs::install(&app, engine.clone());
-    let maschine_surface = match std::array::from_fn(|deck| engine.maschine(deck)) {
-        [Some(a), Some(b), Some(c), Some(d)] => Some(
-            maschine_surface::MaschineSurfaceProvider::new(registry.clone(), [a, b, c, d]),
-        ),
-        _ => None,
-    };
-    let _maschine_ui_timer = maschine_surface.as_ref().and_then(|surface| {
-        engine
-            .maschine(2)
-            .map(|handle| maschine_ui::install(&app, registry.clone(), handle, surface.clone()))
-    });
-    let _maschine_sampling_timers =
-        maschine_sampling::install(&app, engine.clone(), registry.clone());
     // The Mixer's channels as they were left, saved again as they change.
     let mixer_keeper = RefCell::new(mixer_keeper::Keeper::new(&registry));
     // The large waveforms' zoom, from the window and controllers.
@@ -1059,9 +1040,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     // MIDI keyboards (devices with no mapping) play the Instrument input.
     if let Some(c) = &controllers {
-        if let Some(surface) = &maschine_surface {
-            c.set_maschine_provider(Some(surface.clone()));
-        }
         let notes = engine.note_input();
         c.set_note_sink(Some(std::sync::Arc::new(move |data| {
             if let Ok(mut n) = notes.lock() {
@@ -1340,11 +1318,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(step_lanes::StepLanes::new)
             .map(|lanes| Rc::new(RefCell::new(lanes)));
         let grooves = std::array::from_fn(|d| step_lanes::GrooveHandles::new(&registry, d));
-        let maschines = std::array::from_fn(|deck| {
-            engine
-                .maschine(deck)
-                .map(|handle| step_lanes::MaschineLanes::new(&registry, deck, handle))
-        });
         let knobs = macro_lanes::KnobHandles::new(&registry);
         let scale_mask = registry
             .get("[Instrument1]", "scale_mask")
@@ -1372,7 +1345,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         instrument: instrument.clone(),
                         steps: steps.clone(),
                         grooves: grooves.clone(),
-                        maschines: maschines.clone(),
                         knobs: knobs.clone(),
                         scale_mask: scale_mask.clone(),
                         macros: Default::default(),
@@ -2068,7 +2040,6 @@ fn control_list() -> String {
     opendj_engine::create_controls(&registry);
     broadcast::create_controls(&registry);
     browser::LibraryControls::create(&registry);
-    maschine_sampling::create_controls(&registry);
     automix::AutoMix::new(&registry);
     waveform_zoom::create_controls(&registry);
     waveform_height::create_controls(&registry);
@@ -2665,7 +2636,6 @@ struct Gpu {
     /// The Groove Box decks' step lanes, and their Groove Boxes' controls.
     steps: Option<Rc<RefCell<step_lanes::StepLanes>>>,
     grooves: [step_lanes::GrooveHandles; NUM_DECKS],
-    maschines: [Option<step_lanes::MaschineLanes>; NUM_DECKS],
     /// The knobs the macro lanes follow, and their values so far.
     knobs: macro_lanes::KnobHandles,
     /// The instrument's scale now, whose rows its note roll tints.
@@ -2982,17 +2952,7 @@ impl Gpu {
                 .flatten();
             // A Groove Box deck's step lanes, in place of a note roll.
             let window = window.map(|mut w| {
-                if let Some(maschine) = self.maschines[d]
-                    .as_mut()
-                    .filter(|m| groove[d] && m.enabled())
-                {
-                    w.lanes = Some(maschine.lanes(
-                        w.clock - w.play_seconds,
-                        w.clock,
-                        VISIBLE_SECONDS * (1.0 - wave_look::needle() as f64),
-                        DECK_COLORS[d],
-                    ));
-                } else if let (true, Some(steps)) = (groove[d], &self.steps) {
+                if let (true, Some(steps)) = (groove[d], &self.steps) {
                     let state = self.grooves[d].state();
                     let start = w.clock - w.play_seconds;
                     let ahead = VISIBLE_SECONDS * (1.0 - wave_look::needle() as f64);

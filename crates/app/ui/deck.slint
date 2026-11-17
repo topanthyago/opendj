@@ -5,7 +5,6 @@
 // Large artwork, flat dark controls, white pointers.
 import { TrackDrag } from "library.slint";
 import { SamplerPanel } from "sampler.slint";
-import { MaschinePanel } from "maschine.slint";
 import { GrooveMenuItem, GrooveMenuBackground, GrooveTempo, GrooveFillBar, PerformanceStatus, GrooveDice, GrooveDiceItems, GrooveLibraryBar, GrooveSlots, PresetTagger, PresetNamer, GrooveUi, GrooveKit, GrooveGenre, GrooveName } from "performance.slint";
 import { Theme, KeyNotation, EdgeLine, EdgeVLine, CloseIcon } from "theme.slint";
 import { Caption, ControlButton, ControlFader, ControlKnob, Controls, HoverTip, MasterBadge, PitchReset, Switch, SyncButton, VuMeter } from "controls.slint";
@@ -5524,7 +5523,6 @@ export component Deck inherits Rectangle {
     property <bool> narrow: self.width < 650px;
     property <int> layer-index: Controls.resolve("[Controller]", Math.mod(deck, 2) == 0 ? "deck3" : "deck4");
     property <bool> groove: Controls.value(Controls.resolve("[Groove" + (deck + 1) + "]", "enabled"), Controls.tick) > 0;
-    property <bool> maschine: (groove || mixer-groove-shown) && Controls.value(Controls.resolve("[Groove" + (deck + 1) + "]", "backend"), Controls.tick) > 0;
     // The Groove Box's ⏏ goes with it, however it was unloaded: so does
     // its tooltip.
     changed groove => {
@@ -5595,7 +5593,7 @@ export component Deck inherits Rectangle {
             vertical-stretch: 1;
             // Outside in: the tempo column, the pads, the loop, and the jog
             // with play and CUE under it beside the mixer. Deck B is the mirror image.
-            if mixer-groove-shown && !maschine: GrooveBox { x: 4px; y: 4px; width: parent.width - 8px; height: parent.height - 8px; deck: deck; group: group; tint: tint; }
+            if mixer-groove-shown: GrooveBox { x: 4px; y: 4px; width: parent.width - 8px; height: parent.height - 8px; deck: deck; group: group; tint: tint; }
             if live > 0 && !mixer-groove-shown: LivePanel { x: mixer ? 4px : 8px; y: mixer ? 4px : 8px; width: parent.width - (mixer ? 8px : 16px); height: parent.height - (mixer ? 8px : 16px); live: mixer-keys ? 3 : live; group: group; tint: tint; }
             if looper: LooperPanel { x: 8px; y: 8px; width: parent.width - 16px; height: parent.height - 16px; deck: deck; group: group; tint: tint; }
             if !groove && !looper && live == 0 && !narrow: HorizontalLayout {
@@ -5637,14 +5635,13 @@ export component Deck inherits Rectangle {
 
     // A Groove Box has no waveform or jog: it takes the whole deck under a
     // slim title, as the Mixer's.
-    if groove && !maschine: VerticalLayout {
+    if groove: VerticalLayout {
         width: parent.width;
         height: parent.height;
         spacing: 1px;
         GrooveTitle { deck: deck; group: group; }
         GrooveBox { vertical-stretch: 1; deck: deck; group: group; tint: tint; }
     }
-    if maschine: MaschinePanel { width: parent.width; height: parent.height; deck: deck; channel: group; tint: tint; }
 
     // Drop target for tracks dragged from the browser. While any drag is in
     if TrackDrag.active || InstrumentsUi.dragging || TrackDrag.files-over || drop.has-drag: Rectangle {
