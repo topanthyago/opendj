@@ -20,7 +20,7 @@
 //! every step inside it starts its sounds on the frame it falls on, so the
 //! timing is exact to the sample whatever the buffer size.
 //!
-//! **Patterns.** Four grooves (A to D), each eight rows (tracks) of 16 steps, kept in
+//! **Patterns.** Four grooves (A to D), each sixteen rows (tracks) of 16 steps, kept in
 //! `[GrooveN],patternG_rowR` as 16-bit numbers (bit s on = step s+1 plays)
 //! with `patternG_rowR_soft` and `patternG_rowR_accent` marking the steps
 //! that play softly (half as loud) or accented (a quarter louder), and
@@ -72,9 +72,11 @@ use crate::patterns::{self, Level};
 use crate::sampler::Sample;
 use crate::NUM_DECKS;
 
-/// Tracks: the first seven of [`kits::ROLES`], then Cymbal, which plays the
-/// kit's crash or ride (its sound picked when a groove loads).
-pub const ROWS: usize = 8;
+/// Sixteen tracks. The first seven retain their legacy roles; track eight
+/// is Cymbal and picks crash or ride when a legacy groove loads.
+pub const ROWS: usize = 16;
+pub const LEGACY_ROWS: usize = 8;
+pub const CYMBAL_ROW: usize = 7;
 /// The kit sounds track 8 switches between.
 const CRASH: usize = 7;
 const RIDE: usize = 8;
@@ -184,8 +186,10 @@ pub fn groove_group(deck: usize) -> String {
 
 impl GrooveControls {
     pub fn new(reg: &ControlRegistry, deck: usize) -> Self {
-        let g = groove_group(deck);
-        let g = g.as_str();
+        Self::new_scoped(reg, &groove_group(deck))
+    }
+
+    pub fn new_scoped(reg: &ControlRegistry, g: &str) -> Self {
         let fresh = reg.get(g, "pattern1_row1").is_none();
         let rows = |f: &dyn Fn(usize) -> ControlHandle| std::array::from_fn(f);
         let kit_count = kits::KITS.len() as f64;
@@ -391,10 +395,10 @@ impl GrooveControls {
         let ride = p.rows[RIDE].hits != 0;
         let cymbal = if ride { RIDE } else { CRASH };
         if ride || p.rows[CRASH].hits != 0 {
-            self.sound[ROWS - 1].set(cymbal as f64);
+            self.sound[CYMBAL_ROW].set(cymbal as f64);
         }
-        for row in 0..ROWS {
-            let steps = p.rows[if row == ROWS - 1 { cymbal } else { row }];
+        for row in 0..LEGACY_ROWS {
+            let steps = p.rows[if row == CYMBAL_ROW { cymbal } else { row }];
             self.patterns[slot][row].set(steps.hits as f64);
             self.soft[slot][row].set(steps.soft as f64);
             self.accent[slot][row].set(steps.accent as f64);
@@ -423,7 +427,7 @@ impl GrooveControls {
     /// The kit sound (one of [`kits::ROLES`]) track `row` plays, for
     /// variations in its style.
     fn role(&self, row: usize) -> usize {
-        if row == ROWS - 1 {
+        if row == CYMBAL_ROW {
             if self.sound[row].get().round() as usize == RIDE {
                 RIDE
             } else {
@@ -822,7 +826,7 @@ impl BreakDetector {
 
 fn load_pending_set(c: &GrooveControls, pending: &mut Option<(usize, usize)>) -> bool {
     if let Some((genre, set)) = pending.take() {
-        let old_cymbal = c.sound[ROWS - 1].get();
+        let old_cymbal = c.sound[CYMBAL_ROW].get();
         for slot in 0..GROOVES {
             c.load_groove(slot, genre, set * GROOVES + slot + 1);
         }
@@ -831,7 +835,7 @@ fn load_pending_set(c: &GrooveControls, pending: &mut Option<(usize, usize)>) ->
             c.swing.set(defaults.swing);
             c.auto_fill_style.set(defaults.fill_style);
             c.auto_fill.set(defaults.auto_fill);
-            for row in 0..ROWS {
+            for row in 0..LEGACY_ROWS {
                 c.level[row].set(defaults.levels[row]);
                 c.sound[row].set(defaults.sounds[row]);
                 c.pitch[row].set(defaults.pitches[row]);
@@ -839,7 +843,7 @@ fn load_pending_set(c: &GrooveControls, pending: &mut Option<(usize, usize)>) ->
             }
         } else {
             // Existing, unannotated genres keep the user's sound settings.
-            c.sound[ROWS - 1].set(old_cymbal);
+            c.sound[CYMBAL_ROW].set(old_cymbal);
         }
         c.set_pending.set(0.0);
         true
@@ -862,7 +866,7 @@ fn roll(c: &GrooveControls, dice: &mut Dice, slot: usize) {
             Some(only) => only == r,
             None => !c.lock[r].get_bool(),
         };
-        if !chosen {
+        if !chosen || r >= LEGACY_ROWS {
             continue;
         }
         let mut t = was;
@@ -921,8 +925,18 @@ pub struct GrooveBox {
 
 impl GrooveBox {
     pub fn new(reg: &ControlRegistry, deck: usize, kits: Arc<[Kit]>, rate: f64) -> Self {
-        let c = GrooveControls::new(reg, deck);
-        let pads = PadSurface::new(reg, deck);
+        Self::new_scoped(reg, deck, &groove_group(deck), kits, rate)
+    }
+
+    pub fn new_scoped(
+        reg: &ControlRegistry,
+        deck: usize,
+        group: &str,
+        kits: Arc<[Kit]>,
+        rate: f64,
+    ) -> Self {
+        let c = GrooveControls::new_scoped(reg, group);
+        let pads = PadSurface::new_scoped(reg, group);
         let load_set_seen = c.load_set.version();
         Self {
             c,
@@ -1231,6 +1245,7 @@ impl GrooveBox {
                         let mut velocity = if bits & (1 << step) == 0 {
                             // Vary brings in ghost notes on the steps the genre likes.
                             if bits == 0
+                                || row >= LEGACY_ROWS
                                 || !groove_dice::ghost(vary, role, step, genre, habits, rng)
                             {
                                 continue;
@@ -1245,7 +1260,9 @@ impl GrooveBox {
                             if maybe & (1 << step) != 0 && rng.unit() >= 0.5 {
                                 continue;
                             }
-                            if !groove_dice::keeps(vary, role, step, genre, habits, rng) {
+                            if row < LEGACY_ROWS
+                                && !groove_dice::keeps(vary, role, step, genre, habits, rng)
+                            {
                                 continue;
                             }
                             let soft = c.soft[playing][row].get() as u32;
@@ -1273,17 +1290,19 @@ impl GrooveBox {
                         play = if pattern_fill {
                             groove_fills::pattern_fill(f, step, normal, written)
                         } else {
-                            f.hits(step)
+                            let mut result = f.hits(step);
+                            result[LEGACY_ROWS..].copy_from_slice(&normal[LEGACY_ROWS..]);
+                            result
                         };
                         if f.steps() >= 8
                             && step == STEPS - 1
-                            && (!pattern_fill || written[ROWS - 1] != 0)
+                            && (!pattern_fill || written[CYMBAL_ROW] != 0)
                         {
                             *crash_next = true;
                         }
                     } else if step == 0 && std::mem::take(crash_next) {
                         // The crash after a fill, on the downbeat.
-                        play[ROWS - 1] = play[ROWS - 1].max(1.0);
+                        play[CYMBAL_ROW] = play[CYMBAL_ROW].max(1.0);
                     }
                     *in_fill = fill.is_some() || remix > 0;
                     for (row, &velocity) in play.iter().enumerate() {
@@ -1674,7 +1693,7 @@ mod tests {
         restored.kit.set(1.0);
         restored.patterns[0][0].set(0x1357 as f64);
         restored.soft[0][0].set(0x0022 as f64);
-        restored.sound[ROWS - 1].set(8.0);
+        restored.sound[CYMBAL_ROW].set(8.0);
         reg.get("[Channel1]", "live_input").unwrap().set(3.0);
         reg.get("[Channel1]", "live_trim").unwrap().set(-5.0);
         reg.get("[Channel1]", "live_pan").unwrap().set(0.25);
@@ -1684,7 +1703,7 @@ mod tests {
         assert_eq!(engine.kit.get(), 1.0);
         assert_eq!(engine.patterns[0][0].get(), 0x1357 as f64);
         assert_eq!(engine.soft[0][0].get(), 0x0022 as f64);
-        assert_eq!(engine.sound[ROWS - 1].get(), 8.0);
+        assert_eq!(engine.sound[CYMBAL_ROW].get(), 8.0);
         for (key, value) in [("live_input", 3.0), ("live_trim", -5.0), ("live_pan", 0.25)] {
             assert_eq!(reg.get("[Channel1]", key).unwrap().get(), value);
         }
@@ -1852,6 +1871,24 @@ mod tests {
     }
 
     #[test]
+    fn scoped_controls_preserve_extra_tracks_on_legacy_load() {
+        let reg = ControlRegistry::default();
+        let a = GrooveControls::new_scoped(&reg, "[BankA]");
+        let b = GrooveControls::new_scoped(&reg, "[BankB]");
+        let extra = Track {
+            hits: 0x1234,
+            soft: 0x20,
+            accent: 0x10,
+            maybe: 0x4,
+        };
+        a.set_track(0, 15, extra);
+        a.load_groove(0, 0, 1);
+        assert_eq!(a.tracks(0)[15], extra);
+        assert_eq!(b.tracks(0)[15], Track::default());
+        assert_eq!(a.sound[CYMBAL_ROW].get(), b.sound[CYMBAL_ROW].get());
+    }
+
+    #[test]
     fn four_pattern_load_is_queued_and_applied_on_the_bar() {
         let (_reg, mut g) = groove_box();
         for slot in 0..GROOVES {
@@ -1879,7 +1916,7 @@ mod tests {
         assert!(!g.c.set_pending.get_bool());
         for slot in 0..GROOVES {
             let p = patterns::groove(0, 4 + slot).unwrap();
-            for row in 0..ROWS - 1 {
+            for row in 0..CYMBAL_ROW {
                 assert_eq!(g.c.tracks(slot)[row].hits, p.rows[row].hits);
             }
         }
@@ -2000,7 +2037,7 @@ mod tests {
         assert_eq!(g.c.swing.get(), defaults.swing);
         assert_eq!(g.c.auto_fill.get(), defaults.auto_fill);
         assert_eq!(g.c.auto_fill_style.get(), defaults.fill_style);
-        for row in 0..ROWS {
+        for row in 0..LEGACY_ROWS {
             assert_eq!(g.c.level[row].get(), defaults.levels[row]);
             assert_eq!(g.c.sound[row].get(), defaults.sounds[row]);
             assert_eq!(g.c.pitch[row].get(), defaults.pitches[row]);
@@ -2160,7 +2197,7 @@ mod tests {
     }
 
     #[test]
-    fn eight_tracks_each_play_their_sound() {
+    fn sixteen_tracks_each_play_their_sound() {
         for row in 0..ROWS {
             let (_reg, mut g) = groove_box();
             let out = one_hit(&mut g, row);

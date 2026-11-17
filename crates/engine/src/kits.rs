@@ -46,8 +46,8 @@ pub const ROLES: [&str; 9] = [
     "Ride",
 ];
 
-/// The most sounds a kit has (the nine roles and its own).
-pub const MAX_SOUNDS: usize = 12;
+/// The number of sounds in each built-in kit.
+pub const MAX_SOUNDS: usize = 16;
 
 pub struct KitSound {
     pub name: &'static str,
@@ -86,43 +86,99 @@ pub const KITS: [KitInfo; 8] = [
     KitInfo {
         name: "Analog",
         about: "Round, warm analogue drums (Plaits drum models)",
-        extras: &["Low tom", "High tom"],
+        extras: &[
+            "Low tom",
+            "High tom",
+            "Shaker",
+            "Clave",
+            "Woodblock",
+            "Tambourine",
+            "Percussion",
+        ],
         roles: None,
     },
     KitInfo {
         name: "Synthetic",
         about: "Tight digital kick and snare, crisp hats (Plaits drum models)",
-        extras: &["Low tom", "High tom"],
+        extras: &[
+            "Low tom",
+            "High tom",
+            "Shaker",
+            "Clave",
+            "Woodblock",
+            "Tambourine",
+            "Percussion",
+        ],
         roles: None,
     },
     KitInfo {
         name: "Boom",
         about: "Deep, long kick and soft analogue drums, 808-style",
-        extras: &["Tom"],
+        extras: &[
+            "Tom",
+            "Low tom",
+            "High tom",
+            "Shaker",
+            "Clave",
+            "Woodblock",
+            "Tambourine",
+        ],
         roles: None,
     },
     KitInfo {
         name: "Punch",
         about: "Short, punchy kick and bright hats for house and techno, 909-style",
-        extras: &["Tom"],
+        extras: &[
+            "Tom",
+            "Low tom",
+            "High tom",
+            "Shaker",
+            "Clave",
+            "Woodblock",
+            "Tambourine",
+        ],
         roles: None,
     },
     KitInfo {
         name: "Tin",
         about: "Small, ticking rhythm-box drums, 606-style",
-        extras: &["Shaker", "Tom"],
+        extras: &[
+            "Shaker",
+            "Tom",
+            "Low tom",
+            "High tom",
+            "Clave",
+            "Woodblock",
+            "Tambourine",
+        ],
         roles: None,
     },
     KitInfo {
         name: "Dub",
         about: "Soft kick, rimshot and a chord stab for dub techno",
-        extras: &["Chord", "Shaker", "Tom"],
+        extras: &[
+            "Chord",
+            "Shaker",
+            "Tom",
+            "Low tom",
+            "High tom",
+            "Clave",
+            "Woodblock",
+        ],
         roles: None,
     },
     KitInfo {
         name: "BrasilFunk",
         about: "Electronic drums with recorded CC0 claves, agogo, cabasa and conga",
-        extras: &["Cabasa", "Conga aberta", "Agogo grave"],
+        extras: &[
+            "Cabasa",
+            "Conga aberta",
+            "Agogo grave",
+            "Conga abafada",
+            "Shaker",
+            "Tambourine",
+            "Woodblock",
+        ],
         roles: Some(&[
             "Kick",
             "Snare",
@@ -138,7 +194,15 @@ pub const KITS: [KitInfo; 8] = [
     KitInfo {
         name: "BrasilPercussao",
         about: "Recorded CC0 hand percussion with electronic low drum and snare",
-        extras: &["Agogo grave", "Conga aberta", "Conga abafada"],
+        extras: &[
+            "Agogo grave",
+            "Conga aberta",
+            "Conga abafada",
+            "Cabasa",
+            "Tom",
+            "Woodblock",
+            "Percussion",
+        ],
         roles: Some(&[
             "Bumbo sintetico",
             "Caixa sintetica",
@@ -164,7 +228,10 @@ fn recorded_sound(kit: usize, sound: usize, rate: f64) -> Option<Sample> {
         (6, 11) | (7, 9) => include_bytes!("../data/kits/brasil/agogo-low.wav"),
         (7, 2) => include_bytes!("../data/kits/brasil/shaker.wav"),
         (7, 3) => include_bytes!("../data/kits/brasil/tambourine.wav"),
-        (7, 11) => include_bytes!("../data/kits/brasil/conga-muted.wav"),
+        (6, 12) | (7, 11) => include_bytes!("../data/kits/brasil/conga-muted.wav"),
+        (6, 13) => include_bytes!("../data/kits/brasil/shaker.wav"),
+        (6, 14) => include_bytes!("../data/kits/brasil/tambourine.wav"),
+        (7, 12) => include_bytes!("../data/kits/brasil/cabasa.wav"),
         _ => return None,
     };
     let decoder = crate::decode::Decoder::open_source(
@@ -370,6 +437,12 @@ fn sound(k: usize, n: usize, name: &str, sr: f32) -> Vec<f32> {
         (_, "Rim") => rim(sr, 0.03, seed),
         ("Boom", "Tom") => tom(sr, 110.0, 0.45),
         (_, "Tom") => tom(sr, 140.0, 0.3),
+        (_, "Low tom") => tom(sr, 95.0, 0.4),
+        (_, "High tom") => tom(sr, 180.0, 0.22),
+        (_, "Clave") => rim(sr, 0.018, seed),
+        (_, "Woodblock") => tom(sr, 650.0, 0.08),
+        (_, "Tambourine") => hat(sr, 0.16, 6200.0, seed),
+        (_, "Percussion") => cowbell(sr, [650.0, 940.0], 0.14),
         (_, "Shaker") => shaker(sr, seed),
         (_, "Chord") => chord(sr),
         _ => Vec::new(),
@@ -759,7 +832,7 @@ mod tests {
         let kits = build_from(48_000.0, None);
         assert_eq!(kits.len(), KITS.len());
         for (index, kit) in kits.iter().enumerate() {
-            assert!(kit.sounds.len() <= MAX_SOUNDS, "{}", kit.name);
+            assert_eq!(kit.sounds.len(), MAX_SOUNDS, "{}", kit.name);
             for (name, s) in KITS[index].sounds().zip(&kit.sounds) {
                 assert_eq!(
                     name, s.name,

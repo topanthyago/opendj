@@ -167,7 +167,7 @@ pub fn set_defaults(genre: usize, set: usize) -> Option<&'static SetDefaults> {
 }
 
 fn parse_set_defaults(value: &serde_json::Value) -> Option<SetDefaults> {
-    use crate::groove::ROWS;
+    use crate::groove::{LEGACY_ROWS, ROWS};
     let number = |key: &str, min: f64, max: f64| {
         value
             .get(key)?
@@ -176,7 +176,7 @@ fn parse_set_defaults(value: &serde_json::Value) -> Option<SetDefaults> {
     };
     let rows = |key: &str, min: f64, max: f64| -> Option<[f64; ROWS]> {
         let values = value.get(key)?.as_array()?;
-        if values.len() != ROWS {
+        if values.len() != LEGACY_ROWS {
             return None;
         }
         let mut result = [0.0; ROWS];
@@ -191,7 +191,7 @@ fn parse_set_defaults(value: &serde_json::Value) -> Option<SetDefaults> {
     let sounds = crate::kits::KITS.get(kit)?.sounds().count();
     let integer = |key: &str, max: u64| value.get(key)?.as_u64().filter(|&n| n <= max);
     let sound_rows = value.get("rowSounds")?.as_array()?;
-    if sound_rows.len() != ROWS {
+    if sound_rows.len() != LEGACY_ROWS {
         return None;
     }
     let mut selected_sounds = [0.0; ROWS];

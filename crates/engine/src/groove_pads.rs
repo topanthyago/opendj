@@ -12,10 +12,10 @@
 //! The rest is here, so every controller behaves alike. `[GrooveN],pad_mode`
 //! picks what the pads do:
 //!
-//! - **Steps** (0): the 16 steps of the selected row (`row_selected`, 1-8)
+//! - **Steps** (0): the 16 steps of the selected row (`row_selected`, 1-16)
 //!   of the groove on screen. A press adds or removes a hit; while stopped
 //!   it also plays the sound once.
-//! - **Play** (1): pads 1-8 (and again 9-16) play rows 1-8, now, as loud
+//! - **Play** (1): pads 1-16 play rows 1-16, now, as loud
 //!   as the pad is hit. With `record` on while playing, the hit is also written
 //!   into the nearest step of the groove playing.
 //! - **Grooves** (2): pads 1-4 pick groove A-D (on the next bar, as the
@@ -28,7 +28,7 @@ use opendj_control::{Behavior, ControlHandle, ControlRegistry};
 
 use crate::groove::{groove_group, GROOVES, ROWS, STEPS};
 
-/// The rows the pads play in Play mode, twice over.
+/// The rows the pads play in Play mode.
 pub const PLAY_ROWS: usize = ROWS;
 use crate::kits;
 
@@ -60,12 +60,12 @@ pub mod light {
 
     /// Row `row`'s own colour.
     pub fn row(row: usize) -> u8 {
-        ROW + row.min(7) as u8
+        ROW + (row % 8) as u8
     }
 
     /// Row `row`'s colour, dimmed.
     pub fn row_dim(row: usize) -> u8 {
-        ROW_DIM + row.min(7) as u8
+        ROW_DIM + (row % 8) as u8
     }
 }
 
@@ -87,8 +87,10 @@ pub struct PadControls {
 
 impl PadControls {
     pub fn new(reg: &ControlRegistry, deck: usize) -> Self {
-        let g = groove_group(deck);
-        let g = g.as_str();
+        Self::new_scoped(reg, &groove_group(deck))
+    }
+
+    pub fn new_scoped(reg: &ControlRegistry, g: &str) -> Self {
         Self {
             mode: reg.create(g, "pad_mode", 0.0, 0.0, 2.0, Behavior::Free),
             row: reg.create(g, "row_selected", 1.0, 1.0, ROWS as f64, Behavior::Free),
@@ -113,7 +115,11 @@ pub struct PadSurface {
 
 impl PadSurface {
     pub fn new(reg: &ControlRegistry, deck: usize) -> Self {
-        let c = PadControls::new(reg, deck);
+        Self::new_scoped(reg, &groove_group(deck))
+    }
+
+    pub fn new_scoped(reg: &ControlRegistry, group: &str) -> Self {
+        let c = PadControls::new_scoped(reg, group);
         let seen = std::array::from_fn(|k| c.pads[k].version());
         Self {
             c,
@@ -179,7 +185,7 @@ impl PadSurface {
     }
 }
 
-/// The row pad `k` plays in Play mode: pads 1-8 rows 1-8, then again.
+/// The row pad `k` plays in Play mode.
 pub fn play_row(k: usize) -> usize {
     k % PLAY_ROWS
 }
@@ -321,7 +327,9 @@ mod tests {
     fn play_shows_a_pad_per_row() {
         let c = view(mode::PLAY);
         assert_eq!(c[0], light::ROW_DIM);
-        assert_eq!(c[8], light::ROW_DIM, "pad 9 plays row 1 again");
+        assert_eq!(c[8], light::ROW_DIM);
+        assert_eq!(play_row(8), 8);
+        assert_eq!(play_row(15), 15);
         assert_eq!(c[4], light::ROW_DIM + 4);
         assert_eq!(c[9], light::PLAYHEAD, "held");
         assert_eq!(c[3], light::DIM, "muted row");
@@ -340,10 +348,11 @@ mod tests {
     }
 
     #[test]
-    fn every_row_has_its_own_colour() {
+    fn colors_repeat_for_the_second_eight_rows() {
         assert_eq!(light::row(7), light::ROW + 7);
         assert_eq!(light::row_dim(7), light::ROW_DIM + 7);
-        assert_eq!(ROWS, 8);
+        assert_eq!(light::row(8), light::ROW);
+        assert_eq!(light::row_dim(15), light::ROW_DIM + 7);
     }
 
     #[test]

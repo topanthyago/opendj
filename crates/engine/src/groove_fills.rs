@@ -16,7 +16,7 @@
 //! Fills and figures are worked out a step at a time from the step, the bar
 //! and a seed, so nothing is stored or allocated on the audio thread.
 
-use crate::groove::{ROWS, STEPS};
+use crate::groove::{LEGACY_ROWS, ROWS, STEPS};
 
 /// The tracks, by number.
 const KICK: usize = 0;
@@ -192,8 +192,8 @@ pub fn remix(level: u8, step: usize, normal: [f32; ROWS], patterns: [u32; ROWS])
         // The tracks' patterns move to other sounds (the kick keeps its own).
         9..=14 => {
             let shift = (level - 8) as usize;
-            for (r, out) in v.iter_mut().enumerate().skip(1) {
-                let from = 1 + (r - 1 + shift) % (ROWS - 1);
+            for (r, out) in v.iter_mut().enumerate().take(LEGACY_ROWS).skip(1) {
+                let from = 1 + (r - 1 + shift) % (LEGACY_ROWS - 1);
                 *out = if patterns[from] & (1 << step) != 0 {
                     0.9
                 } else {
@@ -211,7 +211,7 @@ pub fn remix(level: u8, step: usize, normal: [f32; ROWS], patterns: [u32; ROWS])
             v[CYMBAL] = 0.0;
         }
         _ => {
-            for (r, out) in v.iter_mut().enumerate() {
+            for (r, out) in v.iter_mut().enumerate().take(LEGACY_ROWS) {
                 *out = if r == CYMBAL { 0.0 } else { accent };
             }
         }
@@ -250,7 +250,8 @@ mod tests {
         let mut patterns = [0; ROWS];
         patterns[KICK] = 0x1111;
         patterns[RIM] = 1 << 12;
-        let normal = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let mut normal = [0.0; ROWS];
+        normal[0] = 1.0;
         let fill = Fill { from: 12, kind: 1 };
         let out = pattern_fill(fill, 13, normal, patterns);
         assert_eq!(out[KICK], normal[KICK]);
@@ -290,8 +291,10 @@ mod tests {
 
     #[test]
     fn low_remix_rolls_the_hats_and_high_rolls_everything() {
-        let normal = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-        let pats = [1, 0, 0, 0, 0, 0, 0, 0];
+        let mut normal = [0.0; ROWS];
+        normal[0] = 1.0;
+        let mut pats = [0; ROWS];
+        pats[0] = 1;
         let low = remix(1, 3, normal, pats);
         assert!(low[HAT] > 0.0);
         assert_eq!(low[KICK], 1.0, "the rest plays as it was");
@@ -300,11 +303,23 @@ mod tests {
     }
 
     #[test]
+    fn remix_preserves_extra_rows_at_every_level() {
+        let mut normal = [0.0; ROWS];
+        normal[8] = 0.7;
+        normal[15] = 0.4;
+        for level in 1..=16 {
+            let out = remix(level, 3, normal, [0; ROWS]);
+            assert_eq!(&out[LEGACY_ROWS..], &normal[LEGACY_ROWS..]);
+        }
+    }
+
+    #[test]
     fn swapping_remix_moves_patterns_but_keeps_the_kick() {
         let mut pats = [0u32; ROWS];
         pats[SNARE] = 1 << 4;
         pats[HAT] = 1 << 2;
-        let normal = [0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let mut normal = [0.0; ROWS];
+        normal[0] = 0.5;
         let v = remix(9, 4, normal, pats);
         assert_eq!(v[KICK], 0.5);
         // With a shift of one, track r plays track r+1's steps: the snare's
