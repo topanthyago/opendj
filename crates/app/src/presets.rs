@@ -136,7 +136,10 @@ fn list_in(root: &Path) -> Vec<Preset> {
                 continue;
             };
             let text = |k: &str| v[k].as_str().unwrap_or_default().to_string();
-            if text("instrument").is_empty() {
+            if text("instrument").is_empty()
+                || (text("instrument") == GROOVE
+                    && v.get("native_groove").is_some_and(|value| !value.is_null()))
+            {
                 continue;
             }
             out.push(Preset {
@@ -606,6 +609,7 @@ impl Ctx {
                 }
             }
             self.set(&g, "enabled", 1.0);
+            self.set(&g, "group_enabled", 1.0);
         } else {
             let index = self.plugin_index(preset)?;
             // Its knob picks first, so a restart to take them starts from
@@ -880,6 +884,9 @@ mod tests {
         let second = write_new(&root, b, "Ambient Ebow").unwrap();
         assert_ne!(first, second);
         write_new(&root, body(GROOVE, "Groove Box"), "house: 4/4").unwrap();
+        let mut legacy = body(GROOVE, "Groove Box");
+        legacy.insert("native_groove".into(), json!({"project": "archived-data"}));
+        let archived = write_new(&root, legacy, "Prior engine project").unwrap();
         let names: Vec<(String, String)> = list_in(&root)
             .into_iter()
             .map(|p| (p.instrument_name, p.name))
@@ -893,6 +900,10 @@ mod tests {
             ]
         );
         assert_eq!(plugin_state(&read(&first).unwrap()).unwrap(), b"abc");
+        assert_eq!(
+            read(&archived).unwrap()["native_groove"]["project"],
+            "archived-data"
+        );
         // Renaming keeps the sound; a taken name is refused.
         assert!(rename_file(&second, "Ambient Ebow").is_err());
         let renamed = rename_file(&second, "Dark Strings").unwrap();

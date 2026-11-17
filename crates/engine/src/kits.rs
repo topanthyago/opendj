@@ -21,6 +21,7 @@
 //! of a groove plays the same kind of sound in any kit; some kits add
 //! sounds of their own after them, for a row to switch to.
 
+use std::collections::HashMap;
 use std::f32::consts::TAU;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -30,6 +31,7 @@ use mi_plaits_dsp::drums::{
     analog_bass_drum::AnalogBassDrum, analog_snare_drum::AnalogSnareDrum, hihat,
     synthetic_bass_drum::SyntheticBassDrum, synthetic_snare_drum::SyntheticSnareDrum,
 };
+use sha2::{Digest, Sha256};
 
 use crate::sampler::Sample;
 
@@ -298,7 +300,7 @@ pub const KITS: [KitInfo; 8] = [
 // list only after every slot decodes, keeping UI indices and audio aligned.
 struct CuratedKit {
     info: KitInfo,
-    samples: Vec<Sample>,
+    samples: Vec<Arc<Sample>>,
     row_map: [usize; 16],
 }
 
@@ -377,8 +379,8 @@ fn read_curated(path: &Path) -> Result<Vec<CuratedKit>, String> {
     let kits = manifest
         .get("kits")
         .and_then(|v| v.as_array())
-        .filter(|kits| kits.len() == 8)
-        .ok_or("catalog must contain eight kits")?;
+        .filter(|kits| !kits.is_empty())
+        .ok_or("catalog must contain at least one kit")?;
     let v2 = manifest.get("layout").and_then(|v| v.as_str()) == Some("native16-v2");
     let v2_roles = [
         "kick",
@@ -402,8 +404,11 @@ fn read_curated(path: &Path) -> Result<Vec<CuratedKit>, String> {
         eprintln!("Groove: legacy curated catalog has coarse roles; preserving its legacy mapping without asserting hat or cymbal types");
     }
     let mut result = Vec::new();
+    let mut decoded = HashMap::<[u8; 32], Arc<Sample>>::new();
     for kit in kits {
-        let read_kit = || -> Result<CuratedKit, String> {
+        let mut read_kit = || -> Result<CuratedKit, String> {
+            let source_layout =
+                kit.get("layout").and_then(|value| value.as_str()) == Some("source16");
             let style = kit
                 .get("style")
                 .and_then(|v| v.as_str())
@@ -414,7 +419,7 @@ fn read_curated(path: &Path) -> Result<Vec<CuratedKit>, String> {
                 .and_then(|v| v.as_array())
                 .filter(|s| s.len() == CURATED_SOUNDS)
                 .ok_or("expected 16 slots")?;
-            let mut ordered: [Option<(&str, &str)>; CURATED_SOUNDS] = [None; CURATED_SOUNDS];
+            let mut ordered: [Option<(&str, [u8; 32])>; CURATED_SOUNDS] = [None; CURATED_SOUNDS];
             let mut paths = std::collections::HashSet::new();
             for slot in slots {
                 let index = slot
@@ -424,7 +429,14 @@ fn read_curated(path: &Path) -> Result<Vec<CuratedKit>, String> {
                     .and_then(|n| n.checked_sub(1))
                     .filter(|&n| n < CURATED_SOUNDS)
                     .ok_or("invalid slot number")?;
-                if v2 && slot.get("role").and_then(|v| v.as_str()) != Some(v2_roles[index]) {
+                let expected_role = if source_layout {
+                    "source_sample"
+                } else {
+                    v2_roles[index]
+                };
+                if (v2 || source_layout)
+                    && slot.get("role").and_then(|v| v.as_str()) != Some(expected_role)
+                {
                     return Err("V2 slot role does not match native layout".into());
                 }
                 let name = slot
@@ -437,18 +449,39 @@ fn read_curated(path: &Path) -> Result<Vec<CuratedKit>, String> {
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                     .ok_or("missing sample path")?;
-                if ordered[index].replace((name, path)).is_some() || !paths.insert(path) {
+                let fingerprint: [u8; 32] = Sha256::digest(
+                    std::fs::read(path).map_err(|error| format!("{path}: {error}"))?,
+                )
+                .into();
+                if let Some(expected) = slot.get("sha256").and_then(|value| value.as_str()) {
+                    let actual = fingerprint
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>();
+                    if expected != actual {
+                        return Err(format!("{path}: sample checksum mismatch"));
+                    }
+                }
+                if !decoded.contains_key(&fingerprint) {
+                    let sample = curated_sample(Path::new(path))
+                        .map_err(|error| format!("{path}: {error}"))?;
+                    if sample.is_empty() {
+                        return Err(format!("{path}: empty sample"));
+                    }
+                    decoded.insert(fingerprint, Arc::new(sample));
+                }
+                if ordered[index].replace((name, fingerprint)).is_some() || !paths.insert(path) {
                     return Err("duplicate slot or sample path".into());
                 }
             }
             let mut samples = Vec::with_capacity(CURATED_SOUNDS);
             let mut names = Vec::with_capacity(CURATED_SOUNDS);
             for entry in ordered {
-                let (name, path) = entry.ok_or("missing slot")?;
-                let sample = curated_sample(Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
-                if sample.is_empty() {
-                    return Err(format!("{path}: empty sample"));
-                }
+                let (name, fingerprint) = entry.ok_or("missing slot")?;
+                let sample = decoded
+                    .get(&fingerprint)
+                    .expect("decoded curated sample")
+                    .clone();
                 names.push(name);
                 samples.push(sample);
             }
@@ -463,12 +496,16 @@ fn read_curated(path: &Path) -> Result<Vec<CuratedKit>, String> {
             Ok(CuratedKit {
                 info: KitInfo {
                     name: static_string(style),
-                    about: "Kit curado de amostras brasileiras",
+                    about: if source_layout {
+                        "Samples e patterns de projeto importado"
+                    } else {
+                        "Kit curado de amostras brasileiras"
+                    },
                     roles: Some(Box::leak(Box::new(roles))),
                     extras,
                 },
                 samples,
-                row_map: if v2 {
+                row_map: if v2 || source_layout {
                     std::array::from_fn(|i| i)
                 } else {
                     [0, 2, 4, 5, 6, 10, 11, 14, 1, 3, 8, 9, 12, 13, 7, 15]
@@ -609,6 +646,7 @@ fn custom_sound(root: &Path, kit: &str, sound: usize, rate: f64) -> Option<Sampl
 pub fn build(rate: f64) -> Vec<Kit> {
     let root = custom_root();
     let mut built = build_from(rate, root.as_deref());
+    let mut resampled = HashMap::<usize, Arc<Sample>>::new();
     for kit in &catalog().curated {
         built.push(Kit {
             name: kit.info.name,
@@ -618,7 +656,16 @@ pub fn build(rate: f64) -> Vec<Kit> {
                 .zip(&kit.samples)
                 .map(|(name, sample)| KitSound {
                     name,
-                    sample: Arc::new(Sample::from_audio(&sample.to_audio(), rate)),
+                    sample: if rate == 48_000.0 {
+                        sample.clone()
+                    } else {
+                        resampled
+                            .entry(Arc::as_ptr(sample) as usize)
+                            .or_insert_with(|| {
+                                Arc::new(Sample::from_audio(&sample.to_audio(), rate))
+                            })
+                            .clone()
+                    },
                     pitch: 0.0,
                 })
                 .collect(),
@@ -1256,6 +1303,30 @@ mod tests {
             result[0].info.sounds().collect::<Vec<_>>(),
             (0..16).map(|i| format!("sound-{i}")).collect::<Vec<_>>()
         );
+        assert!(Arc::ptr_eq(&result[0].samples[0], &result[1].samples[0]));
+        let original = manifest.clone();
+        let ninth = manifest["kits"][0].clone();
+        manifest["kits"].as_array_mut().unwrap().push(ninth);
+        std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert_eq!(read_curated(&path).unwrap().len(), 9);
+        let mut source = original["kits"][0].clone();
+        source["layout"] = serde_json::json!("source16");
+        for slot in source["slots"].as_array_mut().unwrap() {
+            slot["role"] = serde_json::json!("source_sample");
+        }
+        manifest = serde_json::json!({"layout": "native16-v2", "kits": [source]});
+        std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert_eq!(
+            read_curated(&path).unwrap()[0].row_map,
+            std::array::from_fn(|i| i)
+        );
+        manifest["kits"][0]["slots"][0]["sha256"] = serde_json::json!("incorrect");
+        std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(read_curated(&path)
+            .err()
+            .unwrap()
+            .contains("checksum mismatch"));
+        manifest = original;
         manifest["kits"][0]["slots"][0]["selected_path"] =
             serde_json::json!(root.join("missing.wav"));
         std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();

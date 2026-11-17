@@ -270,7 +270,7 @@ pub struct GrooveBanks {
     pub key: Option<u8>,
     pub last_bpm: f64,
     pub(crate) hit_tx: Option<rtrb::Producer<GrooveHit>>,
-    groups: [Group; GROUPS],
+    groups: Box<[Group]>,
     selected: ControlHandle,
     group_enabled: ControlHandle,
     last_enabled: u32,
@@ -320,93 +320,96 @@ impl GrooveBanks {
         let action_names = action_keys();
         let editor = handles(registry, &scope, &saved_names);
         let editor_actions = handles(registry, &scope, &action_names);
-        let groups = std::array::from_fn(|index| {
-            let group = group_scope(deck, index);
-            let initialized = registry
-                .get(&group, "initialized")
-                .expect("Groove group initialization");
-            let fresh = !initialized.get_bool();
-            let engine = GrooveBox::new_scoped(registry, deck, &group, kits.clone(), rate);
-            if fresh {
-                if index == 0 {
-                    for (target, source) in
-                        handles(registry, &group, &saved_names).iter().zip(&editor)
-                    {
-                        target.set(source.get());
-                    }
-                } else {
-                    for pattern in 0..GROOVES {
-                        for row in 0..ROWS {
-                            engine.c.patterns[pattern][row].set(0.0);
-                            engine.c.soft[pattern][row].set(0.0);
-                            engine.c.accent[pattern][row].set(0.0);
-                            engine.c.maybe[pattern][row].set(0.0);
+        let groups = (0..GROUPS)
+            .map(|index| {
+                let group = group_scope(deck, index);
+                let initialized = registry
+                    .get(&group, "initialized")
+                    .expect("Groove group initialization");
+                let fresh = !initialized.get_bool();
+                let engine = GrooveBox::new_scoped(registry, deck, &group, kits.clone(), rate);
+                if fresh {
+                    if index == 0 {
+                        for (target, source) in
+                            handles(registry, &group, &saved_names).iter().zip(&editor)
+                        {
+                            target.set(source.get());
+                        }
+                    } else {
+                        for pattern in 0..GROOVES {
+                            for row in 0..ROWS {
+                                engine.c.patterns[pattern][row].set(0.0);
+                                engine.c.soft[pattern][row].set(0.0);
+                                engine.c.accent[pattern][row].set(0.0);
+                                engine.c.maybe[pattern][row].set(0.0);
+                            }
+                        }
+                        if kits.len() > kits::KITS.len() + index {
+                            engine.c.kit.set((kits::KITS.len() + index) as f64);
                         }
                     }
-                    if kits.len() > kits::KITS.len() + index {
-                        engine.c.kit.set((kits::KITS.len() + index) as f64);
+                    for (row, sound) in kits::default_row_map(engine.c.kit.get() as usize)
+                        .into_iter()
+                        .enumerate()
+                    {
+                        engine.c.sound[row].set(sound as f64);
                     }
+                    if engine.c.kit.get() as usize >= kits::KITS.len() {
+                        engine.c.auto_fill_style.set_bool(true);
+                    }
+                    initialized.set_bool(true);
                 }
-                for (row, sound) in kits::default_row_map(engine.c.kit.get() as usize)
-                    .into_iter()
-                    .enumerate()
-                {
-                    engine.c.sound[row].set(sound as f64);
-                }
-                if engine.c.kit.get() as usize >= kits::KITS.len() {
-                    engine.c.auto_fill_style.set_bool(true);
-                }
-                initialized.set_bool(true);
-            }
-            let enabled = registry.create(
-                &scope,
-                &format!("group{}_enabled", index + 1),
-                if index == 0 { 1.0 } else { 0.0 },
-                0.0,
-                1.0,
-                Behavior::Free,
-            );
-            Group {
-                saved: handles(registry, &group, &saved_names),
-                actions: handles(registry, &group, &action_names),
-                colors: std::array::from_fn(|row| {
-                    registry.create(
-                        &group,
-                        &format!("row{}_color", row + 1),
-                        COLORS[row % GROUPS] as f64,
-                        0.0,
-                        0xffffff as f64,
-                        Behavior::Free,
-                    )
-                }),
-                activity: std::array::from_fn(|component| {
-                    registry.indicator(
-                        &scope,
-                        &format!("group{}_activity_{}", index + 1, ["r", "g", "b"][component]),
-                        255.0,
-                    )
-                }),
-                mute: registry.toggle(&scope, &format!("group{}_mute", index + 1)),
-                solo: registry.toggle(&scope, &format!("group{}_solo", index + 1)),
-                erase: registry.toggle(&scope, &format!("group{}_erase", index + 1)),
-                pattern_erase: PatternErase::new(registry, &group),
-                level: registry.create(
+                let enabled = registry.create(
                     &scope,
-                    &format!("group{}_level", index + 1),
-                    1.0,
+                    &format!("group{}_enabled", index + 1),
+                    if index == 0 { 1.0 } else { 0.0 },
                     0.0,
-                    1.5,
-                    Behavior::Linear,
-                ),
-                color: registry
-                    .get(&scope, &format!("group{}_color", index + 1))
-                    .expect("Groove group color"),
-                meter: registry.indicator(&scope, &format!("group{}_meter", index + 1), 1.0),
-                was_enabled: enabled.get_bool(),
-                enabled,
-                engine,
-            }
-        });
+                    1.0,
+                    Behavior::Free,
+                );
+                Group {
+                    saved: handles(registry, &group, &saved_names),
+                    actions: handles(registry, &group, &action_names),
+                    colors: std::array::from_fn(|row| {
+                        registry.create(
+                            &group,
+                            &format!("row{}_color", row + 1),
+                            COLORS[row % GROUPS] as f64,
+                            0.0,
+                            0xffffff as f64,
+                            Behavior::Free,
+                        )
+                    }),
+                    activity: std::array::from_fn(|component| {
+                        registry.indicator(
+                            &scope,
+                            &format!("group{}_activity_{}", index + 1, ["r", "g", "b"][component]),
+                            255.0,
+                        )
+                    }),
+                    mute: registry.toggle(&scope, &format!("group{}_mute", index + 1)),
+                    solo: registry.toggle(&scope, &format!("group{}_solo", index + 1)),
+                    erase: registry.toggle(&scope, &format!("group{}_erase", index + 1)),
+                    pattern_erase: PatternErase::new(registry, &group),
+                    level: registry.create(
+                        &scope,
+                        &format!("group{}_level", index + 1),
+                        1.0,
+                        0.0,
+                        1.5,
+                        Behavior::Linear,
+                    ),
+                    color: registry
+                        .get(&scope, &format!("group{}_color", index + 1))
+                        .expect("Groove group color"),
+                    meter: registry.indicator(&scope, &format!("group{}_meter", index + 1), 1.0),
+                    was_enabled: enabled.get_bool(),
+                    enabled,
+                    engine,
+                }
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         for index in 0..GROUPS {
             registry.create(
                 &scope,
