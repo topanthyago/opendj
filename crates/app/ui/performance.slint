@@ -641,19 +641,169 @@ export component GrooveLibraryBar inherits HorizontalLayout {
             GroovePreset { deck: deck; min-width: 34px; horizontal-stretch: 1; height: root.control-height; tint: tint; }
 }
 
-// The original A–D selector, shared by both Groove frontends.
+// Native Group patterns share one 16-slot picker and the first four quick choices.
 export component GrooveSlots inherits HorizontalLayout {
     in property <string> g;
+    in property <string> transport-group;
+    in property <int> deck;
+    in property <bool> compact;
     in property <color> tint;
     in property <length> control-height: 30px;
+    property <bool> native: Controls.value(Controls.resolve(g, "pattern_api_version"), Controls.tick) >= 1;
+    property <int> slot-count: native ? max(1, min(16, Controls.value(Controls.resolve(g, "pattern_slots"), Controls.tick))) : 4;
+    property <int> selected-group: Controls.value(Controls.resolve(g, "group_selected"), Controls.tick);
+    property <string> group-name: ["A", "B", "C", "D", "E", "F", "G", "H"][selected-group];
+    property <int> selected: Controls.value(Controls.resolve(g, "groove"), Controls.tick);
     property <int> sounding: Controls.value(Controls.resolve(g, "groove_playing"), Controls.tick);
     property <int> queued: Controls.value(Controls.resolve(g, "groove_queued"), Controls.tick);
+    property <bool> group-on: Controls.value(Controls.resolve(g, "group_enabled"), Controls.tick) > 0;
+    property <bool> running: Controls.value(Controls.resolve(transport-group, "play"), Controls.tick) > 0;
+    property <bool> sequence: native && Controls.value(Controls.resolve(g, "pattern_chain"), Controls.tick) > 0;
+    property <int> sequence-start: native ? Controls.value(Controls.resolve(g, "pattern_chain_start"), Controls.tick) : 0;
+    property <int> sequence-end: native ? Controls.value(Controls.resolve(g, "pattern_chain_end"), Controls.tick) : 3;
+    function choose(slot: int) {
+        if native {
+            Controls.set-value(Controls.resolve(g, "pattern_target"), slot);
+            Controls.set-value(Controls.resolve(g, "pattern_select"), 1);
+        } else {
+            Controls.set-value(Controls.resolve(g, "groove"), slot);
+            Controls.set-value(Controls.resolve(g, "group_enabled"), 1);
+        }
+    }
+    function stop-group() {
+        if native { Controls.set-value(Controls.resolve(g, "pattern_stop"), 1); }
+        else { Controls.set-value(Controls.resolve(g, "group_enabled"), 0); }
+    }
     spacing: 4px;
-    for letter[i] in ["A", "B", "C", "D"]: PerformanceButton {
-        width: 22px; height: control-height;
-        text: letter; tint: tint;
-        lit: i == sounding;
-        blink: i == queued && queued != sounding && Controls.blink;
-        clicked => { Controls.set-value(Controls.resolve(g, "groove"), i); }
+    for i in (compact ? 0 : 4): PerformanceButton {
+        width: 22px;
+        height: control-height;
+        text: i + 1;
+        tint: tint;
+        lit: group-on && running && i == sounding;
+        blink: group-on && i == queued && queued != sounding && Controls.blink;
+        border-color: i == selected ? tint : Theme.border;
+        clicked => { root.choose(i); }
+    }
+    PerformanceButton {
+        width: 46px;
+        height: control-height;
+        text: slot-count + " ▾";
+        tint: tint;
+        lit: sequence;
+        clicked => { picker.show(); }
+    }
+    picker := PopupWindow {
+        y: control-height + 4px;
+        width: 376px;
+        height: native ? 350px : 128px;
+        close-policy: close-on-click-outside;
+        GrooveMenuBackground { }
+        VerticalLayout {
+            padding: 10px;
+            spacing: 8px;
+            HorizontalLayout {
+                height: 25px;
+                Text { horizontal-stretch: 1; text: "GROUP " + group-name + " · " + slot-count + " PATTERNS"; color: root.tint; font-size: 12px; font-weight: 700; vertical-alignment: center; }
+                PerformanceButton { width: 92px; height: 25px; text: "STOP GROUP"; tint: root.tint; lit: group-on; clicked => { root.stop-group(); } }
+            }
+            Text {
+                height: 16px;
+                text: "Edit " + (selected + 1) + "  ·  Playing " + (group-on && running ? sounding + 1 : "—") + "  ·  Queued " + (group-on && queued >= 0 && queued != sounding ? queued + 1 : "—") + "  ·  " + (group-on ? "ON" : "OFF") + " / " + (running ? "PLAY" : "STOP");
+                color: Theme.text-dim;
+                font-size: 10px;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                height: native ? 210px : 48px;
+                for i in slot-count: Rectangle {
+                    property <bool> occupied: native && Controls.value(Controls.resolve(g, "pattern" + (i + 1) + "_occupied"), Controls.tick) > 0;
+                    property <bool> edit: i == selected;
+                    property <bool> play: group-on && running && i == sounding;
+                    property <bool> waiting: group-on && queued >= 0 && i == queued && queued != sounding;
+                    property <string> erase-scope;
+                    property <string> erase-group;
+                    x: mod(i, 4) * (parent.width + 6px) / 4;
+                    y: native ? (3 - floor(i / 4)) * 54px : 0px;
+                    width: (parent.width - 18px) / 4;
+                    height: 48px;
+                    border-radius: 5px;
+                    border-width: edit ? 2px : 1px;
+                    border-color: waiting ? #ff9f0a : edit ? root.tint : play ? #64d98b : Theme.border;
+                    background: edit ? root.tint.with-alpha(0.18) : waiting ? #ff9f0a20 : play ? #64d98b18 : occupied ? Theme.control : Theme.well;
+                    Text { x: 8px; y: 6px; width: parent.width - 16px; height: 15px; text: "Pattern " + (i + 1); color: edit || play ? Theme.text : occupied ? Theme.text : Theme.text-dim; font-size: 11px; font-weight: 700; }
+                    Text { x: 8px; y: 27px; width: parent.width - 16px; height: 12px; text: (edit ? "EDIT · " : "") + (play ? "PLAY" : waiting ? "QUEUED" : !native ? "PATTERN" : occupied ? "READY" : "EMPTY"); color: waiting ? #ff9f0a : play ? #64d98b : Theme.text-dim; font-size: 9px; overflow: elide; }
+                    pta := TouchArea {
+                        mouse-cursor: pointer;
+                        pointer-event(e) => {
+                            if e.kind != PointerEventKind.down { return; }
+                            if e.button == PointerEventButton.left { root.choose(i); }
+                            else if e.button == PointerEventButton.right && native {
+                                erase-scope = "[Groove" + (deck + 1) + "Group" + (selected-group + 1) + "]";
+                                erase-group = group-name;
+                                deletion.show();
+                            }
+                        }
+                    }
+                    deletion := PopupWindow {
+                        x: pta.mouse-x;
+                        y: pta.mouse-y;
+                        width: 218px;
+                        height: 44px;
+                        GrooveMenuBackground { }
+                        GrooveMenuItem {
+                            x: 4px;
+                            y: 4px;
+                            width: parent.width - 8px;
+                            text: "Delete Pattern " + (i + 1);
+                            detail: "Group " + erase-group + " · all Sounds";
+                            clicked => {
+                                Controls.set-value(Controls.resolve(erase-scope, "erase_target"), i);
+                                Controls.set-value(Controls.resolve(erase-scope, "erase_pattern"), 1);
+                                deletion.close();
+                            }
+                        }
+                    }
+                }
+            }
+            if native: HorizontalLayout {
+                height: 26px;
+                spacing: 6px;
+                PerformanceButton { width: 70px; height: 26px; text: "SEQUENCE"; tint: root.tint; lit: sequence; clicked => { Controls.toggle(Controls.resolve(g, "pattern_chain")); } }
+                for edge in 2: PerformanceButton {
+                    horizontal-stretch: 1;
+                    height: 26px;
+                    text: (edge == 0 ? "FROM " + (sequence-start + 1) : "TO " + (sequence-end + 1)) + " ▾";
+                    clicked => { range.show(); }
+                    range := PopupWindow {
+                        y: -248px;
+                        width: 140px;
+                        height: 244px;
+                        GrooveMenuBackground { }
+                        ListView {
+                            x: 4px;
+                            y: 4px;
+                            width: parent.width - 8px;
+                            height: parent.height - 8px;
+                            for at in slot-count: GrooveMenuItem {
+                                text: "Pattern " + (at + 1);
+                                checked: at == (edge == 0 ? sequence-start : sequence-end);
+                                clicked => {
+                                    if edge == 0 {
+                                        Controls.set-value(Controls.resolve(g, "pattern_chain_start"), at);
+                                        if at > sequence-end { Controls.set-value(Controls.resolve(g, "pattern_chain_end"), at); }
+                                    } else {
+                                        Controls.set-value(Controls.resolve(g, "pattern_chain_end"), at);
+                                        if at < sequence-start { Controls.set-value(Controls.resolve(g, "pattern_chain_start"), at); }
+                                    }
+                                    range.close();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if native: Text { height: 14px; text: "Click a slot to select · Right-click to delete"; color: Theme.text-dim; font-size: 10px; vertical-alignment: center; }
+        }
     }
 }

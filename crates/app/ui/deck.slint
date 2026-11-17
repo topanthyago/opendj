@@ -3821,6 +3821,7 @@ component GrooveGroups inherits Rectangle {
         property <string> scope: selected == k ? g : "[Groove" + (deck + 1) + "Group" + (k + 1) + "]";
         property <int> kit: Controls.value(Controls.resolve(scope, "kit"), Controls.tick);
         property <int> pattern: Controls.value(Controls.resolve(scope, "groove_playing"), Controls.tick);
+        property <int> queued: Controls.value(Controls.resolve(scope, "groove_queued"), Controls.tick);
         property <bool> active: Controls.value(Controls.resolve(g, key + "_enabled"), Controls.tick) > 0;
         property <bool> muted: Controls.value(Controls.resolve(g, key + "_mute"), Controls.tick) > 0;
         property <bool> solo: Controls.value(Controls.resolve(g, key + "_solo"), Controls.tick) > 0;
@@ -3835,7 +3836,7 @@ component GrooveGroups inherits Rectangle {
         border-color: selected == k ? group-tint : Theme.border;
         background: group-tint.with-alpha(selected == k ? 0.2 : active ? 0.1 : 0.04);
         Text { x: 7px; y: 3px; height: 12px; text: letter; color: group-tint; font-size: 10px; font-weight: 700; }
-        Text { x: 23px; y: 3px; width: parent.width - 29px; height: 12px; text: ["A", "B", "C", "D"][pattern] + "  " + (muted ? "M " : "") + (solo ? "S " : "") + (active ? "ON" : "OFF"); color: muted ? #ff9f0a : Theme.text-dim; font-size: 9px; overflow: elide; }
+        Text { x: 23px; y: 3px; width: parent.width - 29px; height: 12px; text: "P" + (pattern + 1) + (active && queued >= 0 && queued != pattern ? " →" + (queued + 1) : "") + "  " + (muted ? "M " : "") + (solo ? "S " : "") + (active ? "ON" : "OFF"); color: muted ? #ff9f0a : Theme.text-dim; font-size: 9px; overflow: elide; }
         Text { x: 7px; y: 17px; width: parent.width - 14px; height: 14px; text: GrooveUi.kits[kit].name; color: Theme.text; font-size: 11px; font-weight: selected == k ? 700 : 500; overflow: elide; }
         Rectangle { x: 2px; y: parent.height - 3px; height: 2px; width: (parent.width - 4px) * max(0, min(1, meter)); background: group-tint; }
         gta := TouchArea {
@@ -3863,7 +3864,7 @@ component GrooveGroups inherits Rectangle {
 
 
 // The Groove Box, over the whole deck: a top bar with PLAY, the kit, the
-// library's genre, groove and chain, A to D, the tempo (with SWING) and the three tabs,
+// library's genre, groove and chain, sixteen Pattern slots, the tempo (with SWING) and the three tabs,
 // then the tab: SEQUENCER (sixteen tracks of 16 steps), SYNTH (each track's sound, PITCH,
 // DECAY and TONE) or MIXER (each track's PAN, level, meter, M and S).
 component GrooveBox inherits Rectangle {
@@ -3907,7 +3908,7 @@ component GrooveBox inherits Rectangle {
             height: 30px;
             spacing: 4px;
             Text { width: 44px; text: "PATTERN"; color: Theme.text-dim; font-size: 9px; vertical-alignment: center; }
-            GrooveSlots { g: g; tint: tint; }
+            GrooveSlots { g: g; deck: deck; transport-group: group; compact: root.width < 640px; tint: group-tint; }
             GrooveDice { g: g; width: 30px; height: 30px; tint: tint; }
             GrooveTempo { g: g; width: 60px; height: 30px; tint: tint; }
             Rectangle { horizontal-stretch: 1; }
@@ -3936,10 +3937,13 @@ component GrooveBox inherits Rectangle {
             GrooveTab {
                 width: 88px;
                 height: 32px;
-                text: group-enabled ? "STOP GROUP" : "PLAY GROUP";
+                text: "STOP GROUP";
                 on: group-enabled;
                 tint: group-tint;
-                clicked => { Controls.toggle(Controls.resolve(g, "group_enabled")); }
+                clicked => {
+                    if Controls.value(Controls.resolve(g, "pattern_api_version"), Controls.tick) >= 1 { Controls.set-value(Controls.resolve(g, "pattern_stop"), 1); }
+                    else { Controls.set-value(Controls.resolve(g, "group_enabled"), 0); }
+                }
             }
             GrooveToggle { group: g; key: "group" + (selected-group + 1) + "_mute"; text: "M"; tint: #ff9f0a; width: 22px; }
             GrooveToggle { group: g; key: "group" + (selected-group + 1) + "_solo"; text: "S"; tint: group-tint; width: 22px; }
