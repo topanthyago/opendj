@@ -20,7 +20,7 @@
 //! every step inside it starts its sounds on the frame it falls on, so the
 //! timing is exact to the sample whatever the buffer size.
 //!
-//! **Patterns.** Four grooves (A to D), each sixteen rows (tracks) of 16 steps, kept in
+//! **Patterns.** Sixteen patterns, each sixteen rows (tracks) of 16 steps, kept in
 //! `[GrooveN],patternG_rowR` as 16-bit numbers (bit s on = step s+1 plays)
 //! with `patternG_rowR_soft` and `patternG_rowR_accent` marking the steps
 //! that play softly (half as loud) or accented (a quarter louder), and
@@ -28,7 +28,7 @@
 //! (0-1) lets the groove change by itself as it plays: weak hits drop out,
 //! soft ghost notes come in where the genre puts them, and hits waver in
 //! loudness (see [`crate::groove_dice`]).
-//! `[GrooveN],groove` picks the one playing (0-3); a change while playing
+//! `[GrooveN],groove` picks the one playing (0-15); a change while playing
 //! waits for the next bar. Row N plays the kits' Nth sound
 //! ([`kits::ROLES`]: kick, snare, closed hat, open hat, clap, rim, cowbell)
 //! unless `rowR_sound` picks another; row 8, Cymbal, plays the crash or the
@@ -47,6 +47,8 @@
 //! row plays; `rowR_preview` plays it once, now, and `rowR_meter` (0-1)
 //! shows how loud the row sounds, for the screen. `[GrooveN],kit` picks the
 //! kit. `[GrooveN],position` is the step playing (0-15), −1 when stopped.
+//! `pattern_chain` sequences the inclusive range `pattern_chain_start` to
+//! `pattern_chain_end`, one slot per bar, while the editor keeps `groove`.
 //!
 //! **Fills.** `auto_fill` (1 or 2) plays a fill at the end of every 4th,
 //! 8th and 16th bar (or 2nd, 4th, 8th), `fill` held plays one now, and
@@ -81,7 +83,9 @@ pub const CYMBAL_ROW: usize = 7;
 const CRASH: usize = 7;
 const RIDE: usize = 8;
 pub const STEPS: usize = 16;
-pub const GROOVES: usize = 4;
+pub const GROOVES: usize = 16;
+/// The original library loads four consecutive variations into slots A-D.
+pub const LIBRARY_SET_SIZE: usize = 4;
 
 /// The tempo a Groove Box plays at before anything else sets one.
 pub const DEFAULT_BPM: f64 = 120.0;
@@ -101,6 +105,7 @@ pub struct GrooveControls {
     pub groove: ControlHandle,
     pub groove_queued: ControlHandle,
     pub groove_playing: ControlHandle,
+    pub occupied: [ControlHandle; GROOVES],
     pub genre: ControlHandle,
     pub pattern: ControlHandle,
     pub load: ControlHandle,
@@ -109,6 +114,10 @@ pub struct GrooveControls {
     pub load_set: ControlHandle,
     pub set_pending: ControlHandle,
     pub chain: ControlHandle,
+    /// Sequence consecutive one-bar slots while keeping the editor's selection.
+    pub pattern_chain: ControlHandle,
+    pub pattern_chain_start: ControlHandle,
+    pub pattern_chain_end: ControlHandle,
     pub load_chain: ControlHandle,
     pub bpm: ControlHandle,
     pub swing: ControlHandle,
@@ -176,6 +185,8 @@ pub struct GrooveControls {
     pub meter: [ControlHandle; ROWS],
     /// Plays the row's sound once, now (a step clicked while stopped).
     pub preview: [ControlHandle; ROWS],
+    /// Held while sequencing: erase this Sound only as the playhead reaches it.
+    pub erase_rows: [ControlHandle; ROWS],
 }
 
 pub fn groove_group(deck: usize) -> String {
@@ -202,6 +213,9 @@ impl GrooveControls {
             groove: reg.create(g, "groove", 0.0, 0.0, (GROOVES - 1) as f64, Behavior::Free),
             groove_queued: reg.indicator(g, "groove_queued", (GROOVES - 1) as f64),
             groove_playing: reg.indicator(g, "groove_playing", (GROOVES - 1) as f64),
+            occupied: std::array::from_fn(|p| {
+                reg.indicator(g, &format!("pattern{}_occupied", p + 1), 1.0)
+            }),
             genre: reg.create(g, "genre", 0.0, 0.0, genres - 1.0, Behavior::Free),
             pattern: reg.create(g, "pattern", 1.0, 0.0, most, Behavior::Free),
             load: reg.push(g, "load"),
@@ -210,12 +224,29 @@ impl GrooveControls {
                 "library_set",
                 0.0,
                 0.0,
-                ((most as usize).saturating_sub(1) / GROOVES) as f64,
+                ((most as usize).saturating_sub(1) / LIBRARY_SET_SIZE) as f64,
                 Behavior::Free,
             ),
             load_set: reg.push(g, "load_set"),
             set_pending: reg.indicator(g, "set_pending", 1.0),
             chain: reg.create(g, "chain", 0.0, 0.0, most, Behavior::Free),
+            pattern_chain: reg.toggle(g, "pattern_chain"),
+            pattern_chain_start: reg.create(
+                g,
+                "pattern_chain_start",
+                0.0,
+                0.0,
+                (GROOVES - 1) as f64,
+                Behavior::Free,
+            ),
+            pattern_chain_end: reg.create(
+                g,
+                "pattern_chain_end",
+                (GROOVES - 1) as f64,
+                0.0,
+                (GROOVES - 1) as f64,
+                Behavior::Free,
+            ),
             load_chain: reg.push(g, "load_chain"),
             bpm: reg.create(g, "bpm", DEFAULT_BPM, 40.0, 220.0, Behavior::Linear),
             swing: reg.create(g, "swing", 0.0, 0.0, 0.75, Behavior::Linear),
@@ -371,6 +402,7 @@ impl GrooveControls {
                 )
             }),
             preview: rows(&|r| reg.push(g, &format!("row{}_preview", r + 1))),
+            erase_rows: rows(&|r| reg.toggle(g, &format!("row{}_erase", r + 1))),
         };
         // A new Groove Box opens with the library's first groove.
         if fresh {
@@ -824,8 +856,8 @@ impl BreakDetector {
 fn load_pending_set(c: &GrooveControls, pending: &mut Option<(usize, usize)>) -> bool {
     if let Some((genre, set)) = pending.take() {
         let old_cymbal = c.sound[CYMBAL_ROW].get();
-        for slot in 0..GROOVES {
-            c.load_groove(slot, genre, set * GROOVES + slot + 1);
+        for slot in 0..LIBRARY_SET_SIZE {
+            c.load_groove(slot, genre, set * LIBRARY_SET_SIZE + slot + 1);
         }
         if let Some(defaults) = patterns::set_defaults(genre, set) {
             c.kit.set(defaults.kit as f64);
@@ -882,6 +914,7 @@ pub struct GrooveBox {
     /// The groove playing and the one waiting for the bar.
     playing: usize,
     queued: Option<usize>,
+    groove_seen: u32,
     /// (genre, zero-based group of four) captured by the load pulse.
     pending_set: Option<(usize, usize)>,
     load_set_seen: u32,
@@ -901,6 +934,8 @@ pub struct GrooveBox {
     pad_edit_count: usize,
     /// A controller's pads (see [`crate::groove_pads`]).
     pub pads: PadSurface,
+    /// The bank's Group ERASE hold, independent of editor focus.
+    pub(crate) erase_all: bool,
     /// A live hit recorded into a step still to come: that step skips the
     /// row once, so the hit isn't heard twice.
     skip: [Option<usize>; ROWS],
@@ -935,6 +970,7 @@ impl GrooveBox {
         let c = GrooveControls::new_scoped(reg, group);
         let pads = PadSurface::new_scoped(reg, group);
         let load_set_seen = c.load_set.version();
+        let groove_seen = c.groove.version();
         Self {
             c,
             clock: Clock::default(),
@@ -942,6 +978,7 @@ impl GrooveBox {
             voices: Default::default(),
             playing: 0,
             queued: None,
+            groove_seen,
             pending_set: None,
             load_set_seen,
             breaks: BreakDetector::default(),
@@ -957,6 +994,7 @@ impl GrooveBox {
             pad_edits: [None; MAX_MANUAL_HITS],
             pad_edit_count: 0,
             pads,
+            erase_all: false,
             skip: [None; ROWS],
             key: None,
             dice: Dice::new(Habits::shared(), 0x9e37_79b9 ^ ((deck as u32 + 1) * 7919)),
@@ -1115,11 +1153,11 @@ impl GrooveBox {
             self.c.load_set.set(0.0);
             self.load_set_seen = self.c.load_set.version();
             let set = self.c.library_set.get().round() as usize;
-            let first = set * GROOVES;
+            let first = set * LIBRARY_SET_SIZE;
             // Reject incomplete sets without changing any of the four slots.
             self.pending_set = patterns::library()
                 .get(genre)
-                .filter(|g| first + GROOVES <= g.grooves.len())
+                .filter(|g| first + LIBRARY_SET_SIZE <= g.grooves.len())
                 .map(|_| (genre, set));
             self.c.set_pending.set_bool(self.pending_set.is_some());
         }
@@ -1128,7 +1166,14 @@ impl GrooveBox {
                 self.skip = [None; ROWS];
             }
         }
-        let chained = self.c.chain.get() >= 0.5;
+        let range = self.c.pattern_chain.get_bool().then(|| {
+            let start = self.c.pattern_chain_start.get() as usize;
+            let end = (self.c.pattern_chain_end.get() as usize).max(start);
+            (start, end)
+        });
+        let chained = self.c.chain.get() >= 0.5 && range.is_none();
+        let selected_changed = self.c.groove.version() != self.groove_seen;
+        self.groove_seen = self.c.groove.version();
         if play && !self.was_running {
             self.clock.start(source);
             self.playing = chosen;
@@ -1142,11 +1187,12 @@ impl GrooveBox {
         if !play {
             self.playing = chosen;
         }
-        let in_turn = self.playing == chosen || (chained && self.playing == partner);
+        let in_turn = self.playing == chosen
+            || (chained && self.playing == partner)
+            || (!selected_changed
+                && self.queued.is_none()
+                && range.is_some_and(|(start, end)| (start..=end).contains(&self.playing)));
         self.queued = (!in_turn).then_some(chosen);
-        self.c
-            .groove_queued
-            .set(self.queued.unwrap_or(self.playing) as f64);
         self.last_bpm = source.bpm;
         let mut n = self.take_pads(chosen, !audible);
         if !audible {
@@ -1192,6 +1238,24 @@ impl GrooveBox {
             let step_signals = &mut self.step_signals;
             let step_count = &mut self.step_count;
             let mut crossed_jump = false;
+            let erase_all = self.erase_all;
+            let next_pattern = |playing| {
+                if let Some((start, end)) = range {
+                    if playing < start || playing >= end {
+                        start
+                    } else {
+                        playing + 1
+                    }
+                } else if chained {
+                    if playing == chosen {
+                        partner
+                    } else {
+                        chosen
+                    }
+                } else {
+                    playing
+                }
+            };
             span.steps_with_swing(
                 frames,
                 || c.swing.get(),
@@ -1207,9 +1271,8 @@ impl GrooveBox {
                     if step == 0 || jumped {
                         if let Some(q) = queued.take() {
                             playing = q;
-                        } else if chained && bar_played {
-                            // The chain's two grooves take turns, a bar each.
-                            playing = if playing == chosen { partner } else { chosen };
+                        } else if bar_played {
+                            playing = next_pattern(playing);
                         }
                         if load_pending_set(c, pending_set) {
                             skip.fill(None);
@@ -1220,6 +1283,19 @@ impl GrooveBox {
                     }
                     bar_played = true;
                     last_step = Some(step);
+                    let erasing: [bool; ROWS] =
+                        std::array::from_fn(|row| erase_all || c.erase_rows[row].get_bool());
+                    for (row, &erase) in erasing.iter().enumerate() {
+                        if erase {
+                            for values in [&c.patterns, &c.soft, &c.accent, &c.maybe] {
+                                let cell = &values[playing][row];
+                                cell.set((cell.get() as u32 & !(1 << step)) as f64);
+                            }
+                            if skip[row] == Some(step) {
+                                skip[row] = None;
+                            }
+                        }
+                    }
                     if *step_count < MAX_STEP_SIGNALS {
                         step_signals[*step_count] = GrooveStep {
                             frame,
@@ -1245,6 +1321,9 @@ impl GrooveBox {
                     let rng = &mut dice.rng;
                     let habits = &*dice.habits;
                     for (row, skip) in skip.iter_mut().enumerate() {
+                        if erasing[row] {
+                            continue;
+                        }
                         let bits = c.patterns[playing][row].get() as u32;
                         written[row] = bits;
                         let role = c.role(row);
@@ -1312,7 +1391,7 @@ impl GrooveBox {
                     }
                     *in_fill = fill.is_some() || remix > 0;
                     for (row, &velocity) in play.iter().enumerate() {
-                        if velocity <= 0.0 {
+                        if velocity <= 0.0 || erasing[row] {
                             continue;
                         }
                         let audible = if any_solo {
@@ -1337,8 +1416,8 @@ impl GrooveBox {
             {
                 if let Some(q) = queued.take() {
                     playing = q;
-                } else if chained && bar_played {
-                    playing = if playing == chosen { partner } else { chosen };
+                } else if bar_played {
+                    playing = next_pattern(playing);
                 }
                 if load_pending_set(c, pending_set) {
                     skip.fill(None);
@@ -1365,6 +1444,13 @@ impl GrooveBox {
             self.crash_next = false;
         }
         self.c.groove_playing.set(self.playing as f64);
+        self.c
+            .groove_queued
+            .set(self.queued.unwrap_or(self.playing) as f64);
+        for pattern in 0..GROOVES {
+            self.c.occupied[pattern]
+                .set_bool(self.c.patterns[pattern].iter().any(|row| row.get() != 0.0));
+        }
         self.show_pads(chosen);
         if !audible {
             // The samples are retained by `kits`, so releasing stale native
@@ -1494,7 +1580,7 @@ impl GrooveBox {
                     }
                 }
                 mode::GROOVES => {
-                    if k < GROOVES {
+                    if k < LIBRARY_SET_SIZE {
                         self.c.groove.set(k as f64);
                     } else if k < 4 + kits::KITS.len().min(4) {
                         self.c.kit.set((k - 4) as f64);
@@ -1894,6 +1980,22 @@ mod tests {
     }
 
     #[test]
+    fn all_sixteen_pattern_slots_are_addressable_and_new_slots_are_empty() {
+        let reg = ControlRegistry::default();
+        let c = GrooveControls::new(&reg, 0);
+        assert_eq!(GROOVES, 16);
+        assert_eq!(LIBRARY_SET_SIZE, 4);
+        for slot in LIBRARY_SET_SIZE..GROOVES {
+            assert_eq!(c.tracks(slot), [Track::default(); ROWS]);
+        }
+        c.groove.set(15.0);
+        c.patterns[15][15].set(0x8001 as f64);
+        let restored = GrooveControls::new(&reg, 0);
+        assert_eq!(restored.groove.get(), 15.0);
+        assert_eq!(restored.patterns[15][15].get(), 0x8001 as f64);
+    }
+
+    #[test]
     fn four_pattern_load_is_queued_and_applied_on_the_bar() {
         let (_reg, mut g) = groove_box();
         for slot in 0..GROOVES {
@@ -1902,6 +2004,7 @@ mod tests {
             }
         }
         g.c.patterns[0][0].set(0xffff as f64);
+        g.c.patterns[15][15].set(0x1001 as f64);
         // Start one 16th before the next bar.
         let mut before = vec![[0.0; 2]; 90_000];
         g.render(true, own(120.0), &mut before, |_| {});
@@ -1919,12 +2022,13 @@ mod tests {
         g.render(true, own(120.0), &mut crossing, |f| kicks.push(f));
         assert!(kicks.contains(&3_000), "new hit on the downbeat: {kicks:?}");
         assert!(!g.c.set_pending.get_bool());
-        for slot in 0..GROOVES {
+        for slot in 0..LIBRARY_SET_SIZE {
             let p = patterns::groove(0, 4 + slot).unwrap();
             for row in 0..CYMBAL_ROW {
                 assert_eq!(g.c.tracks(slot)[row].hits, p.rows[row].hits);
             }
         }
+        assert_eq!(g.c.patterns[15][15].get(), 0x1001 as f64);
         // A pulse for an incomplete group leaves all four slots unchanged.
         let saved = std::array::from_fn::<_, GROOVES, _>(|p| g.c.tracks(p));
         g.c.library_set.set(2.0);
@@ -1943,6 +2047,54 @@ mod tests {
             g.c.tracks(0)[0].hits,
             patterns::groove(0, 0).unwrap().rows[0].hits
         );
+    }
+
+    #[test]
+    fn progressive_erase_changes_only_the_playing_patterns_passing_step() {
+        let (_reg, mut g) = groove_box();
+        for slot in [0, 15] {
+            for values in [&g.c.patterns, &g.c.soft, &g.c.accent, &g.c.maybe] {
+                values[slot][0].set(0xffff as f64);
+            }
+        }
+        let mut out = vec![[0.0; 2]; 512];
+        g.render(true, own(120.0), &mut out, |_| {});
+        g.c.groove.set(15.0);
+        g.c.erase_rows[0].set_bool(true);
+        g.c.fill.set_bool(true);
+        g.c.vary.set(1.0);
+        let mut out = vec![[0.0; 2]; 6_000];
+        let mut kicks = 0;
+        g.render(true, own(120.0), &mut out, |_| kicks += 1);
+        assert_eq!(g.c.groove_playing.get(), 0.0);
+        assert_eq!(g.c.groove_queued.get(), 15.0);
+        assert_eq!(kicks, 0, "ERASE suppresses fills and generated hits too");
+        for values in [&g.c.patterns, &g.c.soft, &g.c.accent, &g.c.maybe] {
+            assert_eq!(values[0][0].get() as u32, 0xffff & !(1 << 1));
+            assert_eq!(values[15][0].get() as u32, 0xffff);
+        }
+        g.c.erase_rows[0].set_bool(false);
+        g.c.fill.set_bool(false);
+        g.c.vary.set(0.0);
+        g.c.maybe[0][0].set(0.0);
+        g.render(true, own(120.0), &mut out, |_| kicks += 1);
+        assert_eq!(kicks, 1, "release lets the next event sound");
+        assert_ne!(g.c.patterns[0][0].get() as u32 & (1 << 2), 0);
+    }
+
+    #[test]
+    fn stopped_erase_preserves_notes_and_allows_manual_sound() {
+        let (_reg, mut g) = groove_box();
+        g.c.patterns[0][0].set(0xffff as f64);
+        g.c.erase_rows[0].set_bool(true);
+        g.erase_all = true;
+        g.pads.c.mode.set(mode::PLAY as f64);
+        g.pads.c.pads[0].set(1.0);
+        let mut out = vec![[0.0; 2]; 512];
+        g.render(false, own(120.0), &mut out, |_| {});
+        assert_eq!(g.c.patterns[0][0].get() as u32, 0xffff);
+        assert_eq!(g.played[0], 1);
+        assert!(out.iter().any(|frame| frame[0] != 0.0));
     }
 
     #[test]

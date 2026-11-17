@@ -1,6 +1,11 @@
 //! Eight independently sequenced groups on the original Groove engine.
 //! The existing deck controls edit the selected group. Each group's own
 //! controls remain addressable and continue playing when focus moves.
+//! `pattern_target` and `pattern_select` assign one of sixteen slots and
+//! enable the focused Group. `pattern_stop` disables that Group. The global
+//! transport is independent. `erase_target` and `erase_pattern` also exist
+//! in each Group scope, with `erase_serial` acknowledging completion.
+//! `rowR_erase` and `groupK_erase` are continuous playhead erasure holds.
 
 use std::sync::Arc;
 
@@ -26,6 +31,12 @@ pub fn register(registry: &ControlRegistry, deck: usize) {
     let scope = groove_group(deck);
     GrooveControls::new(registry, deck);
     crate::groove_pads::PadControls::new(registry, deck);
+    registry
+        .indicator(&scope, "pattern_api_version", 1.0)
+        .set(1.0);
+    registry
+        .indicator(&scope, "pattern_slots", GROOVES as f64)
+        .set(GROOVES as f64);
     registry.create(
         &scope,
         "group_selected",
@@ -50,6 +61,7 @@ pub fn register(registry: &ControlRegistry, deck: usize) {
         );
         registry.toggle(&scope, &format!("group{}_mute", index + 1));
         registry.toggle(&scope, &format!("group{}_solo", index + 1));
+        registry.toggle(&scope, &format!("group{}_erase", index + 1));
         registry.create(
             &scope,
             &format!("group{}_level", index + 1),
@@ -88,6 +100,9 @@ pub fn kept_keys() -> Vec<String> {
         "pattern",
         "library_set",
         "chain",
+        "pattern_chain",
+        "pattern_chain_start",
+        "pattern_chain_end",
         "swing",
         "kick_key",
         "vary",
@@ -150,6 +165,60 @@ fn handles(registry: &ControlRegistry, scope: &str, names: &[String]) -> Vec<Con
         .collect()
 }
 
+fn take_pulse(control: &ControlHandle, seen: &mut u32) -> bool {
+    let pressed = control.get_bool() || control.version() != *seen;
+    control.set_bool(false);
+    *seen = control.version();
+    pressed
+}
+
+struct PatternErase {
+    command: ControlHandle,
+    seen: u32,
+    target: ControlHandle,
+    serial: ControlHandle,
+    last_target: ControlHandle,
+}
+
+impl PatternErase {
+    fn new(registry: &ControlRegistry, scope: &str) -> Self {
+        let command = registry.push(scope, "erase_pattern");
+        Self {
+            seen: command.version(),
+            command,
+            target: registry.create(
+                scope,
+                "erase_target",
+                -1.0,
+                -1.0,
+                (GROOVES - 1) as f64,
+                Behavior::Free,
+            ),
+            serial: registry.indicator(scope, "erase_serial", u32::MAX as f64),
+            last_target: registry.indicator(scope, "erase_last_target", (GROOVES - 1) as f64),
+        }
+    }
+
+    fn take(&mut self, current: usize) -> Option<usize> {
+        if !take_pulse(&self.command, &mut self.seen) {
+            return None;
+        }
+        let target = if self.target.get() < 0.0 {
+            current
+        } else {
+            self.target.get() as usize
+        };
+        self.target.set(-1.0);
+        Some(target)
+    }
+
+    fn confirm(&self, target: usize) {
+        self.last_target.set(target as f64);
+        self.serial
+            .set((self.serial.get() as u32).wrapping_add(1) as f64);
+    }
+}
+
 struct Group {
     engine: GrooveBox,
     saved: Vec<ControlHandle>,
@@ -157,6 +226,8 @@ struct Group {
     enabled: ControlHandle,
     mute: ControlHandle,
     solo: ControlHandle,
+    erase: ControlHandle,
+    pattern_erase: PatternErase,
     level: ControlHandle,
     color: ControlHandle,
     meter: ControlHandle,
@@ -166,6 +237,19 @@ struct Group {
 }
 
 impl Group {
+    fn erase_pattern(&self, pattern: usize) {
+        let c = &self.engine.c;
+        for row in 0..ROWS {
+            for values in [&c.patterns, &c.soft, &c.accent, &c.maybe] {
+                values[pattern][row].set(0.0);
+            }
+        }
+        if c.groove.get() as usize == pattern {
+            self.enabled.set_bool(false);
+        }
+        self.pattern_erase.confirm(pattern);
+    }
+
     fn state(&self) -> impl Iterator<Item = &ControlHandle> {
         self.saved
             .iter()
@@ -198,6 +282,7 @@ pub struct GrooveBanks {
     editor_actions: Vec<ControlHandle>,
     actions_seen: Vec<u32>,
     pulse_actions: Vec<bool>,
+    erase_rows_seen: [u32; ROWS],
     editor_pad_mode: ControlHandle,
     editor_record: ControlHandle,
     editor_colors: [ControlHandle; ROWS],
@@ -206,7 +291,12 @@ pub struct GrooveBanks {
     running: bool,
     undo: ControlHandle,
     redo: ControlHandle,
-    erase: ControlHandle,
+    erase: PatternErase,
+    pattern_target: ControlHandle,
+    pattern_select: ControlHandle,
+    pattern_select_seen: u32,
+    pattern_stop: ControlHandle,
+    pattern_stop_seen: u32,
     copy: ControlHandle,
     copy_kind: ControlHandle,
     copy_source: ControlHandle,
@@ -298,6 +388,8 @@ impl GrooveBanks {
                 }),
                 mute: registry.toggle(&scope, &format!("group{}_mute", index + 1)),
                 solo: registry.toggle(&scope, &format!("group{}_solo", index + 1)),
+                erase: registry.toggle(&scope, &format!("group{}_erase", index + 1)),
+                pattern_erase: PatternErase::new(registry, &group),
                 level: registry.create(
                     &scope,
                     &format!("group{}_level", index + 1),
@@ -334,6 +426,9 @@ impl GrooveBanks {
             Behavior::Free,
         );
         let group_enabled = registry.create(&scope, "group_enabled", 1.0, 0.0, 1.0, Behavior::Free);
+        let erase_rows_seen = std::array::from_fn(|row| c.erase_rows[row].version());
+        let pattern_select = registry.push(&scope, "pattern_select");
+        let pattern_stop = registry.push(&scope, "pattern_stop");
         let total = (editor.len() + 5 + ROWS) * GROUPS;
         let mut this = Self {
             c,
@@ -358,6 +453,7 @@ impl GrooveBanks {
                 .iter()
                 .map(|name| name != "dice_row" && name != "dice" && !name.starts_with("pad"))
                 .collect(),
+            erase_rows_seen,
             editor,
             editor_actions,
             editor_pad_mode: registry.get(&scope, "pad_mode").expect("Groove pad mode"),
@@ -372,7 +468,19 @@ impl GrooveBanks {
             running: false,
             undo: registry.push(&scope, "undo"),
             redo: registry.push(&scope, "redo"),
-            erase: registry.push(&scope, "erase_pattern"),
+            erase: PatternErase::new(registry, &scope),
+            pattern_target: registry.create(
+                &scope,
+                "pattern_target",
+                0.0,
+                0.0,
+                (GROOVES - 1) as f64,
+                Behavior::Free,
+            ),
+            pattern_select_seen: pattern_select.version(),
+            pattern_select,
+            pattern_stop_seen: pattern_stop.version(),
+            pattern_stop,
             copy: registry.push(&scope, "copy"),
             copy_kind: registry.create(&scope, "copy_kind", 0.0, 0.0, 2.0, Behavior::Free),
             copy_source: registry.create(&scope, "copy_source", 0.0, 0.0, 15.0, Behavior::Free),
@@ -416,6 +524,9 @@ impl GrooveBanks {
             for pad in &group.engine.pads.c.pads {
                 pad.set(0.0);
             }
+            for erase in &group.engine.c.erase_rows {
+                erase.set_bool(false);
+            }
             for (control, seen) in self.editor_actions.iter().zip(&mut self.actions_seen) {
                 if control.version() == *seen {
                     control.set(0.0);
@@ -426,6 +537,7 @@ impl GrooveBanks {
             self.show_selected(false);
         }
         let group = &self.groups[self.selected_index];
+        let pattern_selected = self.editor[1].version() != self.editor_seen[1];
         let kit_only = self.editor[0].version() != self.editor_seen[0]
             && self
                 .editor_sound_indices
@@ -452,6 +564,23 @@ impl GrooveBanks {
         if self.group_enabled.version() != self.last_enabled {
             group.enabled.set(self.group_enabled.get());
             self.last_enabled = self.group_enabled.version();
+        }
+        if pattern_selected {
+            group.enabled.set_bool(true);
+        }
+        for ((source, seen), target) in self
+            .c
+            .erase_rows
+            .iter()
+            .zip(&mut self.erase_rows_seen)
+            .zip(&group.engine.c.erase_rows)
+        {
+            if source.version() != *seen {
+                // Continuous holds use their final state, including a complete
+                // press/release that happened between audio buffers.
+                target.set(source.get());
+                *seen = source.version();
+            }
         }
         for (((source, seen), target), pulse) in self
             .editor_actions
@@ -487,6 +616,21 @@ impl GrooveBanks {
                 target.set(source.get());
                 *seen = target.version();
             }
+        }
+        for ((target, seen), source) in self
+            .c
+            .erase_rows
+            .iter()
+            .zip(&mut self.erase_rows_seen)
+            .zip(&group.engine.c.erase_rows)
+        {
+            if force || target.version() == *seen {
+                target.set(source.get());
+                *seen = target.version();
+            }
+        }
+        for (target, source) in self.c.occupied.iter().zip(&group.engine.c.occupied) {
+            target.set(source.get());
         }
         if force || self.group_enabled.version() == self.last_enabled {
             self.group_enabled.set(group.enabled.get());
@@ -562,6 +706,15 @@ impl GrooveBanks {
     }
 
     fn edits(&mut self) {
+        if take_pulse(&self.pattern_select, &mut self.pattern_select_seen) {
+            let group = &self.groups[self.selected_index];
+            group.engine.c.pattern_chain.set_bool(false);
+            group.engine.c.groove.set(self.pattern_target.get());
+            group.enabled.set_bool(true);
+        }
+        if take_pulse(&self.pattern_stop, &mut self.pattern_stop_seen) {
+            self.groups[self.selected_index].enabled.set_bool(false);
+        }
         if self.undo.get_bool() {
             self.undo.set_bool(false);
             if self.cursor > 0 {
@@ -576,15 +729,17 @@ impl GrooveBanks {
                 self.restore();
             }
         }
-        if self.erase.get_bool() {
-            self.erase.set_bool(false);
-            let group = &self.groups[self.selected_index].engine.c;
-            let pattern = group.groove.get() as usize;
-            for row in 0..ROWS {
-                group.patterns[pattern][row].set(0.0);
-                group.soft[pattern][row].set(0.0);
-                group.accent[pattern][row].set(0.0);
-                group.maybe[pattern][row].set(0.0);
+        let selected = &self.groups[self.selected_index];
+        if let Some(pattern) = self.erase.take(selected.engine.c.groove.get() as usize) {
+            selected.erase_pattern(pattern);
+            self.erase.confirm(pattern);
+        }
+        for group in &mut self.groups {
+            if let Some(pattern) = group
+                .pattern_erase
+                .take(group.engine.c.groove.get() as usize)
+            {
+                group.erase_pattern(pattern);
             }
         }
         if self.copy.get_bool() {
@@ -666,6 +821,7 @@ impl GrooveBanks {
             }
             group.was_enabled = enabled;
             group.engine.key = self.key;
+            group.engine.erase_all = group.erase.get_bool();
             group.engine.c.bpm.set(source.bpm);
             group.engine.c.fill.set(self.c.fill.get());
             group.engine.c.remix.set(self.c.remix.get());
@@ -723,7 +879,19 @@ impl GrooveBanks {
             }
         }
         self.last_bpm = source.bpm;
-        self.remember();
+        // Keep all changes made by one continuous ERASE hold in a single
+        // preallocated history entry, committed after the final release.
+        if !self.groups.iter().any(|group| {
+            group.erase.get_bool()
+                || group
+                    .engine
+                    .c
+                    .erase_rows
+                    .iter()
+                    .any(ControlHandle::get_bool)
+        }) {
+            self.remember();
+        }
         self.show_selected(false);
     }
 }
@@ -774,6 +942,326 @@ mod tests {
             |_| {},
         );
         out
+    }
+
+    fn advance(bank: &mut GrooveBanks, frames: usize) {
+        let mut out = vec![[0.0; 2]; BLOCK];
+        let mut remaining = frames;
+        while remaining > 0 {
+            let count = remaining.min(BLOCK);
+            bank.render(
+                true,
+                Source {
+                    bpm: 120.0,
+                    beat: None,
+                },
+                &mut out[..count],
+                |_| {},
+            );
+            remaining -= count;
+        }
+    }
+
+    #[test]
+    fn selecting_a_loaded_pattern_enables_its_group_and_preserves_stopped_transport() {
+        let (registry, mut bank) = fixture();
+        c(&registry, "group_enabled").set_bool(false);
+        c(&registry, "pattern16_row16").set(0x8000 as f64);
+        render(&mut bank);
+        c(&registry, "pattern_target").set(15.0);
+        c(&registry, "pattern_select").set_bool(true);
+        c(&registry, "pattern_select").set_bool(false);
+        render(&mut bank);
+        assert_eq!(c(&registry, "groove").get(), 15.0);
+        assert!(c(&registry, "group_enabled").get_bool());
+        assert!(!bank.running);
+        assert!(!bank.groups[0].engine.clock.running);
+        assert_eq!(c(&registry, "pattern16_occupied").get(), 1.0);
+        assert_eq!(c(&registry, "pattern_slots").get(), 16.0);
+        assert_eq!(c(&registry, "pattern_api_version").get(), 1.0);
+        assert!(kept_keys()
+            .iter()
+            .any(|name| name == "pattern16_row16_maybe"));
+    }
+
+    #[test]
+    fn legacy_editor_selection_enables_a_disabled_group() {
+        let (registry, mut bank) = fixture();
+        c(&registry, "group_enabled").set_bool(false);
+        render(&mut bank);
+        c(&registry, "groove").set(1.0);
+        render(&mut bank);
+        assert!(c(&registry, "group_enabled").get_bool());
+        assert_eq!(bank.groups[0].engine.c.groove.get(), 1.0);
+    }
+
+    #[test]
+    fn native_pattern_selection_keeps_the_existing_bar_quantization() {
+        let (registry, mut bank) = fixture();
+        c(&registry, "pattern16_row1").set(0x5555 as f64);
+        advance(&mut bank, BLOCK);
+        c(&registry, "pattern_target").set(15.0);
+        c(&registry, "pattern_select").set_bool(true);
+        advance(&mut bank, BLOCK);
+        assert_eq!(c(&registry, "groove").get(), 15.0);
+        assert_eq!(c(&registry, "groove_playing").get(), 0.0);
+        assert_eq!(c(&registry, "groove_queued").get(), 15.0);
+        advance(&mut bank, 96_000 - 2 * BLOCK);
+        assert_eq!(c(&registry, "groove_playing").get(), 0.0);
+        advance(&mut bank, 1);
+        assert_eq!(c(&registry, "groove_playing").get(), 15.0);
+        assert!(bank.running);
+    }
+
+    #[test]
+    fn enabling_a_group_in_a_running_transport_waits_for_the_downbeat() {
+        let (registry, mut bank) = fixture();
+        c(&registry, "group_enabled").set_bool(false);
+        c(&registry, "pattern16_row1").set(0xffff as f64);
+        advance(&mut bank, BLOCK);
+        c(&registry, "pattern_target").set(15.0);
+        c(&registry, "pattern_select").set_bool(true);
+        advance(&mut bank, BLOCK);
+        assert!(c(&registry, "group_enabled").get_bool());
+        assert!(bank.running);
+        assert_eq!(c(&registry, "position").get(), -1.0);
+        advance(&mut bank, 96_000 - 2 * BLOCK);
+        assert_eq!(c(&registry, "position").get(), -1.0);
+        advance(&mut bank, 512);
+        assert_eq!(c(&registry, "position").get(), 0.0);
+    }
+
+    #[test]
+    fn targeted_delete_preserves_the_playing_pattern_kit_mix_and_other_groups() {
+        let (registry, mut bank) = fixture();
+        c(&registry, "pattern1_row1").set(0x1111 as f64);
+        c(&registry, "pattern16_row16").set(0xffff as f64);
+        c(&registry, "kit").set(1.0);
+        c(&registry, "row16_level").set(0.75);
+        bank.groups[1].engine.c.patterns[15][15].set(0x4444 as f64);
+        advance(&mut bank, BLOCK);
+        c(&registry, "erase_target").set(15.0);
+        c(&registry, "erase_pattern").set_bool(true);
+        c(&registry, "erase_pattern").set_bool(false);
+        advance(&mut bank, BLOCK);
+        assert_eq!(c(&registry, "pattern16_row16").get(), 0.0);
+        assert_eq!(c(&registry, "pattern1_row1").get(), 0x1111 as f64);
+        assert_eq!(c(&registry, "groove").get(), 0.0);
+        assert_eq!(c(&registry, "groove_playing").get(), 0.0);
+        assert!(c(&registry, "group_enabled").get_bool());
+        assert_eq!(c(&registry, "kit").get(), 1.0);
+        assert_eq!(c(&registry, "row16_level").get(), 0.75);
+        assert_eq!(
+            bank.groups[1].engine.c.patterns[15][15].get(),
+            0x4444 as f64
+        );
+        assert_eq!(c(&registry, "erase_last_target").get(), 15.0);
+        assert_eq!(c(&registry, "erase_target").get(), -1.0);
+        assert_eq!(c(&registry, "erase_serial").get(), 1.0);
+        advance(&mut bank, BLOCK);
+        assert_eq!(c(&registry, "erase_serial").get(), 1.0);
+    }
+
+    #[test]
+    fn deleting_the_assigned_pattern_stops_only_its_group_and_is_undoable() {
+        let (registry, mut bank) = fixture();
+        c(&registry, "pattern1_row1").set(0x1111 as f64);
+        c(&registry, "group2_enabled").set_bool(true);
+        bank.groups[1].engine.c.patterns[0][0].set(0x5555 as f64);
+        advance(&mut bank, BLOCK);
+        c(&registry, "erase_pattern").set_bool(true);
+        advance(&mut bank, BLOCK);
+        assert!(!c(&registry, "group1_enabled").get_bool());
+        assert!(c(&registry, "group2_enabled").get_bool());
+        assert!(bank.groups[1].engine.clock.running);
+        assert!(bank.running);
+        assert_eq!(bank.groups[1].engine.c.patterns[0][0].get(), 0x5555 as f64);
+        c(&registry, "undo").set_bool(true);
+        render(&mut bank);
+        assert!(c(&registry, "group1_enabled").get_bool());
+        assert_eq!(c(&registry, "pattern1_row1").get(), 0x1111 as f64);
+        c(&registry, "pattern_stop").set_bool(true);
+        c(&registry, "pattern_stop").set_bool(false);
+        render(&mut bank);
+        assert!(!c(&registry, "group1_enabled").get_bool());
+        assert_eq!(c(&registry, "pattern1_row1").get(), 0x1111 as f64);
+    }
+
+    #[test]
+    fn group_erase_removes_only_passing_events_without_changing_focus() {
+        let (registry, mut bank) = fixture();
+        c(&registry, "pattern1_row1").set(0xffff as f64);
+        c(&registry, "group2_enabled").set_bool(true);
+        for row in 0..ROWS {
+            for values in [
+                &bank.groups[1].engine.c.patterns,
+                &bank.groups[1].engine.c.soft,
+                &bank.groups[1].engine.c.accent,
+                &bank.groups[1].engine.c.maybe,
+            ] {
+                values[0][row].set(0xffff as f64);
+            }
+        }
+        advance(&mut bank, BLOCK);
+        c(&registry, "group2_erase").set_bool(true);
+        advance(&mut bank, BLOCK);
+        assert_eq!(c(&registry, "group_selected").get(), 0.0);
+        assert_eq!(c(&registry, "pattern1_row1").get() as u32, 0xffff);
+        for row in 0..ROWS {
+            for values in [
+                &bank.groups[1].engine.c.patterns,
+                &bank.groups[1].engine.c.soft,
+                &bank.groups[1].engine.c.accent,
+                &bank.groups[1].engine.c.maybe,
+            ] {
+                assert_eq!(values[0][row].get() as u32, 0xffff & !(1 << 1));
+            }
+        }
+        c(&registry, "group2_erase").set_bool(false);
+        advance(&mut bank, BLOCK);
+        assert_ne!(
+            bank.groups[1].engine.c.patterns[0][0].get() as u32 & (1 << 2),
+            0
+        );
+    }
+
+    #[test]
+    fn a_held_erase_across_patterns_is_one_undo_with_exact_assignment_restore() {
+        let (registry, mut bank) = fixture();
+        for slot in [0, 1] {
+            for values in [
+                &bank.c.patterns,
+                &bank.c.soft,
+                &bank.c.accent,
+                &bank.c.maybe,
+            ] {
+                values[slot][0].set(0xffff as f64);
+            }
+        }
+        render(&mut bank);
+        advance(&mut bank, BLOCK);
+        let before = bank.cursor;
+        c(&registry, "row1_erase").set_bool(true);
+        advance(&mut bank, BLOCK * 2);
+        c(&registry, "pattern_target").set(1.0);
+        c(&registry, "pattern_select").set_bool(true);
+        advance(&mut bank, 96_000);
+        assert_eq!(bank.cursor, before, "the gesture is still open");
+        assert_ne!(c(&registry, "pattern1_row1").get() as u32, 0xffff);
+        assert_ne!(c(&registry, "pattern2_row1").get() as u32, 0xffff);
+        c(&registry, "row1_erase").set_bool(false);
+        advance(&mut bank, 512);
+        assert_eq!(bank.cursor, before + 1);
+        let erased = [bank.c.tracks(0), bank.c.tracks(1)];
+        c(&registry, "undo").set_bool(true);
+        render(&mut bank);
+        assert_eq!(c(&registry, "groove").get(), 0.0);
+        assert!(c(&registry, "group_enabled").get_bool());
+        for slot in [0, 1] {
+            for values in [
+                &bank.c.patterns,
+                &bank.c.soft,
+                &bank.c.accent,
+                &bank.c.maybe,
+            ] {
+                assert_eq!(values[slot][0].get() as u32, 0xffff);
+            }
+        }
+        c(&registry, "redo").set_bool(true);
+        render(&mut bank);
+        assert_eq!(c(&registry, "groove").get(), 1.0);
+        assert_eq!([bank.c.tracks(0), bank.c.tracks(1)], erased);
+    }
+
+    #[test]
+    fn completed_erase_holds_never_stick_and_focus_change_releases_old_rows() {
+        let (registry, mut bank) = fixture();
+        c(&registry, "pattern1_row1").set(0xffff as f64);
+        c(&registry, "row1_erase").set_bool(true);
+        c(&registry, "row1_erase").set_bool(false);
+        c(&registry, "group1_erase").set_bool(true);
+        c(&registry, "group1_erase").set_bool(false);
+        advance(&mut bank, BLOCK * 2);
+        assert_eq!(c(&registry, "pattern1_row1").get() as u32, 0xffff);
+        assert!(!bank.groups[0].engine.c.erase_rows[0].get_bool());
+        c(&registry, "row1_erase").set_bool(true);
+        advance(&mut bank, BLOCK);
+        c(&registry, "group_selected").set(1.0);
+        advance(&mut bank, BLOCK);
+        assert!(!bank.groups[0].engine.c.erase_rows[0].get_bool());
+        assert!(!bank.groups[1].engine.c.erase_rows[0].get_bool());
+        assert!(!c(&registry, "row1_erase").get_bool());
+    }
+
+    #[test]
+    fn scoped_delete_and_short_row_clear_keep_their_group_when_focus_changes() {
+        let (registry, mut bank) = fixture();
+        c(&registry, "pattern1_row16").set(0xffff as f64);
+        c(&registry, "pattern16_row1").set(0x1111 as f64);
+        bank.groups[1].engine.c.patterns[15][0].set(0x2222 as f64);
+        render(&mut bank);
+        let scope = group_scope(0, 0);
+        let scoped = |name| registry.get(&scope, name).unwrap();
+        scoped("erase_target").set(15.0);
+        scoped("erase_pattern").set_bool(true);
+        scoped("erase_pattern").set_bool(false);
+        scoped("row_selected").set(16.0);
+        scoped("row_clear").set_bool(true);
+        scoped("row_clear").set_bool(false);
+        c(&registry, "group_selected").set(1.0);
+        render(&mut bank);
+        assert_eq!(bank.groups[0].engine.c.patterns[0][15].get(), 0.0);
+        assert_eq!(bank.groups[0].engine.c.patterns[15][0].get(), 0.0);
+        assert_eq!(bank.groups[1].engine.c.patterns[15][0].get(), 0x2222 as f64);
+        assert_eq!(scoped("erase_last_target").get(), 15.0);
+        assert_eq!(scoped("erase_serial").get(), 1.0);
+        assert_eq!(c(&registry, "group_selected").get(), 1.0);
+        render(&mut bank);
+        assert_eq!(scoped("erase_serial").get(), 1.0);
+    }
+
+    #[test]
+    fn range_chain_cycles_one_bar_slots_and_manual_selection_exits_it() {
+        let (registry, mut bank) = fixture();
+        c(&registry, "groove").set(4.0);
+        c(&registry, "pattern_chain_start").set(4.0);
+        c(&registry, "pattern_chain_end").set(6.0);
+        c(&registry, "pattern_chain").set_bool(true);
+        render(&mut bank);
+        for playing in [4.0, 5.0, 6.0, 4.0] {
+            advance(&mut bank, 96_000);
+            assert_eq!(c(&registry, "groove_playing").get(), playing);
+            assert_eq!(c(&registry, "groove_queued").get(), playing);
+            assert_eq!(c(&registry, "groove").get(), 4.0);
+        }
+        c(&registry, "pattern_target").set(15.0);
+        c(&registry, "pattern_select").set_bool(true);
+        advance(&mut bank, BLOCK);
+        assert!(!c(&registry, "pattern_chain").get_bool());
+        assert_eq!(c(&registry, "groove_playing").get(), 15.0);
+        assert_eq!(c(&registry, "groove").get(), 15.0);
+        assert!(kept_keys().iter().any(|name| name == "pattern_chain_end"));
+    }
+
+    #[test]
+    fn explicit_slot_inside_a_range_takes_priority_at_the_next_bar() {
+        let (registry, mut bank) = fixture();
+        c(&registry, "groove").set(13.0);
+        c(&registry, "pattern_chain_start").set(13.0);
+        c(&registry, "pattern_chain_end").set(15.0);
+        c(&registry, "pattern_chain").set_bool(true);
+        advance(&mut bank, BLOCK);
+        c(&registry, "groove").set(15.0);
+        advance(&mut bank, BLOCK);
+        assert_eq!(c(&registry, "groove_playing").get(), 13.0);
+        assert_eq!(c(&registry, "groove_queued").get(), 15.0);
+        advance(&mut bank, 96_000 - 2 * BLOCK + 1);
+        assert_eq!(c(&registry, "groove_playing").get(), 15.0);
+        advance(&mut bank, 96_000);
+        assert_eq!(c(&registry, "groove_playing").get(), 13.0);
+        assert_eq!(c(&registry, "groove_queued").get(), 13.0);
+        assert_eq!(c(&registry, "groove").get(), 15.0);
+        assert!(c(&registry, "pattern_chain").get_bool());
     }
 
     #[test]

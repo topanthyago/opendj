@@ -129,7 +129,7 @@ pub fn set_defaults(genre: usize, set: usize) -> Option<&'static SetDefaults> {
         let library = library();
         let mut out: Vec<Vec<Option<SetDefaults>>> = library
             .iter()
-            .map(|g| vec![None; g.grooves.len() / crate::groove::GROOVES])
+            .map(|g| vec![None; g.grooves.len() / crate::groove::LIBRARY_SET_SIZE])
             .collect();
         let Ok(catalog) = serde_json::from_str::<serde_json::Value>(SET_CATALOG) else {
             return out;

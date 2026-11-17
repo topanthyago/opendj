@@ -26,7 +26,7 @@
 
 use opendj_control::{Behavior, ControlHandle, ControlRegistry};
 
-use crate::groove::{groove_group, GROOVES, ROWS, STEPS};
+use crate::groove::{groove_group, LIBRARY_SET_SIZE, ROWS, STEPS};
 
 /// The rows the pads play in Play mode.
 pub const PLAY_ROWS: usize = ROWS;
@@ -111,6 +111,7 @@ pub struct PadSurface {
     pub c: PadControls,
     last: [f64; PADS],
     seen: [u32; PADS],
+    clear_seen: u32,
 }
 
 impl PadSurface {
@@ -121,10 +122,12 @@ impl PadSurface {
     pub fn new_scoped(reg: &ControlRegistry, group: &str) -> Self {
         let c = PadControls::new_scoped(reg, group);
         let seen = std::array::from_fn(|k| c.pads[k].version());
+        let clear_seen = c.row_clear.version();
         Self {
             c,
             last: [0.0; PADS],
             seen,
+            clear_seen,
         }
     }
 
@@ -132,7 +135,7 @@ impl PadSurface {
         (self.c.mode.get().round() as u8).min(mode::GROOVES)
     }
 
-    /// The selected row, 0-3.
+    /// The selected row, 0-15.
     pub fn row(&self) -> usize {
         (self.c.row.get().round() as usize).clamp(1, ROWS) - 1
     }
@@ -170,11 +173,12 @@ impl PadSurface {
     }
 
     /// Whether `row_clear` was pressed (and lets it go).
-    pub fn take_clear(&self) -> bool {
-        let on = self.c.row_clear.get_bool();
+    pub fn take_clear(&mut self) -> bool {
+        let on = self.c.row_clear.get_bool() || self.c.row_clear.version() != self.clear_seen;
         if on {
             self.c.row_clear.set(0.0);
         }
+        self.clear_seen = self.c.row_clear.version();
         on
     }
 
@@ -220,7 +224,7 @@ pub fn colors(v: &View) -> [u8; PADS] {
             }
         }
         mode::GROOVES => {
-            if k < GROOVES {
+            if k < LIBRARY_SET_SIZE {
                 if v.queued == Some(k) {
                     light::QUEUED
                 } else if k == v.playing {
