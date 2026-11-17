@@ -27,7 +27,7 @@ use std::fs::File;
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -416,14 +416,33 @@ impl Recorder {
                 .spawn(move || write_audio(inner, feed, sink, settings, base, parts, stop))
                 .map_err(|e| e.to_string())?
         };
+        let (ready, ready_rx) = mpsc::sync_channel(1);
         let logger = {
             let inner = self.0.clone();
             let stop = stop.clone();
             let parts = parts.clone();
             std::thread::Builder::new()
                 .name("record-log".into())
-                .spawn(move || log_controls(inner, log, loads_rx, base, parts, stop))
-                .map_err(|e| e.to_string())?
+                .spawn(move || log_controls(inner, log, loads_rx, base, parts, stop, ready))
+                .map_err(|e| e.to_string())
+        };
+        let logger = logger.and_then(|logger| match ready_rx.recv() {
+            Ok(()) => Ok(logger),
+            Err(_) => {
+                let _ = logger.join();
+                Err("the recording logger could not initialize".into())
+            }
+        });
+        let logger = match logger {
+            Ok(logger) => logger,
+            Err(error) => {
+                stop.store(true, Ordering::Release);
+                // The writer returns its feed under this mutex when it exits.
+                drop(state);
+                let _ = writer.join();
+                self.fail(error.clone());
+                return Err(error);
+            }
         };
         self.0.shared.active.store(true, Ordering::Release);
         self.0.status.set(2.0);
@@ -906,7 +925,9 @@ fn log_controls(
     base: PathBuf,
     parts: Arc<Mutex<Vec<Part>>>,
     stop: Arc<AtomicBool>,
+    ready: SyncSender<()>,
 ) {
+    let mut ready = Some(ready);
     let mut out = BufWriter::new(file);
     let Some(registry) = inner.registry.upgrade() else {
         return;
@@ -1034,6 +1055,11 @@ fn log_controls(
                 }
             }
         }
+        // Capture the initial controls, loaded tracks, positions and audible
+        // cues before start() enables audio capture. Only the caller waits.
+        if let Some(ready) = ready.take() {
+            let _ = ready.send(());
+        }
         if last_flush.elapsed() >= SYNC_EVERY {
             last_flush = Instant::now();
             let _ = out.flush();
@@ -1150,6 +1176,81 @@ mod tests {
         assert_eq!(cue_time(0.0), "00:00:00");
         assert_eq!(cue_time(61.5), "01:01:38");
         assert_eq!(cue_time(3725.0), "62:05:00");
+    }
+
+    #[test]
+    fn initializes_log_before_capturing_audio() {
+        const SR: f64 = 48_000.0;
+        let dir = std::env::temp_dir().join(format!("opendj-rec-start-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let registry = ControlRegistry::new();
+        // A full Groove project has tens of thousands of controls to snapshot.
+        for index in 0..30_000 {
+            registry.toggle("[Groove]", &format!("control_{index}"));
+        }
+        registry.toggle("[Channel1]", "play").set_bool(true);
+        let volume = registry.create("[Channel1]", "volume", 1.0, 0.0, 1.0, Behavior::Linear);
+        registry
+            .indicator("[Channel1]", "track_loaded", 1.0)
+            .set(1.0);
+        registry
+            .indicator("[Channel1]", "duration", 3600.0)
+            .set(60.0);
+        registry
+            .create(
+                "[Channel1]",
+                "playposition",
+                0.0,
+                0.0,
+                1.0,
+                Behavior::Linear,
+            )
+            .set(0.25);
+        let loaded: LoadedTracks = Default::default();
+        loaded.write().unwrap()[0] = Some(crate::synth::sample_library()[0].clone());
+        let (mut tap, feed) = tap(SR);
+        let rec = Recorder::new(&registry, SR, feed, loaded);
+        rec.configure(RecordSettings {
+            dir: dir.clone(),
+            ..Default::default()
+        });
+        let file = rec.start().unwrap();
+        assert!(tap.is_active());
+        volume.set(0.25);
+        tap.push(&vec![0.0; SR as usize * 2], 2);
+        rec.stop();
+        let base = file.with_extension("");
+        let log = std::fs::read_to_string(sibling(&base, ".controls.jsonl")).unwrap();
+        let lines: Vec<Value> = log
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines[1]["snapshot"]["[Channel1],volume"], 1.0);
+        let position = lines.iter().find(|line| line["pos"]["deck"] == 1).unwrap();
+        assert_eq!(position["t"], 0.0);
+        assert_eq!(position["pos"]["s"], 15.0);
+        let cue = std::fs::read_to_string(sibling(&base, ".cue")).unwrap();
+        assert!(cue.contains("INDEX 01 00:00:00"), "{cue}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_logger_initialization_returns_the_audio_feed() {
+        let dir = std::env::temp_dir().join(format!("opendj-rec-fail-{}", std::process::id()));
+        let registry = ControlRegistry::new();
+        let (tap, feed) = tap(48_000.0);
+        let rec = Recorder::new(&registry, 48_000.0, feed, Default::default());
+        rec.configure(RecordSettings {
+            dir: dir.clone(),
+            ..Default::default()
+        });
+        drop(registry);
+        assert!(rec.start().is_err());
+        assert!(!tap.is_active());
+        assert!(!rec.is_recording());
+        assert!(rec.0.state.lock().unwrap().feed.is_some());
+        assert!(rec.last_error().unwrap().contains("logger"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Records a deck playing, in both formats, and reads the files back.
