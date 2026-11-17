@@ -132,9 +132,118 @@ pub fn lookup_names(path: &Path, artist: &str, title: &str) -> (String, String) 
     (a, t)
 }
 
+/// VirtualDJ's original Title may be absent while its Remix is legitimate.
+/// Resolve the missing title first, then retain the remix in both its field
+/// and the displayed title. An explicit Title always keeps its meaning.
+pub fn vdj_names(path: &Path, artist: &str, title: &str, remix: &str) -> (String, String, String) {
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let missing_title = title.trim().is_empty();
+    let title = if missing_title { stem.as_ref() } else { title };
+    let (artist, mut title) = lookup_names(path, artist, title);
+    // Without a downloader suffix, an existing artist can still corroborate
+    // Artist - Title. With no such evidence, keep the full basename as title.
+    if missing_title && !artist.is_empty() {
+        if let Some((named_artist, named_title)) = from_file_name(path) {
+            if named_artist == artist {
+                title = named_title;
+            }
+        }
+    }
+    let remix = if youtube_suffix(&stem)
+        .is_some_and(|(_, id)| remix == id || remix == id.replace('_', " "))
+    {
+        String::new()
+    } else {
+        remix.to_string()
+    };
+    if !remix.is_empty() && !title.to_lowercase().contains(&remix.to_lowercase()) {
+        title = format!("{title} ({remix})");
+    }
+    (artist, title, remix)
+}
+
+/// Read-only search fallback for the exact title synthesized by older VDJ
+/// imports. A filename equal to that literal title supplies no missing-title
+/// evidence and is left alone.
+pub fn lookup_with_remix(path: &Path, artist: &str, title: &str, remix: &str) -> (String, String) {
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    // The old concatenation emitted a leading space for an absent Title.
+    // A literal XML Title is trimmed by the importer and lacks that marker.
+    if !remix.is_empty() && title == format!(" ({remix})") && stem.trim() != title.trim() {
+        let (artist, title, _) = vdj_names(path, artist, "", remix);
+        (artist, title)
+    } else {
+        lookup_names(path, artist, title)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn missing_titles_are_resolved_before_real_remixes() {
+        let path = Path::new("OneRepublic - Counting Stars (100Bpm).mp3");
+        assert_eq!(
+            vdj_names(path, "OneRepublic", "", "100Bpm"),
+            (
+                "OneRepublic".into(),
+                "Counting Stars (100Bpm)".into(),
+                "100Bpm".into()
+            )
+        );
+        assert_eq!(
+            lookup_with_remix(path, "OneRepublic", " (100Bpm)", "100Bpm"),
+            ("OneRepublic".into(), "Counting Stars (100Bpm)".into())
+        );
+        assert_eq!(
+            vdj_names(
+                Path::new("OneRepublic - Song.mp3"),
+                "OneRepublic",
+                "",
+                "Extended Mix"
+            ),
+            (
+                "OneRepublic".into(),
+                "Song (Extended Mix)".into(),
+                "Extended Mix".into()
+            )
+        );
+        assert_eq!(
+            vdj_names(
+                Path::new("Song - OneRepublic - (2013-05-31) - [hT_nvWreIhg].mp3"),
+                "OneRepublic",
+                "",
+                "Extended Mix"
+            ),
+            (
+                "OneRepublic".into(),
+                "Song (Extended Mix)".into(),
+                "Extended Mix".into()
+            )
+        );
+        assert_eq!(
+            vdj_names(path, "OneRepublic", "(100Bpm)", "100Bpm"),
+            ("OneRepublic".into(), "(100Bpm)".into(), "100Bpm".into())
+        );
+        assert_eq!(
+            lookup_with_remix(path, "OneRepublic", "(100Bpm)", "100Bpm"),
+            ("OneRepublic".into(), "(100Bpm)".into())
+        );
+        assert_eq!(
+            lookup_with_remix(
+                Path::new("(100Bpm).mp3"),
+                "OneRepublic",
+                "(100Bpm)",
+                "100Bpm"
+            ),
+            ("OneRepublic".into(), "(100Bpm)".into())
+        );
+        assert_eq!(
+            vdj_names(Path::new("Unseparated Song.mp3"), "", "", "1Hora"),
+            ("".into(), "Unseparated Song (1Hora)".into(), "1Hora".into())
+        );
+    }
+
     #[test]
     fn preserves_artists_and_uses_only_proven_ids() {
         let p = Path::new("OneRepublic - Counting Stars [hT_nvWreIhg].mp4");

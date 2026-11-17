@@ -202,28 +202,12 @@ fn song_track(id: usize, path: PathBuf, song: roxmltree::Node) -> Track {
     let infos = child("Infos");
     let scan = child("Scan");
 
-    let mut title = attr(tags, "Title");
-    let mut remix = attr(tags, "Remix");
-    // VDJ can mistake a downloader id for Remix. Appending that to an
-    // empty Title creates "(id)" and suppresses the basename fallback.
-    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-    if opendj_engine::filename::youtube_suffix(&stem)
-        .is_some_and(|(_, id)| remix == id || remix == id.replace('_', " "))
-    {
-        remix.clear();
-    }
-    if !remix.is_empty() && !title.to_lowercase().contains(&remix.to_lowercase()) {
-        title = format!("{title} ({remix})");
-    }
-    if title.is_empty() {
-        title = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-    }
-
-    let (artist, title) =
-        opendj_engine::filename::lookup_names(&path, &attr(tags, "Author"), &title);
+    let (artist, title, remix) = opendj_engine::filename::vdj_names(
+        &path,
+        &attr(tags, "Author"),
+        &attr(tags, "Title"),
+        &attr(tags, "Remix"),
+    );
 
     // Scan's Bpm is seconds per beat; a Bpm typed into the tags is too.
     let seconds_per_beat = number(scan, "Bpm").or_else(|| number(tags, "Bpm"));
@@ -426,6 +410,26 @@ mod tests {
  <Song FilePath="/Users/x/Library/Application Support/VirtualDJ/Cache/c.vdjcache" FileSize="1"><Tags Title="Cached" /></Song>
  <Song FilePath="/music/gone.mp3" FileSize="1"><Tags Title="Gone" /></Song>
 </VirtualDJ_Database>"##;
+
+    #[test]
+    fn real_remix_does_not_suppress_a_missing_title() {
+        let db = r#"<VirtualDJ_Database>
+          <Song FilePath="/music/OneRepublic - Song (100Bpm).mp3">
+            <Tags Author="OneRepublic" Remix="100Bpm" />
+          </Song>
+          <Song FilePath="/music/Long Song.mp3"><Tags Remix="1Hora" /></Song>
+          <Song FilePath="/music/OneRepublic - Song.mp3">
+            <Tags Author="OneRepublic" Title="(100Bpm)" Remix="100Bpm" />
+          </Song>
+        </VirtualDJ_Database>"#;
+        let out = parse(db, 0, |_| true, |_| None).unwrap();
+        assert_eq!(out.tracks[0].artist, "OneRepublic");
+        assert_eq!(out.tracks[0].title, "Song (100Bpm)");
+        assert_eq!(out.tracks[0].info.remix, "100Bpm");
+        assert_eq!(out.tracks[1].title, "Long Song (1Hora)");
+        assert_eq!(out.tracks[1].info.remix, "1Hora");
+        assert_eq!(out.tracks[2].title, "(100Bpm)");
+    }
 
     #[test]
     fn downloader_id_is_not_a_remix_or_a_song_title() {

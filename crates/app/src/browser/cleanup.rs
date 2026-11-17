@@ -272,7 +272,8 @@ pub(super) fn query_for(t: &Track, key: &str, token: &str) -> Option<QueryFor> {
         ..Default::default()
     };
     if let Some(path) = file_path(t) {
-        (q.artist, q.title) = opendj_engine::filename::lookup_names(path, &q.artist, &q.title);
+        (q.artist, q.title) =
+            opendj_engine::filename::lookup_with_remix(path, &q.artist, &q.title, &t.info.remix);
     }
     let mut name = None;
     if let Some((artist, title)) = name_from_file(t) {

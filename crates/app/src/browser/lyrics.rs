@@ -496,7 +496,14 @@ impl Browser {
             return;
         };
         let (artist, title) = super::file_path(track)
-            .map(|path| opendj_engine::filename::lookup_names(path, &track.artist, &track.title))
+            .map(|path| {
+                opendj_engine::filename::lookup_with_remix(
+                    path,
+                    &track.artist,
+                    &track.title,
+                    &track.info.remix,
+                )
+            })
             .unwrap_or_else(|| (track.artist.clone(), track.title.clone()));
         let ui = app.global::<LyricsUi>();
         ui.set_query_artist(artist.into());
