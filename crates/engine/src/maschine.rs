@@ -33,6 +33,8 @@ pub use mxprj::sound_info::SoundInfo;
 mod project_paths;
 #[path = "maschine_rhythm.rs"]
 pub mod rhythm;
+#[path = "maschine_sample_cache.rs"]
+mod sample_cache;
 
 #[path = "maschine_preview.rs"]
 mod sampling_preview;
@@ -4626,32 +4628,9 @@ fn persist_frames(
         }
     }
     let root = legacy_samples_root()?;
-    std::fs::create_dir_all(&root).map_err(|e| format!("{}: {e}", root.display()))?;
     let mut crc = flate2::Crc::new();
     crc.update(&wav);
-    for suffix in 0..1000u32 {
-        let path = root.join(format!("{:08x}-{}-{suffix}.wav", crc.sum(), wav.len()));
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                file.write_all(&wav)
-                    .map_err(|e| format!("{}: {e}", path.display()))?;
-                file.sync_all()
-                    .map_err(|e| format!("{}: {e}", path.display()))?;
-                return Ok(path);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                if std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))? == wav {
-                    return Ok(path);
-                }
-            }
-            Err(e) => return Err(format!("{}: {e}", path.display())),
-        }
-    }
-    Err("too many Groove sample filename collisions".into())
+    sample_cache::publish(&root, &format!("{:08x}-{}", crc.sum(), wav.len()), &wav)
 }
 
 fn legacy_samples_root() -> Result<PathBuf, String> {
