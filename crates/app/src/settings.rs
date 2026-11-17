@@ -1329,12 +1329,97 @@ pub fn delete_keyboard_set() {
     });
 }
 
+static SETTINGS_SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn save(change: impl FnOnce(&mut Value)) {
     let Some(path) = path() else { return };
-    let mut v = load();
-    change(&mut v);
-    let _ = std::fs::create_dir_all(path.parent().unwrap());
-    let _ = std::fs::write(path, v.to_string());
+    if let Err(error) = save_to(&path, change) {
+        eprintln!("Could not save settings {}: {error}", path.display());
+    }
+}
+
+fn save_to(path: &std::path::Path, change: impl FnOnce(&mut Value)) -> std::io::Result<()> {
+    // Keep the read and replacement under one lock so independent setters merge.
+    let _guard = SETTINGS_SAVE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Preserve the original setter's behavior when settings.json is a symlink.
+    let target = match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Some(std::fs::canonicalize(path)?),
+        Ok(_) => None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let path = target.as_deref().unwrap_or(path);
+    let mut value = match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            json!({})
+        }
+        Err(error) => return Err(error),
+    };
+    if !value.is_object() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Settings must be a JSON object",
+        ));
+    }
+    change(&mut value);
+    let bytes = serde_json::to_vec(&value).map_err(std::io::Error::other)?;
+    write_settings_atomically(path, &bytes)
+}
+
+fn write_settings_atomically(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let permissions = match std::fs::metadata(path) {
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let (temporary, mut file) = loop {
+        let sequence = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(
+            ".opendj-settings-{}-{sequence}.tmp",
+            std::process::id()
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&temporary) {
+            Ok(file) => break (temporary, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    };
+    let result = (|| {
+        if let Some(permissions) = permissions {
+            file.set_permissions(permissions)?;
+        }
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        // Close before replacement, including on Windows.
+        drop(file);
+        std::fs::rename(&temporary, path)?;
+        #[cfg(unix)]
+        std::fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 
 /// A track's key as the user wants keys written. Keys that can't be read
@@ -1435,4 +1520,166 @@ pub fn set_prep_review(seconds: f64, tracks: u64) {
         v["prep_review_seconds"] = json!(seconds);
         v["prep_review_tracks"] = json!(tracks);
     });
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    };
+
+    fn directory(name: &str) -> PathBuf {
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "opendj-settings-{name}-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn concurrent_setters_merge_under_the_same_read_modify_write_lock() {
+        let folder = directory("concurrent");
+        let path = folder.join("settings.json");
+        std::fs::write(&path, br#"{"existing":"keep"}"#).unwrap();
+        let (entered, reached) = mpsc::channel();
+        let (release, proceed) = mpsc::channel();
+        let first_path = path.clone();
+        let first = std::thread::spawn(move || {
+            save_to(&first_path, |value| {
+                value["first"] = json!(1);
+                entered.send(()).unwrap();
+                proceed.recv().unwrap();
+            })
+            .unwrap()
+        });
+        reached.recv().unwrap();
+        assert!(matches!(
+            SETTINGS_SAVE_LOCK.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        ));
+        let (started, ready) = mpsc::channel();
+        let second_path = path.clone();
+        let second = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            save_to(&second_path, |value| value["second"] = json!(2)).unwrap();
+        });
+        ready.recv().unwrap();
+        release.send(()).unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+        assert_eq!(
+            load_from(&path),
+            json!({"existing":"keep","first":1,"second":2})
+        );
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn readers_only_see_complete_json_during_replacement() {
+        let folder = directory("readers");
+        let path = folder.join("settings.json");
+        save_to(&path, |value| {
+            value["counter"] = json!(0);
+            value["payload"] = json!("x".repeat(128 * 1024));
+        })
+        .unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let reader_done = done.clone();
+        let reader_path = path.clone();
+        let (ready, started) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut ready = Some(ready);
+            let mut reads = 0;
+            while !reader_done.load(Ordering::Acquire) {
+                let bytes = std::fs::read(&reader_path).unwrap();
+                let value: Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(value["payload"].as_str().unwrap().len(), 128 * 1024);
+                assert!(value["counter"].as_u64().unwrap() <= 40);
+                reads += 1;
+                if let Some(ready) = ready.take() {
+                    ready.send(()).unwrap();
+                }
+            }
+            reads
+        });
+        started.recv().unwrap();
+        for counter in 1..=40 {
+            save_to(&path, |value| value["counter"] = json!(counter)).unwrap();
+        }
+        done.store(true, Ordering::Release);
+        assert!(reader.join().unwrap() > 0);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn unreadable_or_invalid_existing_settings_are_preserved() {
+        let folder = directory("invalid");
+        let path = folder.join("settings.json");
+        for original in [
+            b"{unfinished".as_slice(),
+            b"[]".as_slice(),
+            b"null".as_slice(),
+        ] {
+            std::fs::write(&path, original).unwrap();
+            assert!(save_to(&path, |value| value["partial"] = json!(true)).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(save_to(&path, |value| value["partial"] = json!(true)).is_err());
+        assert!(path.is_dir());
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_symlinks_keep_their_targets_and_dangling_links_are_preserved() {
+        let folder = directory("symlink");
+        let target = folder.join("personal.json");
+        let path = folder.join("settings.json");
+        std::fs::write(&target, br#"{"profile":"keep"}"#).unwrap();
+        std::os::unix::fs::symlink("personal.json", &path).unwrap();
+        save_to(&path, |value| value["new"] = json!(true)).unwrap();
+        assert!(std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(load_from(&target), json!({"profile":"keep","new":true}));
+        std::fs::remove_file(&target).unwrap();
+        assert!(save_to(&path, |value| value["partial"] = json!(true)).is_err());
+        assert!(std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_rewrite_preserves_original_bytes_and_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = directory("write-failure");
+        let path = folder.join("settings.json");
+        let original = br#"{ "profile": "keep", "source": 4 }"#;
+        std::fs::write(&path, original).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let result = save_to(&path, |value| {
+            value["profile"] = json!("changed");
+            std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o500)).unwrap();
+        });
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
 }
