@@ -1,4 +1,4 @@
-//! Isolated visual bridge. Only background workers read files or use HTTP.
+//! Isolated visual bridge. Only background workers read lyric files or use HTTP.
 //! The UI reads a latest-only snapshot and submits bounded visual commands.
 use crate::{AppWindow, MotionUi};
 use opendj_control::ControlRegistry;
@@ -26,9 +26,15 @@ struct View {
     history: Vec<String>,
     note: String,
     online: bool,
+    catalog_labels: [String; 2],
+    catalog_pages: [usize; 2],
 }
+#[derive(Default)]
 struct Shared {
     enabled: AtomicBool,
+    starting: AtomicBool,
+    launch_note: Mutex<String>,
+    catalog: Mutex<[(String, usize); 2]>,
     input_online: AtomicBool,
     source: AtomicUsize,
     revision: AtomicU64,
@@ -60,10 +66,7 @@ fn label(row: &Value) -> String {
         .into()
 }
 fn rows(value: &Value, key: &str) -> Vec<Value> {
-    value[key]
-        .as_array()
-        .map(|r| r.iter().take(512).cloned().collect())
-        .unwrap_or_default()
+    value[key].as_array().cloned().unwrap_or_default()
 }
 fn text(value: &Value) -> String {
     value.as_str().map(str::to_owned).unwrap_or_else(|| {
@@ -377,12 +380,43 @@ fn input_worker(shared: Arc<Shared>) {
     }
 }
 
+const CATALOG_PAGE_SIZE: usize = 128;
+fn catalog_page(rows: &[Value], query: &str, page: usize) -> (Vec<Value>, String, usize) {
+    let query = query.trim().to_lowercase();
+    let matches: Vec<_> = rows
+        .iter()
+        .filter(|row| {
+            query.is_empty()
+                || ["id", "name", "universeId", "family"].iter().any(|key| {
+                    row[*key]
+                        .as_str()
+                        .is_some_and(|value| value.to_lowercase().contains(&query))
+                })
+        })
+        .collect();
+    let pages = matches.len().div_ceil(CATALOG_PAGE_SIZE).max(1);
+    let page = page.min(pages - 1);
+    let selected = matches
+        .iter()
+        .skip(page * CATALOG_PAGE_SIZE)
+        .take(CATALOG_PAGE_SIZE)
+        .map(|row| (*row).clone())
+        .collect();
+    (
+        selected,
+        format!("{} matches · page {}/{}", matches.len(), page + 1, pages),
+        pages,
+    )
+}
+
 fn worker(shared: Arc<Shared>, commands: mpsc::Receiver<Value>) {
     let agent = agent();
     let mut poll = Instant::now() - Duration::from_secs(2);
     let mut catalog_poll = Instant::now() - Duration::from_secs(31);
     let mut view = View::default();
     let mut published_note = String::new();
+    let mut catalogs: [Vec<Value>; 2] = Default::default();
+    let mut previous_catalog: Option<[(String, usize); 2]> = None;
     while shared.alive.load(Ordering::Relaxed) {
         let mut publish = false;
         for command in commands.try_iter().take(8) {
@@ -433,10 +467,12 @@ fn worker(shared: Arc<Shared>, commands: mpsc::Receiver<Value>) {
                             view.universes = rows(&data, "universes");
                         }
                         if let Ok(data) = get(&agent, "/api/director/scenes?scope=all") {
-                            view.scenes = rows(&data, "scenes");
+                            catalogs[0] = rows(&data, "scenes");
+                            previous_catalog = None;
                         }
                         if let Ok(data) = get(&agent, "/api/director/effects") {
-                            view.assets = rows(&data, "effects");
+                            catalogs[1] = rows(&data, "effects");
+                            previous_catalog = None;
                         }
                     }
                     view.targets = rows(&view.status["renderer"], "targets");
@@ -445,6 +481,25 @@ fn worker(shared: Arc<Shared>, commands: mpsc::Receiver<Value>) {
                     view.online = false;
                     view.note = format!("Director offline · {error}");
                 }
+            }
+        }
+        let selection = shared
+            .catalog
+            .try_lock()
+            .ok()
+            .map(|catalog| catalog.clone());
+        if let Some(catalog) = selection {
+            if previous_catalog.as_ref() != Some(&catalog) {
+                let (scenes, scene_label, scene_pages) =
+                    catalog_page(&catalogs[0], &catalog[0].0, catalog[0].1);
+                let (assets, asset_label, asset_pages) =
+                    catalog_page(&catalogs[1], &catalog[1].0, catalog[1].1);
+                view.scenes = scenes;
+                view.assets = assets;
+                view.catalog_labels = [scene_label, asset_label];
+                view.catalog_pages = [scene_pages, asset_pages];
+                previous_catalog = Some(catalog.clone());
+                publish = true;
             }
         }
         if publish || view.note != published_note {
@@ -543,16 +598,75 @@ fn command(ui: &MotionUi<'_>, view: &View, operation: &str) -> Result<Value, Str
     Ok(command)
 }
 
+fn saved_options(settings: &Value) -> (bool, usize) {
+    let enabled = settings["lyricmotion"]["enabled"]
+        .as_bool()
+        .unwrap_or(false);
+    let source = settings["lyricmotion"]["source"]
+        .as_u64()
+        .filter(|value| *value <= 4)
+        .unwrap_or(0) as usize;
+    (enabled, source)
+}
+
+fn request_launch(shared: Arc<Shared>, launcher: std::ffi::OsString) -> bool {
+    if shared
+        .starting
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return false;
+    }
+    shared.revision.fetch_add(1, Ordering::Relaxed);
+    let state = shared.clone();
+    let spawned = std::thread::Builder::new()
+        .name("lyricmotion launcher".into())
+        .spawn(move || {
+            let result = std::process::Command::new(launcher)
+                .arg("--no-panel")
+                .spawn()
+                .and_then(|mut child| child.wait());
+            let note = match result {
+                Ok(status) if status.success() => "Visual launcher requested".into(),
+                Ok(status) => format!("Visual launcher exited · {status}"),
+                Err(error) => format!("Visual launcher unavailable · {error}"),
+            };
+            if let Ok(mut latest) = state.launch_note.lock() {
+                *latest = note;
+            }
+            state.starting.store(false, Ordering::Relaxed);
+            state.revision.fetch_add(1, Ordering::Relaxed);
+        });
+    if let Err(error) = spawned {
+        if let Ok(mut note) = shared.launch_note.lock() {
+            *note = format!("Visual launcher unavailable · {error}");
+        }
+        shared.starting.store(false, Ordering::Relaxed);
+        shared.revision.fetch_add(1, Ordering::Relaxed);
+        return false;
+    }
+    true
+}
+
 pub fn install(
     app: &AppWindow,
     registry: Arc<ControlRegistry>,
     loaded: LoadedTracks,
     visual: Arc<VisualPositions>,
 ) -> slint::Timer {
+    let (enabled, source) = saved_options(&crate::settings::load());
+    app.global::<MotionUi>().set_enabled(enabled);
+    app.global::<MotionUi>().set_source(source as i32);
+    let launcher = std::env::var_os("OPENDJ_LYRICMOTION_LAUNCHER").filter(|path| !path.is_empty());
+    app.global::<MotionUi>()
+        .set_launcher_available(launcher.is_some());
     let shared = Arc::new(Shared {
-        enabled: AtomicBool::new(false),
+        enabled: AtomicBool::new(enabled),
+        starting: AtomicBool::new(false),
+        launch_note: Mutex::new(String::new()),
+        catalog: Mutex::new(Default::default()),
         input_online: AtomicBool::new(false),
-        source: AtomicUsize::new(0),
+        source: AtomicUsize::new(source),
         revision: AtomicU64::new(0),
         alive: AtomicBool::new(true),
         frame: Mutex::new(None),
@@ -634,6 +748,69 @@ pub fn install(
             }
         }
     });
+    let weak = app.as_weak();
+    app.global::<MotionUi>().on_options_changed(move || {
+        if let Some(app) = weak.upgrade() {
+            let ui = app.global::<MotionUi>();
+            crate::settings::set(
+                "lyricmotion",
+                json!({"enabled": ui.get_enabled(), "source": ui.get_source().clamp(0,4)}),
+            );
+        }
+    });
+    let weak = app.as_weak();
+    let state = shared.clone();
+    app.global::<MotionUi>().on_catalog_search(move |kind| {
+        if let Some(app) = weak.upgrade() {
+            let ui = app.global::<MotionUi>();
+            let kind = kind.clamp(0, 1) as usize;
+            if let Ok(mut catalog) = state.catalog.try_lock() {
+                catalog[kind] = (
+                    if kind == 0 {
+                        ui.get_scene_query()
+                    } else {
+                        ui.get_asset_query()
+                    }
+                    .to_string(),
+                    0,
+                );
+                if kind == 0 {
+                    ui.set_scene_index(0);
+                } else {
+                    ui.set_asset_index(0);
+                }
+            }
+        }
+    });
+    let weak = app.as_weak();
+    let state = shared.clone();
+    app.global::<MotionUi>()
+        .on_catalog_page(move |kind, delta| {
+            if let Some(app) = weak.upgrade() {
+                let ui = app.global::<MotionUi>();
+                let kind = kind.clamp(0, 1) as usize;
+                if let (Ok(mut catalog), Ok(view)) =
+                    (state.catalog.try_lock(), state.view.try_lock())
+                {
+                    let last = view.catalog_pages[kind].saturating_sub(1);
+                    catalog[kind].1 = catalog[kind]
+                        .1
+                        .saturating_add_signed(delta as isize)
+                        .min(last);
+                    if kind == 0 {
+                        ui.set_scene_index(0);
+                    } else {
+                        ui.set_asset_index(0);
+                    }
+                }
+            }
+        });
+    let state = shared.clone();
+    app.global::<MotionUi>().on_start_visuals(move || {
+        if let Some(launcher) = launcher.as_ref() {
+            request_launch(state.clone(), launcher.clone());
+        }
+    });
     app.global::<MotionUi>().on_open_preview(|| {
         std::thread::spawn(|| {
             #[cfg(target_os = "windows")]
@@ -650,6 +827,7 @@ pub fn install(
     let weak = app.as_weak();
     let lifetime = Lifetime(shared.clone());
     let mut previous_note = String::new();
+    let mut previous_launch_note = String::new();
     let mut previous_revision = u64::MAX;
     let mut previous_enabled = false;
     let mut previous_input = false;
@@ -675,6 +853,8 @@ pub fn install(
         }
         if let Ok(view) = shared.view.try_lock() {
             previous_revision = revision;
+            ui.set_starting(shared.starting.load(Ordering::Relaxed));
+            ui.set_renderer_offline(!view.online || view.status["renderer"]["connected"] != true);
             previous_enabled = ui.get_enabled();
             previous_input = input_online;
             ui.set_status(
@@ -751,6 +931,8 @@ pub fn install(
             }
 
             ui.set_scenes(strings(view.scenes.iter().map(label)));
+            ui.set_scene_page(view.catalog_labels[0].clone().into());
+            ui.set_asset_page(view.catalog_labels[1].clone().into());
             ui.set_targets(strings(
                 view.targets
                     .iter()
@@ -772,6 +954,12 @@ pub fn install(
                 previous_note = view.note.clone();
                 ui.set_feedback(view.note.clone().into());
             }
+            if let Ok(note) = shared.launch_note.try_lock() {
+                if *note != previous_launch_note {
+                    previous_launch_note = note.clone();
+                    ui.set_feedback(note.clone().into());
+                }
+            }
         }
     });
     timer
@@ -780,6 +968,79 @@ pub fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn saved_bridge_options_restore_valid_values_and_default_legacy_settings() {
+        assert_eq!(saved_options(&json!({"unrelated":"preserved"})), (false, 0));
+        assert_eq!(
+            saved_options(&json!({"lyricmotion":{"enabled":true,"source":4}})),
+            (true, 4)
+        );
+        assert_eq!(
+            saved_options(&json!({"lyricmotion":{"enabled":"invalid","source":99}})),
+            (false, 0)
+        );
+        assert_eq!(
+            saved_options(&json!({"lyricmotion":{"enabled":true,"source":-1}})),
+            (true, 0)
+        );
+    }
+    #[test]
+    fn catalog_search_and_paging_expose_rows_beyond_the_previous_512_limit() {
+        let data = json!({"scenes":(0..1908).map(|id|json!({"id":format!("scene-{id}"),"name":format!("Scene {id}"),"universeId":"illustrated"})).collect::<Vec<_>>()});
+        let all = rows(&data, "scenes");
+        assert_eq!(all.len(), 1908);
+        let (last, label, pages) = catalog_page(&all, "", usize::MAX);
+        assert_eq!(pages, 15);
+        assert_eq!(last.last().unwrap()["id"], "scene-1907");
+        assert!(label.contains("1908 matches"));
+        let (found, _, _) = catalog_page(&all, "SCENE 1907", 0);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0]["id"], "scene-1907");
+        assert_eq!(catalog_page(&all, "ILLUSTRATED", 0).2, 15);
+        assert_eq!(catalog_page(&all, "missing", 0).0.len(), 0);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn manual_launcher_is_guarded_and_only_retries_after_another_request() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory =
+            std::env::temp_dir().join(format!("opendj-visual-launch-test-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let script = directory.join("launcher");
+        let count = directory.join("count");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n[ \"$1\" = --no-panel ] || exit 1\nprintf x >> '{}'\nsleep 0.15\n",
+                count.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let state = Arc::new(Shared::default());
+        assert!(request_launch(
+            state.clone(),
+            script.clone().into_os_string()
+        ));
+        assert!(!request_launch(
+            state.clone(),
+            script.clone().into_os_string()
+        ));
+        let wait = || {
+            let at = Instant::now();
+            while state.starting.load(Ordering::Relaxed) && at.elapsed() < Duration::from_secs(2) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(!state.starting.load(Ordering::Relaxed));
+        };
+        wait();
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(std::fs::read_to_string(&count).unwrap(), "x");
+        assert!(request_launch(state.clone(), script.into_os_string()));
+        wait();
+        assert_eq!(std::fs::read_to_string(&count).unwrap(), "xx");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
     #[test]
     fn queued_visual_command_preserves_expected_epoch_and_tracks_execution() {
         use std::io::{Read, Write};

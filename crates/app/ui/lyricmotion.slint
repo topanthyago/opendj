@@ -10,12 +10,19 @@ export global MotionUi {
     in property <string> status: "Visual bridge off";
     in property <string> origin;
     in property <string> clock-status;
+    in property <bool> launcher-available;
+    in property <bool> renderer-offline: true;
+    in property <bool> starting;
     in property <string> scene;
     in property <string> explanation;
     in property <string> feedback;
     in property <string> policy-status;
     in property <[string]> universes;
     in property <[string]> scenes;
+    in-out property <string> scene-query;
+    in-out property <string> asset-query;
+    in property <string> scene-page;
+    in property <string> asset-page;
     in property <[string]> targets;
     in property <[string]> capabilities;
     in property <[string]> assets;
@@ -40,6 +47,10 @@ export global MotionUi {
     callback target-changed();
     callback universe-changed();
     callback open-preview();
+    callback start-visuals();
+    callback options-changed();
+    callback catalog-search(kind: int);
+    callback catalog-page(kind: int, delta: int);
 }
 
 export component MotionPanel inherits VerticalLayout {
@@ -55,10 +66,11 @@ export component MotionPanel inherits VerticalLayout {
             padding: 4px;
             spacing: 5px;
             HorizontalLayout {
-                CheckBox { text: "Visual bridge"; checked <=> MotionUi.enabled; }
-                ComboBox { model: ["Auto · master", "Deck 1", "Deck 2", "Deck 3", "Deck 4"]; current-index <=> MotionUi.source; }
+                CheckBox { text: "Visual bridge"; checked <=> MotionUi.enabled; toggled => { MotionUi.options-changed(); } }
+                ComboBox { model: ["Auto · master", "Deck 1", "Deck 2", "Deck 3", "Deck 4"]; current-index <=> MotionUi.source; selected(_) => { MotionUi.options-changed(); } }
                 Button { text: "Preview ↗"; clicked => { MotionUi.open-preview(); } }
             }
+            if MotionUi.renderer-offline && MotionUi.launcher-available: Button { text: MotionUi.starting ? "Starting visuals…" : "Start visuals"; enabled: !MotionUi.starting; clicked => { MotionUi.start-visuals(); } }
             Text { text: MotionUi.origin; color: Theme.text-dim; font-size: 11px; overflow: elide; }
             Text { text: MotionUi.clock-status; color: Theme.text-dim; font-size: 11px; overflow: elide; }
             Text { text: MotionUi.scene; color: Theme.text; font-size: 12px; overflow: elide; }
@@ -75,6 +87,15 @@ export component MotionPanel inherits VerticalLayout {
                 LineEdit { text <=> MotionUi.weight; placeholder-text: "Weight 0–10"; preferred-width: 70px; }
             }
             Text { text: "Scene / musical cue"; color: Theme.text-dim; font-size: 11px; }
+            HorizontalLayout {
+                LineEdit { text <=> MotionUi.scene-query; placeholder-text: "Find scene / universe"; accepted => { MotionUi.catalog-search(0); } }
+                Button { text: "Find"; clicked => { MotionUi.catalog-search(0); } }
+            }
+            HorizontalLayout {
+                Button { text: "‹"; clicked => { MotionUi.catalog-page(0,-1); } }
+                Text { text: MotionUi.scene-page; color: Theme.text-dim; font-size: 11px; vertical-alignment: center; }
+                Button { text: "›"; clicked => { MotionUi.catalog-page(0,1); } }
+            }
             ComboBox { model: MotionUi.scenes; current-index <=> MotionUi.scene-index; }
             HorizontalLayout {
                 ComboBox { model: ["Now", "Track seconds", "Native beat"]; current-index <=> MotionUi.clock; }
@@ -88,6 +109,15 @@ export component MotionPanel inherits VerticalLayout {
             Text { text: "Target / action"; color: Theme.text-dim; font-size: 11px; }
             ComboBox { model: MotionUi.targets; current-index <=> MotionUi.target-index; selected(_) => { MotionUi.target-changed(); } }
             ComboBox { model: MotionUi.capabilities; current-index <=> MotionUi.capability-index; }
+            HorizontalLayout {
+                LineEdit { text <=> MotionUi.asset-query; placeholder-text: "Find effect / asset"; accepted => { MotionUi.catalog-search(1); } }
+                Button { text: "Find"; clicked => { MotionUi.catalog-search(1); } }
+            }
+            HorizontalLayout {
+                Button { text: "‹"; clicked => { MotionUi.catalog-page(1,-1); } }
+                Text { text: MotionUi.asset-page; color: Theme.text-dim; font-size: 11px; vertical-alignment: center; }
+                Button { text: "›"; clicked => { MotionUi.catalog-page(1,1); } }
+            }
             ComboBox { model: MotionUi.assets; current-index <=> MotionUi.asset-index; }
             HorizontalLayout {
                 ComboBox { model: ["rise", "drop", "shiver", "freeze", "ripple", "heartbeat", "stamp", "bounce"]; current-index <=> MotionUi.motion; }
