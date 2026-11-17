@@ -3942,7 +3942,8 @@ component GrooveBox inherits Rectangle {
                 tint: group-tint;
                 clicked => {
                     if Controls.value(Controls.resolve(g, "pattern_api_version"), Controls.tick) >= 2 {
-                        Controls.set-value(Controls.resolve("[Groove" + (deck + 1) + "Group" + (selected-group + 1) + "]", "pattern_stop"), 1);
+                        let selected = Controls.value(Controls.resolve(g, "group_selected"), Controls.tick);
+                        Controls.set-value(Controls.resolve("[Groove" + (deck + 1) + "Group" + (selected + 1) + "]", "pattern_stop"), 1);
                     } else if Controls.value(Controls.resolve(g, "pattern_api_version"), Controls.tick) >= 1 { Controls.set-value(Controls.resolve(g, "pattern_stop"), 1); }
                     else { Controls.set-value(Controls.resolve(g, "group_enabled"), 0); }
                 }
