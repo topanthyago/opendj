@@ -42,6 +42,7 @@ pub(crate) fn kept_keys() -> Vec<String> {
         "follow_breaks",
         "break_sensitivity",
         "swing",
+        "repeat_rate",
         "duck_deck",
         "duck_amount",
     ]
