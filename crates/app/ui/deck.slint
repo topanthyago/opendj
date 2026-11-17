@@ -3139,6 +3139,14 @@ component DrumIcon inherits Rectangle {
         stroke: tint; stroke-width: 1.6px; stroke-line-cap: round; stroke-line-join: round; fill: transparent;
         commands: "M 9 18 A 2.5 2 0 1 1 4 18 A 2.5 2 0 1 1 9 18 Z M 20 16 A 2.5 2 0 1 1 15 16 A 2.5 2 0 1 1 20 16 Z M 9 18 L 9 5 L 20 3 L 20 16";
     }
+    if sound != "Kick" && sound != "Snare" && sound != "Closed hat" && sound != "Open hat"
+        && sound != "Clap" && sound != "Tom" && sound != "Low tom" && sound != "High tom"
+        && sound != "Rim" && sound != "Cowbell" && sound != "Crash" && sound != "Ride"
+        && sound != "Shaker" && sound != "Chord": Path {
+        width: parent.width; height: parent.height; viewbox-width: 24; viewbox-height: 24;
+        stroke: tint; stroke-width: 1.6px; stroke-line-cap: round; fill: transparent;
+        commands: "M 3 12 L 6 12 L 9 5 L 12 19 L 15 8 L 18 12 L 21 12";
+    }
 }
 
 // A small square button for M and S, lit in the track's color.
@@ -3188,12 +3196,27 @@ component GrooveTrack inherits HorizontalLayout {
     property <int> lock-index: Controls.resolve(groove-group, rk + "_lock");
     property <bool> locked: Controls.value(lock-index, Controls.tick) > 0;
     spacing: 2px;
-    Rectangle {
-        width: 92px;
+    label := Rectangle {
+        width: max(128px, min(220px, root.width * 0.29));
         // Right-click the track for its own variations and its lock.
-        TouchArea {
+        label-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { Controls.set-value(preview-index, 1); }
+            changed has-hover => {
+                if self.has-hover {
+                    HoverTip.title = (row-index + 1) + " · " + sound-name;
+                    HoverTip.body = GrooveUi.kits[kit].name + (locked ? " · Locked" : "") + "\nClick to preview · Right-click for variations";
+                    HoverTip.right-aligned = label.absolute-position.x > label.width;
+                    HoverTip.x = label.absolute-position.x + (HoverTip.right-aligned ? label.width : 0px);
+                    HoverTip.y = label.absolute-position.y + label.height + 4px;
+                    HoverTip.shown = true;
+                } else if HoverTip.title == (row-index + 1) + " · " + sound-name {
+                    HoverTip.shown = false;
+                }
+            }
             pointer-event(e) => {
                 if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                    HoverTip.shown = false;
                     track-menu.show();
                 }
             }
@@ -3221,34 +3244,34 @@ component GrooveTrack inherits HorizontalLayout {
             padding-left: 4px;
             padding-right: 3px;
             spacing: 3px;
-            Text { width: 14px; text: row-index + 1; color: tint; font-size: 9px; vertical-alignment: center; }
+            Text { width: 14px; text: row-index + 1; color: tint; font-size: 10px; vertical-alignment: center; }
             VerticalLayout {
                 alignment: center;
                 Rectangle {
-                    width: 24px;
-                    height: 18px;
-                    DrumIcon { sound: sound-name; tint: empty ? tint.with-alpha(0.55) : meter > 0.05 ? tint.brighter(0.6) : tint; size: 18px; }
+                    width: 14px;
+                    height: 14px;
+                    DrumIcon { sound: sound-name; tint: empty ? tint.with-alpha(0.7) : meter > 0.05 ? tint.brighter(0.6) : tint; size: 12px; }
                     // A small padlock while locked.
                     if locked: Rectangle {
-                        x: 17px;
-                        y: 9px;
+                        x: 7px;
+                        y: 5px;
                         width: 8px;
                         height: 10px;
                         Rectangle { x: 1px; y: 0px; width: 6px; height: 6px; border-radius: 3px; border-width: 1.5px; border-color: Theme.text; }
                         Rectangle { y: 4px; width: 8px; height: 6px; border-radius: 1px; background: Theme.text; }
                     }
-                    ita := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { Controls.set-value(preview-index, 1); }
-                        pointer-event(e) => {
-                            if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
-                                track-menu.show();
-                            }
-                        }
-                    }
                 }
             }
-            Rectangle { horizontal-stretch: 1; }
+            Text {
+                text: sound-name;
+                color: Theme.text;
+                font-size: root.width < 760px ? 10px : 11px;
+                font-weight: 600;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                min-width: 0px;
+                overflow: elide;
+            }
             VerticalLayout {
                 alignment: center;
                 HorizontalLayout {
@@ -3258,15 +3281,6 @@ component GrooveTrack inherits HorizontalLayout {
                     GrooveToggle { group: groove-group; key: rk + "_solo"; text: "S"; tint: Theme.accent; width: 15px; }
                 }
             }
-        }
-        if ita.has-hover: Rectangle {
-            x: 4px;
-            y: -self.height - 2px;
-            width: tip.preferred-width + 12px;
-            height: 18px;
-            border-radius: 4px;
-            background: Theme.panel-raised;
-            tip := Text { text: sound-name + (locked ? " (locked)" : "") + " · right-click for variations"; color: Theme.text; font-size: 10px; }
         }
     }
     for s in 16: Rectangle {
@@ -3375,28 +3389,50 @@ component GrooveVoice inherits VerticalLayout {
     property <string> rk: "row" + (row-index + 1);
     property <int> sound-index: Controls.resolve(groove-group, rk + "_sound");
     property <int> sound: Controls.value(sound-index, Controls.tick);
+    property <string> sound-name: GrooveUi.kits[kit].sounds[sound];
     property <float> meter: Controls.value(Controls.resolve(groove-group, rk + "_meter"), Controls.tick);
     property <int> preview-index: Controls.resolve(groove-group, rk + "_preview");
     alignment: start;
     spacing: 2px;
     Rectangle {
-        height: 26px;
+        height: 50px;
         border-radius: 4px;
         background: tint.with-alpha(0.16 + 0.5 * min(1, meter * 2) + (sta.has-hover ? 0.1 : 0));
         HorizontalLayout {
+            y: 3px;
+            height: 15px;
             padding-left: 5px;
             padding-right: 4px;
             spacing: 4px;
-            DrumIcon { sound: GrooveUi.kits[kit].sounds[sound]; tint: tint; size: 18px; y: 4px; }
-            Text { text: (row-index + 1) + " · " + GrooveUi.kits[kit].sounds[sound] + " ▾"; color: Theme.text; font-size: 10px; font-weight: 600; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+            DrumIcon { sound: sound-name; tint: tint; size: 14px; }
+            Text { text: (row-index + 1) + "  ▾"; color: tint; font-size: 10px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
         }
-        sta := TouchArea { mouse-cursor: pointer; clicked => { sound-menu.show(); Controls.set-value(preview-index, 1); } }
+        Text { x: 5px; y: 20px; width: parent.width - 10px; height: 28px; text: sound-name; color: Theme.text; font-size: 11px; font-weight: 600; wrap: word-wrap; overflow: elide; }
+        sta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { HoverTip.shown = false; sound-menu.show(); Controls.set-value(preview-index, 1); }
+            changed has-hover => {
+                if self.has-hover {
+                    HoverTip.title = (row-index + 1) + " · " + sound-name;
+                    HoverTip.body = GrooveUi.kits[kit].name;
+                    HoverTip.right-aligned = self.absolute-position.x > root.width;
+                    HoverTip.x = self.absolute-position.x + (HoverTip.right-aligned ? self.width : 0px);
+                    HoverTip.y = self.absolute-position.y + self.height + 4px;
+                    HoverTip.shown = true;
+                } else if HoverTip.title == (row-index + 1) + " · " + sound-name {
+                    HoverTip.shown = false;
+                }
+            }
+        }
         sound-menu := PopupWindow {
             y: parent.height;
-            width: 150px;
+            width: 380px;
+            height: min(GrooveUi.kits[kit].sounds.length * 24px + 8px, 380px);
             GrooveMenuBackground { }
-            VerticalLayout {
-                padding: 4px;
+            ListView {
+                x: 4px; y: 4px;
+                width: parent.width - 8px;
+                height: parent.height - 8px;
                 for name[i] in GrooveUi.kits[kit].sounds: GrooveMenuItem {
                     text: name;
                     checked: i == sound;
@@ -3436,21 +3472,40 @@ component GrooveStrip inherits VerticalLayout {
     min-width: 0px;
     property <string> rk: "row" + (row-index + 1);
     property <int> sound: Controls.value(Controls.resolve(groove-group, rk + "_sound"), Controls.tick);
+    property <string> sound-name: GrooveUi.kits[kit].sounds[sound];
     property <float> meter: Controls.value(Controls.resolve(groove-group, rk + "_meter"), Controls.tick);
     property <int> preview-index: Controls.resolve(groove-group, rk + "_preview");
     spacing: 3px;
     Rectangle {
-        height: 26px;
+        height: 50px;
         border-radius: 4px;
         background: tint.with-alpha(0.16 + 0.5 * min(1, meter * 2) + (mta.has-hover ? 0.1 : 0));
         HorizontalLayout {
+            y: 3px;
+            height: 15px;
             padding-left: 5px;
             padding-right: 4px;
             spacing: 4px;
-            DrumIcon { sound: GrooveUi.kits[kit].sounds[sound]; tint: tint; size: 18px; y: 4px; }
-            Text { text: (row-index + 1) + " · " + GrooveUi.kits[kit].sounds[sound]; color: Theme.text; font-size: 10px; font-weight: 600; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+            DrumIcon { sound: sound-name; tint: tint; size: 14px; }
+            Text { text: row-index + 1; color: tint; font-size: 10px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
         }
-        mta := TouchArea { mouse-cursor: pointer; clicked => { Controls.set-value(preview-index, 1); } }
+        Text { x: 5px; y: 20px; width: parent.width - 10px; height: 28px; text: sound-name; color: Theme.text; font-size: 11px; font-weight: 600; wrap: word-wrap; overflow: elide; }
+        mta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { Controls.set-value(preview-index, 1); }
+            changed has-hover => {
+                if self.has-hover {
+                    HoverTip.title = (row-index + 1) + " · " + sound-name;
+                    HoverTip.body = GrooveUi.kits[kit].name;
+                    HoverTip.right-aligned = self.absolute-position.x > root.width;
+                    HoverTip.x = self.absolute-position.x + (HoverTip.right-aligned ? self.width : 0px);
+                    HoverTip.y = self.absolute-position.y + self.height + 4px;
+                    HoverTip.shown = true;
+                } else if HoverTip.title == (row-index + 1) + " · " + sound-name {
+                    HoverTip.shown = false;
+                }
+            }
+        }
     }
     HorizontalLayout {
         alignment: center;
@@ -3509,6 +3564,8 @@ component GroovePads inherits HorizontalLayout {
     property <int> row-index: Controls.resolve(g, "row_selected");
     property <int> track: max(1, min(16, Controls.value(row-index, Controls.tick))) - 1;
     property <string> rk: "row" + (track + 1);
+    property <int> focused-sound: Controls.value(Controls.resolve(g, rk + "_sound"), Controls.tick);
+    property <string> focused-sound-name: GrooveUi.kits[kit].sounds[focused-sound];
     property <color> tint: GrooveColors.track[mod(track, 8)];
     property <int> index: Controls.resolve(g, "pattern" + (slot + 1) + "_" + rk);
     property <float> bits: Controls.value(index, Controls.tick);
@@ -3522,7 +3579,7 @@ component GroovePads inherits HorizontalLayout {
     property <bool> playing: Controls.value(Controls.resolve(group, "play"), Controls.tick) > 0;
     spacing: 8px;
     track-list := ScrollView {
-        width: 144px;
+        width: max(160px, min(230px, root.width * 0.3));
         gutter: true;
         content-width: self.visible-width;
         content-height: 16 * 26px;
@@ -3538,21 +3595,40 @@ component GroovePads inherits HorizontalLayout {
                 border-color: GrooveColors.track[mod(r, 8)];
                 background: GrooveColors.track[mod(r, 8)].with-alpha((r == track ? 0.3 : 0.1) + 0.4 * min(1, meter * 2) + (pta.has-hover ? 0.08 : 0));
                 HorizontalLayout {
-                    padding-left: 6px;
-                    spacing: 6px;
-                    DrumIcon { sound: GrooveUi.kits[kit].sounds[sound]; tint: GrooveColors.track[mod(r, 8)]; size: 16px; y: (parent.height - 16px) / 2; }
-                    Text { text: (r + 1) + " · " + GrooveUi.kits[kit].sounds[sound]; color: r == track ? Theme.text : Theme.text-dim; font-size: 10px; font-weight: 600; vertical-alignment: center; overflow: elide; }
+                    padding-left: 5px;
+                    padding-right: 5px;
+                    spacing: 4px;
+                    Text { width: 14px; text: r + 1; color: GrooveColors.track[mod(r, 8)]; font-size: 10px; vertical-alignment: center; }
+                    DrumIcon { sound: GrooveUi.kits[kit].sounds[sound]; tint: GrooveColors.track[mod(r, 8)]; size: 12px; y: (parent.height - 12px) / 2; }
+                    Text { text: GrooveUi.kits[kit].sounds[sound]; color: Theme.text; font-size: root.width < 760px ? 10px : 11px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; min-width: 0px; overflow: elide; }
                 }
-                pta := TouchArea { mouse-cursor: pointer; clicked => { Controls.set-value(row-index, r + 1); } }
+                pta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { Controls.set-value(row-index, r + 1); }
+                    changed has-hover => {
+                        if self.has-hover {
+                            HoverTip.title = (r + 1) + " · " + GrooveUi.kits[kit].sounds[sound];
+                            HoverTip.body = GrooveUi.kits[kit].name;
+                            HoverTip.right-aligned = self.absolute-position.x > root.width / 2;
+                            HoverTip.x = self.absolute-position.x + (HoverTip.right-aligned ? self.width : 0px);
+                            HoverTip.y = self.absolute-position.y + self.height + 4px;
+                            HoverTip.shown = true;
+                        } else if HoverTip.title == (r + 1) + " · " + GrooveUi.kits[kit].sounds[sound] {
+                            HoverTip.shown = false;
+                        }
+                    }
+                }
             }
         }
     }
     // Square pads, as big as the room allows.
     Rectangle {
         horizontal-stretch: 1;
-        property <length> side: min(self.width, self.height);
+        property <length> side: min(self.width, max(0px, self.height - 24px));
+        Text { height: 20px; width: parent.width; text: (track + 1) + " · " + focused-sound-name + " · STEPS"; color: Theme.text; font-size: 11px; font-weight: 600; overflow: elide; vertical-alignment: center; }
         Rectangle {
             x: 0;
+            y: 24px;
             width: parent.side;
             height: parent.side;
             for s in 16: Rectangle {
@@ -3605,43 +3681,179 @@ component GroovePads inherits HorizontalLayout {
     }
 }
 
-// Independent Group A–H layers. Selection changes the editor only.
-component GrooveGroups inherits HorizontalLayout {
+// Live sound pads use each row's native preview, independently of pad_mode.
+component GrooveSoundPads inherits Rectangle {
     in property <string> g;
+    in property <int> kit;
+    property <int> row-index: Controls.resolve(g, "row_selected");
+    property <int> selected: Controls.value(row-index, Controls.tick) - 1;
+    min-height: 160px;
+    for r in 16: Rectangle {
+        property <string> rk: "row" + (r + 1);
+        property <int> sound: Controls.value(Controls.resolve(g, rk + "_sound"), Controls.tick);
+        property <string> sound-name: GrooveUi.kits[kit].sounds[sound];
+        property <float> meter: Controls.value(Controls.resolve(g, rk + "_meter"), Controls.tick);
+        property <int> preview-index: Controls.resolve(g, rk + "_preview");
+        property <color> pad-tint: GrooveColors.track[mod(r, 8)];
+        x: mod(r, 4) * root.width / 4 + 2px;
+        y: (3 - floor(r / 4)) * root.height / 4 + 2px;
+        width: root.width / 4 - 4px;
+        height: root.height / 4 - 4px;
+        border-radius: 6px;
+        border-width: selected == r ? 2px : 1px;
+        border-color: selected == r ? pad-tint : pad-tint.with-alpha(0.35);
+        background: pad-tint.with-alpha(0.1 + min(1, meter) * 0.42 + (pta.pressed ? 0.2 : pta.has-hover ? 0.08 : 0));
+        pta := TouchArea {
+            mouse-cursor: pointer;
+            pointer-event(e) => {
+                if e.button == PointerEventButton.left && e.kind == PointerEventKind.down {
+                    Controls.set-value(row-index, r + 1);
+                    Controls.set-value(preview-index, 1);
+                } else if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel {
+                    Controls.set-value(preview-index, 0);
+                }
+            }
+            changed has-hover => {
+                if self.has-hover {
+                    HoverTip.title = (r + 1) + " · " + sound-name;
+                    HoverTip.body = GrooveUi.kits[kit].name;
+                    HoverTip.right-aligned = self.absolute-position.x > root.width / 2;
+                    HoverTip.x = self.absolute-position.x + (HoverTip.right-aligned ? self.width : 0px);
+                    HoverTip.y = self.absolute-position.y + self.height + 4px;
+                    HoverTip.shown = true;
+                } else if HoverTip.title == (r + 1) + " · " + sound-name {
+                    HoverTip.shown = false;
+                }
+            }
+        }
+        Text { x: 8px; y: 5px; text: r + 1; color: pad-tint; font-size: 11px; font-weight: 700; }
+        Text {
+            x: 8px;
+            y: 23px;
+            width: parent.width - 16px;
+            height: max(12px, parent.height - 29px);
+            text: sound-name;
+            color: Theme.text;
+            font-size: parent.width < 150px ? 10px : 11px;
+            font-weight: 600;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+        HorizontalLayout {
+            x: parent.width - 48px;
+            y: 5px;
+            width: 40px;
+            height: 16px;
+            spacing: 4px;
+            GrooveToggle { group: g; key: rk + "_mute"; text: "M"; tint: #ff9f0a; }
+            GrooveToggle { group: g; key: rk + "_solo"; text: "S"; tint: pad-tint; }
+        }
+        Rectangle { x: 8px; y: parent.height - 4px; height: 2px; width: (parent.width - 16px) * max(0, min(1, meter)); background: pad-tint; }
+    }
+}
+
+// The foreground kit selector writes only the selected Group's kit control.
+component GrooveKitSelector inherits Rectangle {
+    in property <string> g;
+    in property <color> tint;
+    property <int> index: Controls.resolve(g, "kit");
+    property <int> kit: Controls.value(index, Controls.tick);
+    height: 32px;
+    min-width: 150px;
+    border-radius: 5px;
+    border-width: 1px;
+    border-color: tint.with-alpha(kta.has-hover ? 0.9 : 0.55);
+    background: tint.with-alpha(kta.has-hover ? 0.18 : 0.09);
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 8px;
+        Text { width: 22px; text: "KIT"; color: tint; font-size: 9px; font-weight: 700; vertical-alignment: center; }
+        Text { text: GrooveUi.kits[kit].name; color: Theme.text; font-size: 12px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; min-width: 0px; overflow: elide; }
+        Text { width: 10px; text: "▾"; color: Theme.text; font-size: 11px; vertical-alignment: center; }
+    }
+    kta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { HoverTip.shown = false; kit-menu.show(); }
+        changed has-hover => {
+            if self.has-hover {
+                HoverTip.title = GrooveUi.kits[kit].name;
+                HoverTip.body = GrooveUi.kits[kit].about;
+                HoverTip.right-aligned = self.absolute-position.x > root.width;
+                HoverTip.x = self.absolute-position.x + (HoverTip.right-aligned ? self.width : 0px);
+                HoverTip.y = self.absolute-position.y + self.height + 4px;
+                HoverTip.shown = true;
+            } else if HoverTip.title == GrooveUi.kits[kit].name {
+                HoverTip.shown = false;
+            }
+        }
+    }
+    kit-menu := PopupWindow {
+        y: root.height + 3px;
+        width: 400px;
+        height: min(GrooveUi.kits.length * 36px + 8px, 420px);
+        close-policy: close-on-click-outside;
+        GrooveMenuBackground { }
+        ListView {
+            x: 4px; y: 4px;
+            width: parent.width - 8px;
+            height: parent.height - 8px;
+            for item[i] in GrooveUi.kits: GrooveMenuItem {
+                text: item.name;
+                detail: item.about;
+                checked: i == kit;
+                clicked => { Controls.set-value(index, i); kit-menu.close(); }
+            }
+        }
+    }
+}
+
+// Independent Group A–H layers. Selection changes the editor only.
+component GrooveGroups inherits Rectangle {
+    in property <string> g;
+    in property <int> deck;
     property <int> selected: Controls.value(Controls.resolve(g, "group_selected"), Controls.tick);
-    property <color> tint: GrooveColors.track[max(0, min(7, selected))];
-    property <bool> enabled: Controls.value(Controls.resolve(g, "group_enabled"), Controls.tick) > 0;
-    height: 30px;
-    spacing: 3px;
-    Text { width: 36px; text: "GROUP"; color: Theme.text-dim; font-size: 9px; font-weight: 700; vertical-alignment: center; }
+    property <int> columns: root.width < 960px ? 4 : 8;
+    height: columns == 4 ? 76px : 36px;
     for letter[k] in ["A", "B", "C", "D", "E", "F", "G", "H"]: Rectangle {
         property <string> key: "group" + (k + 1);
+        property <string> scope: selected == k ? g : "[Groove" + (deck + 1) + "Group" + (k + 1) + "]";
+        property <int> kit: Controls.value(Controls.resolve(scope, "kit"), Controls.tick);
+        property <int> pattern: Controls.value(Controls.resolve(scope, "groove_playing"), Controls.tick);
         property <bool> active: Controls.value(Controls.resolve(g, key + "_enabled"), Controls.tick) > 0;
         property <bool> muted: Controls.value(Controls.resolve(g, key + "_mute"), Controls.tick) > 0;
         property <bool> solo: Controls.value(Controls.resolve(g, key + "_solo"), Controls.tick) > 0;
         property <float> meter: Controls.value(Controls.resolve(g, key + "_meter"), Controls.tick);
         property <color> group-tint: GrooveColors.track[k];
-        horizontal-stretch: 1;
-        min-width: 20px;
+        x: mod(k, columns) * (root.width + 4px) / columns;
+        y: floor(k / columns) * 40px;
+        width: (root.width + 4px) / columns - 4px;
+        height: 36px;
         border-radius: 4px;
         border-width: selected == k ? 2px : 1px;
         border-color: selected == k ? group-tint : Theme.border;
-        background: group-tint.with-alpha(active ? 0.28 : 0.06);
-        Text { y: 2px; height: 16px; text: letter; color: active ? group-tint : Theme.text-dim; font-size: 11px; font-weight: 700; horizontal-alignment: center; }
-        Text { y: 17px; height: 8px; text: muted || solo ? (muted ? "M" : "") + (solo ? "S" : "") : active ? "ON" : "OFF"; color: muted ? #ff9f0a : solo ? Theme.accent : Theme.text-dim; font-size: 7px; horizontal-alignment: center; }
-        Rectangle { y: parent.height - 3px; height: 2px; width: parent.width * max(0, min(1, meter)); background: group-tint; }
-        TouchArea { mouse-cursor: pointer; clicked => { Controls.set-value(Controls.resolve(g, "group_selected"), k); } }
+        background: group-tint.with-alpha(selected == k ? 0.2 : active ? 0.1 : 0.04);
+        Text { x: 7px; y: 3px; height: 12px; text: letter; color: group-tint; font-size: 10px; font-weight: 700; }
+        Text { x: 23px; y: 3px; width: parent.width - 29px; height: 12px; text: ["A", "B", "C", "D"][pattern] + "  " + (muted ? "M " : "") + (solo ? "S " : "") + (active ? "ON" : "OFF"); color: muted ? #ff9f0a : Theme.text-dim; font-size: 9px; overflow: elide; }
+        Text { x: 7px; y: 17px; width: parent.width - 14px; height: 14px; text: GrooveUi.kits[kit].name; color: Theme.text; font-size: 11px; font-weight: selected == k ? 700 : 500; overflow: elide; }
+        Rectangle { x: 2px; y: parent.height - 3px; height: 2px; width: (parent.width - 4px) * max(0, min(1, meter)); background: group-tint; }
+        gta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { HoverTip.shown = false; Controls.set-value(Controls.resolve(g, "group_selected"), k); }
+            changed has-hover => {
+                if self.has-hover {
+                    HoverTip.title = "Group " + letter + " · " + GrooveUi.kits[kit].name;
+                    HoverTip.body = GrooveUi.kits[kit].about;
+                    HoverTip.right-aligned = self.absolute-position.x > root.width / 2;
+                    HoverTip.x = self.absolute-position.x + (HoverTip.right-aligned ? self.width : 0px);
+                    HoverTip.y = self.absolute-position.y + self.height + 4px;
+                    HoverTip.shown = true;
+                } else if HoverTip.title == "Group " + letter + " · " + GrooveUi.kits[kit].name {
+                    HoverTip.shown = false;
+                }
+            }
+        }
     }
-    GrooveTab {
-        width: 76px;
-        height: 30px;
-        text: enabled ? "STOP GROUP" : "PLAY GROUP";
-        on: enabled;
-        tint: tint;
-        clicked => { Controls.toggle(Controls.resolve(g, "group_enabled")); }
-    }
-    GrooveToggle { group: g; key: "group" + (selected + 1) + "_mute"; text: "M"; tint: #ff9f0a; width: 18px; }
-    GrooveToggle { group: g; key: "group" + (selected + 1) + "_solo"; text: "S"; tint: tint; width: 18px; }
 }
 
 // The Groove Box's bottom bar: Auto fill (Off, Auto 1, Auto 2), FILL
@@ -3660,6 +3872,9 @@ component GrooveBox inherits Rectangle {
     property <string> g: "[Groove" + (deck + 1) + "]";
     property <int> tab: 0;
     property <bool> four: false;
+    property <int> selected-group: Controls.value(Controls.resolve(g, "group_selected"), Controls.tick);
+    property <bool> group-enabled: Controls.value(Controls.resolve(g, "group_enabled"), Controls.tick) > 0;
+    property <color> group-tint: GrooveColors.track[max(0, min(7, selected-group))];
     property <int> slot: Controls.value(Controls.resolve(g, "groove"), Controls.tick);
     property <int> queued: Controls.value(Controls.resolve(g, "groove_queued"), Controls.tick);
     property <int> position: Controls.value(Controls.resolve(g, "position"), Controls.tick);
@@ -3682,7 +3897,7 @@ component GrooveBox inherits Rectangle {
             height: 30px;
             spacing: 4px;
             PlayButton { group: group; tint: tint; width: root.width < 600px ? 38px : 42px; }
-            Text { width: 30px; text: "CLOCK"; color: Theme.text-dim; font-size: 8px; vertical-alignment: center; }
+            Text { width: 36px; text: "CLOCK"; color: Theme.text; font-size: 9px; font-weight: 600; vertical-alignment: center; }
             GrooveLibraryBar { deck: deck; compact: root.width < 600px; g: g; tint: tint; horizontal-stretch: 1; height: 30px; }
         }
         HorizontalLayout {
@@ -3694,22 +3909,38 @@ component GrooveBox inherits Rectangle {
             GrooveTempo { g: g; width: 60px; height: 30px; tint: tint; }
             Rectangle { horizontal-stretch: 1; }
             Rectangle {
-                width: 148px;
+                width: 216px;
                 border-radius: 6px;
                 background: Theme.well;
                 HorizontalLayout {
                     padding: 3px;
                     spacing: 2px;
-                    for name[i] in ["SEQUENCER", "SYNTH", "MIXER"]: GrooveTab {
+                    for name[i] in ["SEQUENCER", "SYNTH", "MIXER", "PADS"]: GrooveTab {
                         text: name;
                         on: tab == i;
                         tint: tint;
-                        clicked => { tab = i; }
+                        clicked => { HoverTip.shown = false; tab = i; }
                     }
                 }
             }
         }
-        GrooveGroups { g: g; }
+        GrooveGroups { g: g; deck: deck; }
+        HorizontalLayout {
+            height: 32px;
+            spacing: 5px;
+            Text { width: 60px; text: "GROUP " + ["A", "B", "C", "D", "E", "F", "G", "H"][selected-group]; color: group-tint; font-size: 11px; font-weight: 700; vertical-alignment: center; }
+            GrooveKitSelector { g: g; tint: group-tint; horizontal-stretch: 1; }
+            GrooveTab {
+                width: 88px;
+                height: 32px;
+                text: group-enabled ? "STOP GROUP" : "PLAY GROUP";
+                on: group-enabled;
+                tint: group-tint;
+                clicked => { Controls.toggle(Controls.resolve(g, "group_enabled")); }
+            }
+            GrooveToggle { group: g; key: "group" + (selected-group + 1) + "_mute"; text: "M"; tint: #ff9f0a; width: 22px; }
+            GrooveToggle { group: g; key: "group" + (selected-group + 1) + "_solo"; text: "S"; tint: group-tint; width: 22px; }
+        }
         Rectangle {
             vertical-stretch: 1;
             if tab == 0 && four: GroovePads {
@@ -3740,8 +3971,8 @@ component GrooveBox inherits Rectangle {
                 }
             }
             if tab == 1: voices := ScrollView {
-                content-width: max(self.visible-width, 16 * 92px);
-                content-height: max(self.visible-height - 12px, 180px);
+                content-width: max(self.visible-width, 16 * 144px);
+                content-height: max(self.visible-height - 12px, 216px);
                 HorizontalLayout {
                     width: voices.content-width;
                     height: voices.content-height;
@@ -3756,8 +3987,8 @@ component GrooveBox inherits Rectangle {
                 }
             }
             if tab == 2: strips := ScrollView {
-                content-width: max(self.visible-width, 16 * 92px);
-                content-height: max(self.visible-height - 12px, 180px);
+                content-width: max(self.visible-width, 16 * 144px);
+                content-height: max(self.visible-height - 12px, 216px);
                 HorizontalLayout {
                     width: strips.content-width;
                     height: strips.content-height;
@@ -3771,9 +4002,10 @@ component GrooveBox inherits Rectangle {
                     }
                 }
             }
+            if tab == 3: GrooveSoundPads { g: g; kit: kit; }
         }
         PerformanceStatus { g: g; channel: group; tint: tint; }
-        GrooveFillBar { g: g; tint: tint; four <=> four; }
+        GrooveFillBar { g: g; tint: tint; four <=> four; show-four: tab == 0; }
     }
 }
 
